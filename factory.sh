@@ -56,7 +56,7 @@
 # - df is part of coreutils on Debian/Ubuntu/Mint systems.
 # - findmnt is usually provided by util-linux on Debian/Ubuntu/Mint systems.
 # - mkvpropedit comes from mkvtoolnix.
-# - scenedetect is OPTIONAL unless using automatic intro detection features.
+# - scenedetect is OPTIONAL but automatic intro detection is the star of the show.
 # - less is OPTIONAL; note screens can fall back to plain cat behavior.
 # - iconv is OPTIONAL; some detox/transliteration behavior may be reduced without it.
 # -----------------------------------------------------------------------------------------
