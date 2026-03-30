@@ -138,6 +138,15 @@ is_factory_exit_token() {
 	[[ "$v" == "0." || "$v" == "q" || "$v" == "Q" ]]
 }
 
+ask_yes_no() {
+	local prompt="$1"
+	local ans
+
+	read -r -p "$prompt" ans
+	ans="${ans,,}"
+
+	[[ "${ans:-n}" == y* ]]
+}
 
 # =========================
 # #MARKER: INTRO_MAP LAZY CREATE
