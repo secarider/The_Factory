@@ -1605,7 +1605,8 @@ to_seconds() {
   fi
 
   # Force base-10 so 08 / 09 do not trigger octal interpretation
-  echo $((10#$h * 3600 + 10#$m * 60 + 10#$s))
+  # Ensure variables have default values to prevent arithmetic expansion errors
+  echo $((10#${h:-0} * 3600 + 10#${m:-0} * 60 + 10#${s:-0}))
 }
 
 # #MARKER: END GLOBAL TEXT / COMMAND HELPERS
@@ -1893,6 +1894,18 @@ run_startup_dependency_checks  # - This is the actual trigger. first trigger of 
 # - Optional tools show as OK or MISSING plus feature impact
 # - User may optionally view the install/help wall afterward
 #
+# Helper function for dependency checking but global
+check_opt() {
+	local dep="$1"
+	local note="$2"
+
+	if have_cmd "$dep"; then
+		echo -e "${GREEN}[ OK ]${NC} $dep"
+	else
+		echo -e "${YELLOW}[MISS]${NC} $dep  -> $note"
+	fi
+}
+
 inspect_dependencies() {
 	echo -e "${CYAN}============================================================${NC}"
 	echo -e "${CYAN} = = > DEPENDENCY STATUS REPORT${NC}"
@@ -1923,17 +1936,6 @@ inspect_dependencies() {
 	# Missing tools here do NOT necessarily mean the factory is unusable.
 	echo -e "${YELLOW}--- OPTIONAL / FEATURE TOOLS ---${NC}"
 
-	check_opt() {
-		local dep="$1"
-		local note="$2"
-
-		if have_cmd "$dep"; then
-			echo -e "${GREEN}[ OK ]${NC} $dep"
-		else
-			echo -e "${YELLOW}[MISS]${NC} $dep  -> $note"
-		fi
-	}
-
 	check_opt python3     "Python-Based Helper Paths Unavailable"
 	check_opt pipx        "Easy Scenedetect Install Path Unavailable"
 	check_opt scenedetect "Automatic Intro Detection Unavailable"
@@ -1959,6 +1961,18 @@ inspect_dependencies() {
 }
 
 # = = = = = = = = = = = = End of dep_check manual
+
+# Helper function for dependency checking
+check_opt() {
+	local dep="$1"
+	local note="$2"
+
+	if have_cmd "$dep"; then
+		echo -e "${GREEN}[ OK ]${NC} $dep"
+	else
+		echo -e "${YELLOW}[MISS]${NC} $dep  -> $note"
+	fi
+}
 
 # =========================
 # #MARKER: MAIN MENU (WORKFLOW ENTRYPOINT)
