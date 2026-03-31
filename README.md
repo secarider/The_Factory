@@ -30,18 +30,18 @@ Inspect → Prepare → Template/Detect → GAPMAN → Title/Sub → Cleanup
 Key Design Principles:
 Where possible:
 
-Stream-Copy First
-no re-encoding
-no quality loss
-fast processing
-Human-Readable Feedback
-color-coded output
-clear status indicators
-verbose progress and diagnostics
-Onboard dependency checks
-File-Based State Tracking
-10 key friendly input with accepted
-input as (sec), (hh:mm:ss) (0.00) <---10 key time input
+Stream-Copy First,
+no re-encoding,
+no quality loss,
+fast processing,
+Human-Readable Feedback,
+color-coded output,
+clear status indicators,
+verbose progress and diagnostics,
+Onboard dependency checks,
+File-Based State Tracking,
+10 key friendly input with accepted,
+input as (sec), (hh:mm:ss), (0.00) <---10 key time input,
 10 key exits instead of q
 
 
