@@ -21,25 +21,21 @@ What It Does
 
 1. Source Preparation (Non-Destructive)
 THE_FACTORY Creates OEM backups of original files
-If you allow, THE_FACTORY builds cut-friendly versions
-(REKEY_) using controlled GOP structure
-Ensures consistent:
-frame rate (CFR)
-keyframe spacing (~1 second)
-codec alignment for safe stream-copy operations
 
 Outputs:
 OEM_original.*
 
 2. Batch Normalizer (REKEY Pipeline)
 Converts source files into cut-safe format
-Standardizes:
-keyframe intervals
+using controlled GOP structure
+Ensures consistent:
+keyframe spacing (~1 second)
 encoding structure
+codec alignment for safe stream-copy operations
 Supports concurrency levels:
-light (1 job)
-medium (3 jobs)
-thrash (max parallel)
+Light (1 job)
+Medium (3 jobs)
+Thrash (max parallel)
 
 Outputs:
 REKEY_original.mkv
