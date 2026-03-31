@@ -39,7 +39,7 @@ Onboard dependency checks,
 File-Based State Tracking,
 10 key friendly input with accepted
 input as (sec), (hh:mm:ss), (0.00) <---10 key time input,
-10 key exits instead of q
+10 key exits along with "q"
 
 
 Typical Use Case: Processing a full TV season:   Drop factory.sh into episodes folder
