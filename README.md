@@ -42,7 +42,7 @@ Automatically creates and stores templates in:
 Outputs:
 intro_template.mkv
 
-7. Intro Detection (IntroFind Engine)
+6. Intro Detection (IntroFind Engine)
 Uses perceptual hashing (pHash) for visual matching
 Multi-anchor detection model (e.g., 3s, 5s, 7s offsets)
 Scans across early timeline for best match
@@ -56,7 +56,7 @@ debug insight into detection quality
 Outputs:
 intro_map.csv
 
-9. GAPMAN (Intro Removal Engine)
+7. GAPMAN (Intro Removal Engine)
 CSV-driven batch processing (intro_map.csv)
 Removes intros using:
 stream-copy concat (no re-encode)
@@ -68,7 +68,7 @@ post-trim (credits)
 Outputs:
 SUTURED_original.mkv
 
-11. Subtitle Processing (SUBTOX)
+8. Subtitle Processing (SUBTOX)
 Pack external .srt into video
 Extract internal subtitle tracks
 Rename files using:
@@ -78,7 +78,7 @@ automatic title cleanup
 Outputs:
 SUBPACKED_original.mkv
 
-8. Metadata & Playback Fix (BARFIX)
+9. Metadata & Playback Fix (BARFIX)
 Fix title metadata (MKV in-place when possible)
 Set playback defaults:
 preferred audio (English if available)
@@ -91,7 +91,7 @@ combined mode
 Outputs:
 BARFIX_original.mkv (if remux required)
 
-9. Cleanup / Finalization
+10. Cleanup / Finalization
 Promotes:
 SUTURED_ → final filenames
 Handles OEM backups:
@@ -117,7 +117,7 @@ clear status indicators
 verbose progress and diagnostics
 File-Based State Tracking
 
-12. Manual Tools
+11. Manual Tools
 Custom segment cutting
 Clip joining
 File inspection tools
