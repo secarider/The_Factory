@@ -19,7 +19,7 @@ codec alignment for safe stream-copy operations
 Outputs:
 OEM_original.*
 
-3. Batch Normalizer (REKEY Pipeline)
+2. Batch Normalizer (REKEY Pipeline)
 Converts source files into cut-safe format
 Standardizes:
 keyframe intervals
@@ -32,7 +32,7 @@ thrash (max parallel)
 Outputs:
 REKEY_original.mkv
 
-5. Template Builder
+3. Template Builder
 Using our nice rekey sources The_Factory 
 Creates reusable intro templates from any source
 manual time selection clean extraction + normalization to mkv 
@@ -42,7 +42,7 @@ Automatically creates and stores templates in:
 Outputs:
 intro_template.mkv
 
-6. Intro Detection (IntroFind Engine)
+4. Intro Detection (IntroFind Engine)
 Uses perceptual hashing (pHash) for visual matching
 Multi-anchor detection model (e.g., 3s, 5s, 7s offsets)
 Scans across early timeline for best match
@@ -56,7 +56,7 @@ debug insight into detection quality
 Outputs:
 intro_map.csv
 
-7. GAPMAN (Intro Removal Engine)
+5. GAPMAN (Intro Removal Engine)
 CSV-driven batch processing (intro_map.csv)
 Removes intros using:
 stream-copy concat (no re-encode)
@@ -68,7 +68,7 @@ post-trim (credits)
 Outputs:
 SUTURED_original.mkv
 
-8. Subtitle Processing (SUBTOX)
+6. Subtitle Processing (SUBTOX)
 Pack external .srt into video
 Extract internal subtitle tracks
 Rename files using:
@@ -78,7 +78,7 @@ automatic title cleanup
 Outputs:
 SUBPACKED_original.mkv
 
-9. Metadata & Playback Fix (BARFIX)
+7. Metadata & Playback Fix (BARFIX)
 Fix title metadata (MKV in-place when possible)
 Set playback defaults:
 preferred audio (English if available)
@@ -91,7 +91,7 @@ combined mode
 Outputs:
 BARFIX_original.mkv (if remux required)
 
-10. Cleanup / Finalization
+8. Cleanup / Finalization
 Promotes:
 SUTURED_ → final filenames
 Handles OEM backups:
@@ -117,7 +117,7 @@ clear status indicators
 verbose progress and diagnostics
 File-Based State Tracking
 
-11. Manual Tools
+9. Manual Tools
 Custom segment cutting
 Clip joining
 File inspection tools
