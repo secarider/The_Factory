@@ -2,12 +2,50 @@
 THE_FACTORY
 
 A terminal-driven video processing pipeline designed for non-destructive, batch-safe, intro-aware media preparation.
+Uses: intro_map.csv--episodes.csv--info.csv-- To maintain workflow continuity, caching, and Rekey file integrity plus much more.
+Non-Destructive Workflow -- Original files are never modified directly. -- Pipeline-Based Processing
+THE_FACTORY automates common but complex tasks such as intro detection, clean cutting, subtitle handling, metadata repair, and batch normalization — all while preserving original files.
 
-Uses: intro_map.csv  episodes.csv  info.csv  to maintain workflow continuity, caching, and Rekey file integrity plus much more.
+Requirements:
+
+Core:
+ffmpeg / ffprobe,
+bc,
+awk / sed / grep,
+coreutils
+
+Optional:
+mkvtoolnix (mkvpropedit),
+pipx + scenedetect (OpenCV),
+python3 (IntroFind engine),
+pipx + scenedetect (OpenCV),
+python3 (IntroFind engine),
+
+Typical flow:
+Inspect → Prepare → Template/Detect → GAPMAN → Title/Sub → Cleanup
+
+Key Design Principles:
+
+Where possible:
+
+Stream-Copy First
+no re-encoding
+no quality loss
+fast processing
+Human-Readable Feedback
+color-coded output
+clear status indicators
+verbose progress and diagnostics
+Onboard dependency checks
+File-Based State Tracking
+10 key friendly input with accepted
+input as (sec), (hh:mm:ss) (0.00) <---10 key time input
+10 key exits instead of q
+
 
 Typical Use Case: Processing a full TV season:   Drop factory.sh into episodes folder
 Explore menus for goodies
-Run Template Builder: Make one really good key and usually one per season as the intros often change per season 
+Run Template Builder: Make one excellent key and usually one per season as intros often change per season 
 
 Run Intro Detection: This is magic right here if you made a good key
 
@@ -15,14 +53,14 @@ Run GAPMAN: He does the Cut-n-Gut Snip-n-Clip
 Apply Title / Subtitle fixes
 Finalize outputs
 
-THE_FACTORY automates common but complex tasks such as intro detection, clean cutting, subtitle handling, metadata repair, and batch normalization — all while preserving original files.
 
 What It Does
 
 1. Source Preparation (Non-Destructive)
 THE_FACTORY Creates OEM backups of original files
-then protects them from furter processing by prefix_filename.* obsfucation
-THE_FACTORY protects or discovers other files by prefix_
+then protects them from furter processing by prefix_filename.* obfuscation
+Disk space displays and warnings as a complete copy of a season might be multi gigs
+THE_FACTORY protects and/or discovers other files by Prefix_
 
 Outputs:
 OEM_original.*
@@ -46,9 +84,9 @@ REKEY_original.mkv
 Using our nice rekey sources The_Factory 
 Creates reusable intro templates from any source
 manual time selection clean extraction + normalization to mkv 
-As it makes all future processing consistent and it is the hottest container
+As it makes all future processing consistent, and mkv is the hottest container around
 Automatically creates and stores templates in: intro_template/intro_template.mkv
-intro_templates are protected from processing by folder obsfucation
+intro_templates are protected from processing by folder obfuscation until cleanup
 
 Outputs:
 intro_template.mkv
@@ -111,24 +149,8 @@ delete
 retain
 Removes temporary artifacts
 Marks processed directories
-Key Design Principles
-Non-Destructive Workflow
-Original files are never modified directly.
-Pipeline-Based Processing
-Typical flow:
-Inspect → Prepare → Template/Detect → GAPMAN → Title/Sub → Cleanup
-Stream-Copy First
-Where possible:
-no re-encoding
-no quality loss
-fast processing
-Human-Readable Feedback
-color-coded output
-clear status indicators
-verbose progress and diagnostics
-File-Based State Tracking
 
-9. Manual Tools
+10. Manual Tools
 Custom segment cutting
 Clip joining
 File inspection tools
@@ -136,23 +158,5 @@ ffprobe-based diffing
 
 Outputs:
 custom_cut.mkv
-
-
-
-Requirements:
-
-Core:
-ffmpeg / ffprobe,
-bc,
-awk / sed / grep,
-coreutils
-
-Optional:
-mkvtoolnix (mkvpropedit),
-pipx + scenedetect (OpenCV),
-python3 (IntroFind engine),
-
-
-
 
 
