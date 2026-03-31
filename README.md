@@ -37,7 +37,7 @@ clear status indicators,
 verbose progress and diagnostics,
 Onboard dependency checks,
 File-Based State Tracking,
-10 key friendly input with accepted,
+10 key friendly input with accepted
 input as (sec), (hh:mm:ss), (0.00) <---10 key time input,
 10 key exits instead of q
 
