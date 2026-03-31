@@ -8,7 +8,6 @@ THE_FACTORY automates common but complex tasks such as intro detection, clean cu
 Filename detox of illegal characters and alignment with SxxExx naming convention. underscore enforcement for segmented file sections, user selects segment number to start title bar fix
 
 Requirements:
-
 Core:
 ffmpeg / ffprobe,
 bc,
@@ -16,7 +15,6 @@ awk / sed / grep,
 coreutils
 
 Optional:
-
 mkvtoolnix (mkvpropedit),
 pipx + scenedetect (OpenCV),
 python3 (IntroFind engine),
@@ -24,7 +22,6 @@ pipx + scenedetect (OpenCV),
 python3 (IntroFind engine),
 
 Typical flow:
-
 Inspect → Prepare → Template/Detect → GAPMAN → Title/Sub → Cleanup
 
 Key Design Principles:
