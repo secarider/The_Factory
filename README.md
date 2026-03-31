@@ -22,6 +22,7 @@ What It Does
 1. Source Preparation (Non-Destructive)
 THE_FACTORY Creates OEM backups of original files
 then protects them from furter processing by prefix_filename.* obsfucation
+THE_FACTORY protects or discovers other files by prefix_
 
 Outputs:
 OEM_original.*
