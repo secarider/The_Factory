@@ -3,20 +3,19 @@ THE_FACTORY
 
 A terminal-driven video processing pipeline designed for non-destructive, batch-safe, intro-aware media preparation.
 
-Uses: intro_map.csvepisodes.csv,info.csv,to maintain workflow continuity, caching. and Rekey file integrity.
+Uses: intro_map.csv  episodes.csv  info.csv  to maintain workflow continuity, caching, and Rekey file integrity plus much more.
 
-Typical Use Case: Processing a full TV season:Drop factory.sh into episodes folder
+Typical Use Case: Processing a full TV season:   Drop factory.sh into episodes folder
+Explore menus for goodies
+Run Template Builder: Make one really good key and usually one per season as the intros often change per season 
 
-Run Template Builder (once) make one really good key and usually one per 
+Run Intro Detection: This is magic right here if you made a good key
 
-season as the intros often change per season 
-Run Intro Detection
-Run GAPMAN
+Run GAPMAN: He does the Cut-n-Gut Snip-n-Clip
 Apply Title / Subtitle fixes
 Finalize outputs
 
-
-Built around real-world workflows, THE_FACTORY automates common but complex tasks such as intro detection, clean cutting, subtitle handling, metadata repair, and batch normalization — all while preserving original files.
+THE_FACTORY automates common but complex tasks such as intro detection, clean cutting, subtitle handling, metadata repair, and batch normalization — all while preserving original files.
 
 What It Does
 
