@@ -48,6 +48,7 @@ Creates reusable intro templates from any source
 manual time selection clean extraction + normalization to mkv 
 As it makes all future processing consistent and it is the hottest container
 Automatically creates and stores templates in: intro_template/intro_template.mkv
+intro_templates are protected from processing by folder obsfucation
 
 Outputs:
 intro_template.mkv
