@@ -2,6 +2,15 @@
 THE_FACTORY
 
 A terminal-driven video processing pipeline designed for non-destructive, batch-safe, intro-aware media preparation.
+Uses: intro_map.csvepisodes.csv,info.csv,to maintain workflow continuity, caching. and Rekey file integrity.
+Typical Use Case: Processing a full TV season:Drop factory.sh into episodes folder
+Run Template Builder (once) make one really good key and usually one per 
+season as the intros often change per season 
+Run Intro Detection
+Run GAPMAN
+Apply Title / Subtitle fixes
+Finalize outputs
+
 
 Built around real-world workflows, THE_FACTORY automates common but complex tasks such as intro detection, clean cutting, subtitle handling, metadata repair, and batch normalization — all while preserving original files.
 
@@ -126,11 +135,7 @@ ffprobe-based diffing
 Outputs:
 custom_cut.mkv
 
-Uses:
-intro_map.csv,
-episodes.csv,
-info.csv,
-to maintain workflow continuity and caching.
+
 
 Requirements:
 
@@ -145,15 +150,7 @@ mkvtoolnix (mkvpropedit),
 pipx + scenedetect (OpenCV),
 python3 (IntroFind engine),
 
-Typical Use Case
-Processing a full TV season:
 
-Drop factory.sh into episodes folder
-run it do stuff
-Run Template Builder (once) make one really good key and usually one per 
-season as the intros often change per season 
 
-Run Intro Detection
-Run GAPMAN
-Apply Title / Subtitle fixes
-Finalize outputs
+
+
