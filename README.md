@@ -5,6 +5,7 @@ A terminal-driven video processing pipeline designed for non-destructive, batch-
 Uses: intro_map.csv--episodes.csv--info.csv-- To maintain workflow continuity, caching, and Rekey file integrity plus much more.
 Non-Destructive Workflow -- Original files are never modified directly. -- Pipeline-Based Processing
 THE_FACTORY automates common but complex tasks such as intro detection, clean cutting, subtitle handling, metadata repair, and batch normalization — all while preserving original files.
+Filename detox of illegal characters and alignment with SxxExx naming convention. underscore enforcement for segmented file sections, user selects segment number to start title bar fix
 
 Requirements:
 
@@ -15,6 +16,7 @@ awk / sed / grep,
 coreutils
 
 Optional:
+
 mkvtoolnix (mkvpropedit),
 pipx + scenedetect (OpenCV),
 python3 (IntroFind engine),
@@ -22,10 +24,10 @@ pipx + scenedetect (OpenCV),
 python3 (IntroFind engine),
 
 Typical flow:
+
 Inspect → Prepare → Template/Detect → GAPMAN → Title/Sub → Cleanup
 
 Key Design Principles:
-
 Where possible:
 
 Stream-Copy First
@@ -46,9 +48,7 @@ input as (sec), (hh:mm:ss) (0.00) <---10 key time input
 Typical Use Case: Processing a full TV season:   Drop factory.sh into episodes folder
 
 Explore menus for goodies   Run Template Builder: Make one excellent key and usually one per season as intros often change per season 
-Run Intro Detection: This is magic right here if you made a good key
-Run GAPMAN: He does the Cut-n-Gut Snip-n-Clip Apply Title / Subtitle fixes
-Finalize outputs
+Run Intro Detection: This is magic right here if you made a good key     Run GAPMAN: He does the Cut-n-Gut Snip-n-Clip Apply Title / Subtitle fixes      Finalize outputs
 
 
 What It Does
@@ -126,6 +126,7 @@ SUBPACKED_original.mkv
 
 7. Metadata & Playback Fix (BARFIX)
 Fix title metadata (MKV in-place when possible)
+Not filename title but the title that shows in your players title bar BARFIX
 Set playback defaults:
 preferred audio (English if available)
 disable subtitles by default
