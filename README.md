@@ -44,13 +44,10 @@ input as (sec), (hh:mm:ss) (0.00) <---10 key time input
 
 
 Typical Use Case: Processing a full TV season:   Drop factory.sh into episodes folder
-Explore menus for goodies
-Run Template Builder: Make one excellent key and usually one per season as intros often change per season 
 
+Explore menus for goodies   Run Template Builder: Make one excellent key and usually one per season as intros often change per season 
 Run Intro Detection: This is magic right here if you made a good key
-
-Run GAPMAN: He does the Cut-n-Gut Snip-n-Clip
-Apply Title / Subtitle fixes
+Run GAPMAN: He does the Cut-n-Gut Snip-n-Clip Apply Title / Subtitle fixes
 Finalize outputs
 
 
