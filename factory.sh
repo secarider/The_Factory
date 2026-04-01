@@ -71,15 +71,433 @@ GREEN="\033[1;32m"
 YELLOW="\033[1;33m"
 CYAN="\033[1;36m"
 MAGENTA="\033[1;35m"
-WHITE='\033[0;37m'
+WHITE='\033[1;37m'
 BWHITE='\033[1;37m'
 NC="\033[0m"
 
+# ===== COLOR SYSTEM / TWISTED THEME ENGINE ===================================
+# PURPOSE:
+# Centralize all standard display colors in one place so the script can:
+#   1) keep a stable default color layout
+#   2) remap the normal display palette on demand
+#   3) preserve warning semantics no matter what theme is active
+#
+# DESIGN:
+# - STANDARD DISPLAY COLORS:
+#     RED GREEN YELLOW BLUE MAGENTA CYAN WHITE BWHITE NC
+#   These are cosmetic / display-facing colors and may be remapped by twisted().
+#
+# - FIXED SEMANTIC WARNING COLORS:
+#     RE YE GR
+#   These are reserved for true meaning-based warnings / verdicts and must NOT
+#   be remapped by twisted(). Use these for:
+#     GR = SAFE / PASS / OK
+#     YE = CAUTION / NOTICE / WARNING
+#     RE = RISK / FAIL / DANGER / DESTRUCTIVE
+#
+# RULE:
+# - Use ${RED}/${YELLOW}/${GREEN}/etc for decorative or general display output
+# - Use ${RE}/${YE}/${GR} for any output where the actual meaning of the color
+#   must remain trustworthy even if a theme or random twist is active
+# ==============================================================================
+
+init_base_colors() {
+	# ----- STANDARD DISPLAY COLORS (TWISTABLE) -------------------------------
+	RED=$'\033[1;31m'
+	GREEN=$'\033[1;32m'
+	YELLOW=$'\033[1;33m'
+	BLUE=$'\033[1;34m'
+	MAGENTA=$'\033[1;35m'
+	CYAN=$'\033[1;36m'
+	WHITE=$'\033[1;37m'
+	BWHITE=$'\033[1;37m'
+	NC=$'\033[0m'
+
+	# ----- FIXED SEMANTIC WARNING COLORS (DO NOT TWIST) ----------------------
+	# KEEP SEMANTIC WARNING COLORS STABLE NO MATTER WHAT THEME IS ACTIVE
+    # Add '5;' after the bracket for the blinking effect
+    RE=$'\033[5;1;31m'  # Blinking Bold Red
+    YE=$'\033[1;33m'    # Solid Bold Yellow (Stable Warning)
+    GR=$'\033[1;32m'    # Solid Bold Green (All Clear)
+    BW=$'\033[1;37m'    # Bright White
+}
+
+ansi_color() {
+	case "$1" in
+		0)  printf '\033[0m' ;;
+		30) printf '\033[1;30m' ;;
+		31) printf '\033[1;31m' ;;
+		32) printf '\033[1;32m' ;;
+		33) printf '\033[1;33m' ;;
+		34) printf '\033[1;34m' ;;
+		35) printf '\033[1;35m' ;;
+		36) printf '\033[1;36m' ;;
+		37) printf '\033[1;37m' ;;
+		90) printf '\033[1;30m' ;;
+		91) printf '\033[1;31m' ;;
+		92) printf '\033[1;32m' ;;
+		93) printf '\033[1;33m' ;;
+		94) printf '\033[1;34m' ;;
+		95) printf '\033[1;35m' ;;
+		96) printf '\033[1;36m' ;;
+		97) printf '\033[1;97m' ;;
+		*)  printf '\033[0m' ;;
+	esac
+}
+
+set_color_var() {
+	local var_name="$1"
+	local ansi_num="$2"
+	printf -v "$var_name" '%s' "$(ansi_color "$ansi_num")"
+}
+
+apply_color_map() {
+    printf '\033[0m'
+	local red_code="$1"
+	local green_code="$2"
+	local yellow_code="$3"
+	local blue_code="$4"
+	local magenta_code="$5"
+	local cyan_code="$6"
+	local white_code="$7"
+	local bwhite_code="$8"
+
+	set_color_var RED     "$red_code"
+	set_color_var GREEN   "$green_code"
+	set_color_var YELLOW  "$yellow_code"
+	set_color_var BLUE    "$blue_code"
+	set_color_var MAGENTA "$magenta_code"
+	set_color_var CYAN    "$cyan_code"
+	set_color_var WHITE   "$white_code"
+	set_color_var BWHITE  "$bwhite_code"
+
+	# KEEP RESET STABLE
+	NC=$'\033[0m'
+
+	# KEEP SEMANTIC WARNING COLORS STABLE NO MATTER WHAT THEME IS ACTIVE
+    # Add '5;' after the bracket for the blinking effect
+    RE=$'\033[5;1;31m'  # Blinking Bold Red
+    YE=$'\033[1;33m'    # Solid Bold Yellow (Stable Warning)
+    GR=$'\033[1;32m'    # Solid Bold Green (All Clear)
+    BW=$'\033[1;37m'    # Bright White
+
+}
+
+is_bad_palette() {
+	local c0="${1:-0}" c1="${2:-0}" c2="${3:-0}" c3="${4:-0}"
+	local c4="${5:-0}" c5="${6:-0}" c6="${7:-0}" c7="${8:-0}"
+
+	# INDEX MAP:
+	# c0=RED c1=GREEN c2=YELLOW c3=BLUE
+	# c4=MAGENTA c5=CYAN  c6=WHITE  c7=BWHITE
+
+	# ----- BLOCK HARD-TO-READ OR MUDDY PAIRS -------------------------------
+	[[ "$c2" == 33 && "$c6" == 37 ]] && return 0   # YELLOW / WHITE
+	[[ "$c2" == 33 && "$c7" == 97 ]] && return 0   # YELLOW / BWHITE
+	[[ "$c6" == 37 && "$c5" == 36 ]] && return 0   # WHITE / CYAN
+	[[ "$c1" == 32 && "$c5" == 36 ]] && return 0   # GREEN / CYAN
+	[[ "$c0" == 31 && "$c4" == 35 ]] && return 0   # RED / MAGENTA
+
+	return 1
+}
+
+twisted_randomize() {
+	local i j tmp attempt=0 max_attempts=20
+	local codes
+
+	# ----- CONTRAST-GUARDED RANDOM PALETTE -----------------------------------
+	# PURPOSE:
+	# Shuffle the 8 twistable display colors, but reject known bad / muddy
+	# combinations that reduce readability.
+	#
+	# IMPORTANT:
+	# - This function is called by: twisted random
+	# - This is NOT the semantic warning block; RE / YE / GR / BW stay fixed
+	# - We reset the candidate palette on each attempt, shuffle it, then test it
+	# - If a bad palette is detected, we try again up to max_attempts
+	#
+	# SET -e / SET -u SAFETY:
+	# - Use ${codes[n]:-0} in the guard call to avoid unbound crashes
+	# - Use ((attempt+=1)) instead of ((attempt++)) so set -e does not pop out
+	# -------------------------------------------------------------------------
+
+	while (( attempt < max_attempts )); do
+		# ----- RESET TO BASE ORDER EACH ATTEMPT ------------------------------
+		# KEEP 8 SLOTS:
+		#   RED GREEN YELLOW BLUE MAGENTA CYAN WHITE BWHITE
+		codes=(31 32 33 34 35 36 37 97)
+
+		# ----- FISHER-YATES SHUFFLE -----------------------------------------
+		for (( i=${#codes[@]}-1; i>0; i-- )); do
+			j=$(( RANDOM % (i + 1) ))
+			tmp="${codes[i]}"
+			codes[i]="${codes[j]}"
+			codes[j]="$tmp"
+		done
+
+		# ----- CONTRAST GUARD -----------------------------------------------
+		# If palette is acceptable, stop trying and apply it
+		if ! is_bad_palette \
+			"${codes[0]:-0}" "${codes[1]:-0}" "${codes[2]:-0}" "${codes[3]:-0}" \
+			"${codes[4]:-0}" "${codes[5]:-0}" "${codes[6]:-0}" "${codes[7]:-0}"; then
+			break
+		fi
+
+		# ----- TRY AGAIN -----------------------------------------------------
+		((attempt+=1))
+	done
+
+	# ----- FALLBACK NOTICE ---------------------------------------------------
+	# Very unlikely, but if every attempt was rejected, last shuffle still gets
+	# applied so the feature never appears frozen.
+	if (( attempt == max_attempts )); then
+		echo -e "${YE} = = > Contrast Guard Fallback: Using Last Shuffle.${NC}"
+	fi
+
+	# ----- APPLY ACCEPTED PALETTE -------------------------------------------
+	apply_color_map \
+		"${codes[0]}" "${codes[1]}" "${codes[2]}" "${codes[3]}" \
+		"${codes[4]}" "${codes[5]}" "${codes[6]}" "${codes[7]}"
+}
+
+twisted_theme() {
+	local theme_name="${1,,}"
+
+	case "$theme_name" in
+		classic)
+			# STANDARD / EXPECTED LAYOUT
+			apply_color_map 31 32 33 34 35 36 37 97
+			;;
+
+		mellow)
+			# SOFTER / FRIENDLIER LOOK
+			apply_color_map 35 36 33 34 95 96 37 97
+			;;
+
+		danger)
+			# HOT / AGGRESSIVE / ALERT-HEAVY LOOK
+			apply_color_map 91 31 93 35 95 33 37 97
+			;;
+
+		ice)
+			# COOL / TECH / FROSTED LOOK
+			apply_color_map 94 96 97 34 95 36 37 97
+			;;
+
+		twisted)
+			# PURPOSEFULLY OFF-KILTER BUT STILL CURATED
+			apply_color_map 36 35 31 33 32 94 97 93
+			;;
+
+		mono)
+			# MINIMAL / ALMOST MONOCHROME
+			apply_color_map 37 97 37 90 37 97 37 97
+			;;
+
+		*)
+			echo -e "${YE} = = > Unknown twisted theme: $theme_name${NC}"
+			echo -e "${WHITE} = = > Available themes: classic mellow danger ice twisted mono${NC}"
+			return 1
+			;;
+	esac
+}
+
+twisted_manual() {
+	local red_code green_code yellow_code blue_code
+	local magenta_code cyan_code white_code bwhite_code
+
+	echo
+	echo -e "${WHITE} = = > Enter ANSI color numbers for the TWISTABLE display palette.${NC}"
+	echo -e "${WHITE} = = > Common values: 31 32 33 34 35 36 37 91 92 93 94 95 96 97${NC}"
+	echo -e "${WHITE} = = > Semantic warning colors RE/YE/GR will remain fixed.${NC}"
+	echo
+
+	read -r -p " = = > RED ansi number      : " red_code
+	read -r -p " = = > GREEN ansi number    : " green_code
+	read -r -p " = = > YELLOW ansi number   : " yellow_code
+	read -r -p " = = > BLUE ansi number     : " blue_code
+	read -r -p " = = > MAGENTA ansi number  : " magenta_code
+	read -r -p " = = > CYAN ansi number     : " cyan_code
+	read -r -p " = = > WHITE ansi number    : " white_code
+	read -r -p " = = > BWHITE ansi number   : " bwhite_code
+
+	apply_color_map \
+		"$red_code" "$green_code" "$yellow_code" "$blue_code" \
+		"$magenta_code" "$cyan_code" "$white_code" "$bwhite_code"
+}
+
+show_current_color_map() {
+	echo
+	echo -e "${WHITE} = = > Current Twisted Display Palette Preview:${NC}"
+	echo -e "     ${RED}RED${NC}  ${GREEN}GREEN${NC}  ${YELLOW}YELLOW${NC}  ${BLUE}BLUE${NC}"
+	echo -e "     ${MAGENTA}MAGENTA${NC}  ${CYAN}CYAN${NC}  ${WHITE}WHITE${NC}  ${BWHITE}BWHITE${NC}"
+	echo
+	echo -e "${WHITE} = = > Fixed Semantic Warning Palette Preview:${NC}"
+	echo -e "     ${GR}GR = SAFE / OK${NC}"
+	echo -e "     ${YE}YE = CAUTION / NOTICE${NC}"
+	echo -e "     ${RE}RE = RISK / FAIL / DANGER${NC}"
+	echo
+}
+
+twisted() {
+	local mode="${1,,}"
+
+	case "$mode" in
+		random)
+			twisted_randomize
+			;;
+		theme)
+			twisted_theme "$2"
+			;;
+		manual)
+			twisted_manual
+			;;
+		show|preview)
+			show_current_color_map
+			return 0
+			;;
+		reset|default|classic)
+			twisted_theme classic
+			;;
+		*)
+			echo -e "${YE} = = > Invalid Twisted Mode.${NC}"
+			return 1
+			;;
+	esac
+}
+
+# ----- INITIALIZE DEFAULT COLORS AT STARTUP -----------------------------------
+init_base_colors
+
+# engine
+ 
+#=================================================================================================================
+
+# menus     
+
+# ===== TWISTED MENU ===========================================================
+# PURPOSE:
+# Small menu wrapper for the twisted color/theme engine.
+#
+# REQUIRES:
+# - twisted()
+# - twisted_theme()
+# - show_current_color_map()
+# - pause()
+#
+# NOTES:
+# - Standard display colors may be remapped
+# - Semantic warning colors RE/YE/GR remain fixed
+# - This menu is cosmetic-facing and safe to expose under Advanced Tools
+# ==============================================================================
+
+run_twisted_menu() {
+	local choice theme_name
+
+	while true; do
+		clear
+		echo -e "${CYAN}========================================================================${NC}"
+		echo -e "${CYAN}                          TWISTED COLOR MENU                            ${NC}"
+		echo -e "${CYAN}========================================================================${NC}"
+		echo
+		echo -e "${YELLOW}     1) Randomize Display Palette${NC}"
+		echo -e "${YELLOW}     2) Choose Theme Preset${NC}"
+		echo -e "${YELLOW}     3) Manual Per-Color ANSI Input${NC}"
+		echo -e "${YELLOW}     4) Show Current Color Preview${NC}"
+		echo -e "${YELLOW}     5) Reset To Classic${NC}"
+		echo
+		echo -e "${YELLOW}     0) Return${NC}"
+		echo
+        echo -e "${YELLOW}"
+		read -r -p " = = > Select option [1-5 | 0=return]: " choice
+        echo -e "${NC}"
+
+        if is_factory_exit_token "$choice"; then
+            return 0
+        fi
+
+		case "$choice" in
+
+			1)
+				echo
+				echo -e "${YELLOW} = = > Randomizing display palette...${NC}"
+				twisted random
+				pause
+				;;
+
+			2)
+				echo
+				echo -e "${WHITE}Available themes:${NC}"
+				echo -e "${WHITE}  1) ${CYAN}classic${NC}"
+				echo -e "${WHITE}  2) ${CYAN}mellow${NC}"
+				echo -e "${WHITE}  3) ${CYAN}danger${NC}"
+				echo -e "${WHITE}  4) ${CYAN}ice${NC}"
+				echo -e "${WHITE}  5) ${CYAN}twisted${NC}"
+				echo -e "${WHITE}  6) ${CYAN}mono${NC}"
+				echo -e "${WHITE}  0) Return${NC}"
+				echo
+
+				read -r -p " = = > Select theme [1-6 | 0=return]: " theme_name
+				theme_name="${theme_name,,}"
+				theme_name="${theme_name//[[:space:]]/}"
+
+				case "$theme_name" in
+					1) twisted theme classic ;;
+					2) twisted theme mellow ;;
+					3) twisted theme danger ;;
+					4) twisted theme ice ;;
+					5) twisted theme twisted ;;
+					6) twisted theme mono ;;
+					0|q)
+						echo -e "${YE} = = > Theme selection canceled.${NC}"
+						pause
+						continue
+						;;
+					*)
+						echo -e "${YE} = = > Invalid theme selection.${NC}"
+						pause
+						continue
+						;;
+				esac
+
+				pause
+				;;
+
+			3)
+				echo
+				echo -e "${YELLOW} = = > Manual ANSI mapping selected.${NC}"
+				twisted manual
+				pause
+				;;
+
+			4)
+				show_current_color_map
+				pause
+				;;
+
+			5)
+				echo
+				echo -e "${YELLOW} = = > Resetting display palette to classic...${NC}"
+				twisted reset
+				pause
+				;;
+
+
+			*)
+				echo
+				echo -e "${YE} = = > Invalid selection.${NC}"
+				pause
+				;;
+		esac
+	done
+}
+
+
 # Safe Pause Function With Color
 pause() {
-    echo -e "${GREEN}>->->->-> = = > Review Above Carefully.....${NC}"
-    echo -e "${BWHITE}>->->->-> = = > Screen Will Clear When You ${NC}"
-    echo -e "${YELLOW}>->->->-> = = > Press Enter To Continue....${NC}"
+    echo -e "${GR}>->->->-> = = > Review Above Carefully.....${NC}"
+    echo -e "${BW}>->->->-> = = > Screen Will Clear When You ${NC}"
+    echo -e "${YE}>->->->-> = = > Press Enter To Continue....${NC}"
     read -r _
 }
 
@@ -144,6 +562,7 @@ ask_yes_no() {
 
 	read -r -p "$prompt" ans
 	ans="${ans,,}"
+	ans="${ans//[[:space:]]/}"
 
 	[[ "${ans:-n}" == y* ]]
 }
@@ -684,11 +1103,11 @@ prepare_print_verified_rekey_handoff_summary() {
             echo -e "  ${YELLOW}-${NC} $f"
 
             if [[ ! -f "$backup" ]]; then
-                echo -e "      ${RED}missing OEM backup:${NC} $backup"
+                echo -e "      ${RE}missing OEM backup:${NC} $backup"
             fi
 
             if [[ ! -f "$rekey" ]]; then
-                echo -e "      ${RED}missing REKEY output:${NC} $rekey"
+                echo -e "      ${RE}missing REKEY output:${NC} $rekey"
             fi
         done
         echo
@@ -750,7 +1169,7 @@ prepare_delete_verified_originals() {
 			echo -e "${GREEN} = = > [DELETED ORIGINAL]${NC} $f"
 			((removed+=1)) || :
 		else
-			echo -e "${RED} = = > [FAILED DELETE]${NC} $f"
+			echo -e "${RE} = = > [FAILED DELETE]${NC} $f"
 			((failed+=1)) || :
 		fi
 	done
@@ -1735,17 +2154,17 @@ EOF
     # ============================================================
 print_missing_required_dep() {
 	local dep="$1"
-	echo -e "${RED}============================================================${NC}"
-	echo -e "${RED} = = > Missing Required Dependency: $dep${NC}"
-	echo -e "${RED}============================================================${NC}"
+	echo -e "${RE}============================================================${NC}"
+	echo -e "${RE} = = > Missing Required Dependency: $dep${NC}"
+	echo -e "${RE}============================================================${NC}"
 }
 
 print_missing_optional_dep() {
 	local dep="$1"
 	local why="$2"
 	echo -e "${YELLOW}------------------------------------------------------------${NC}"
-	echo -e "${YELLOW} = = > Optional Tool Missing: $dep${NC}"
-	echo -e "${YELLOW} = = > Related Feature Impact: $why${NC}"
+	echo -e "${YE} = = > Optional Tool Missing: $dep${NC}"
+	echo -e "${YE} = = > Related Feature Impact: $why${NC}"
 	echo -e "${YELLOW}------------------------------------------------------------${NC}"
 }
 
@@ -1923,7 +2342,7 @@ inspect_dependencies() {
 		if have_cmd "$dep"; then
 			echo -e "${GREEN}[ OK ]${NC} $dep"
 		else
-			echo -e "${RED}[MISS]${NC} $dep"
+			echo -e "${RE}[MISS]${NC} $dep"
 		fi
 	done
 
@@ -2114,7 +2533,7 @@ run_main_menu() {
         ;;
 
       *)
-        echo -e "${RED} = = > Invalid.${NC}"
+        echo -e "${RE} = = > Invalid.${NC}"
         pause
         ;;
     esac
@@ -2231,10 +2650,12 @@ run_barfix() {
 
     read -r -p "     Select BARFIX mode [1/2/3/q]: " BARFIX_MODE
     echo -e "${YELLOW}"
-    [[ "${BARFIX_MODE:-}" =~ ^[Qq]$ ]] && return 0
+    if is_factory_exit_token "$BARFIX_MODE"; then
+        return 0
+    fi
 
     if [[ "$BARFIX_MODE" != "1" && "$BARFIX_MODE" != "2" && "$BARFIX_MODE" != "3" ]]; then
-      echo -e "${RED} = = > Invalid BARFIX Mode.${NC}"
+      echo -e "${RE} = = > Invalid BARFIX Mode.${NC}"
       pause
       return 1
     fi
@@ -2243,7 +2664,7 @@ run_barfix() {
     if [[ "$BARFIX_MODE" == "1" || "$BARFIX_MODE" == "3" ]]; then
       read -p "Start TITLE At Which Underscore Segment? (1-based, e.g. 3): " SEG
       if [[ -z "${SEG:-}" || ! "$SEG" =~ ^[0-9]+$ || "$SEG" -lt 1 ]]; then
-        echo -e "${RED} = = > Invalid Segment Number.${NC}"
+        echo -e "${RE} = = > Invalid Segment Number.${NC}"
         pause
         return 0
       fi
@@ -2269,7 +2690,7 @@ run_barfix() {
     fi
 
     if [[ ${#targets[@]} -eq 0 ]]; then
-      echo -e "${RED} = = > No Video Targets Found (Or Only Internal/Generated Files).${NC}"
+      echo -e "${RE} = = > No Video Targets Found (Or Only Internal/Generated Files).${NC}"
       pause
       return 1
     fi
@@ -2337,7 +2758,7 @@ run_barfix() {
           if mkvpropedit "$f" --edit info --set "title=$t" >/dev/null 2>&1; then
             echo -e "  ${GREEN} = = > Updated In-Place:${NC} $f"
           else
-            echo -e "  ${RED} = = > FAILED In-Place:${NC} $f"
+            echo -e "  ${RE} = = > FAILED In-Place:${NC} $f"
           fi
         else
           name="${f%.*}"
@@ -2347,7 +2768,7 @@ run_barfix() {
             "$out" -y; then
             echo -e "  ${GREEN} = = > Created:${NC} $out"
           else
-            echo -e "  ${RED} = = > FAILED:${NC} $f"
+            echo -e "  ${RE} = = > FAILED:${NC} $f"
             rm -f "$out"
           fi
         fi
@@ -2378,9 +2799,9 @@ run_barfix() {
           -map 0 -c copy \
           "${BARFIX_PLAYBACK_ARGS[@]}" \
           "$out" -y; then
-          echo -e "  ${GREEN} = = > Created:${NC} $out"
+          echo -e "  ${GR} = = > Created:${NC} $out"
         else
-          echo -e "  ${RED} = = > FAILED:${NC} $f"
+          echo -e "  ${RE} = = > FAILED:${NC} $f"
           rm -f "$out"
         fi
       else
@@ -2389,9 +2810,9 @@ run_barfix() {
           "${BARFIX_PLAYBACK_ARGS[@]}" \
           -metadata title="$t" \
           "$out" -y; then
-          echo -e "  ${GREEN} = = > Created:${NC} $out"
+          echo -e "  ${GR} = = > Created:${NC} $out"
         else
-          echo -e "  ${RED} = = > FAILED:${NC} $f"
+          echo -e "  ${RE} = = > FAILED:${NC} $f"
           rm -f "$out"
         fi
       fi
@@ -2486,14 +2907,16 @@ run_subtox() {
     echo -e "${YELLOW}"
     read -p " = = > Select Mission [1/2/3/4] or [q] to cancel: " choice
     echo -e "${NC}"
-    [[ "$choice" =~ ^[Qq]$ ]] && return 0
+    if is_factory_exit_token "$choice"; then
+        return 0
+    fi
 
     shopt -s nullglob nocaseglob
     vids=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
     shopt -u nullglob nocaseglob
 
     [[ ${#vids[@]} -eq 0 ]] && {
-        echo -e "${RED} = = > ERROR: No Video Targets Found In This Folder!${NC}"
+        echo -e "${RE} = = > ERROR: No Video Targets Found In This Folder!${NC}"
         pause
         return 1
     }
@@ -2512,7 +2935,7 @@ run_subtox() {
 
         total=${#vids[@]}
         [[ $total -eq 0 ]] && {
-            echo -e "${RED}>->->->->->No Targets Found<-<-<-<-<-<${NC}"
+            echo -e "${RE}>->->->->->No Targets Found<-<-<-<-<-<${NC}"
             pause
             return 1
         }
@@ -2583,12 +3006,11 @@ run_subtox() {
         echo -e "${RED} = = > Unless They Were Retimed For That Exact Final File.${NC}"
         echo -e "${CYAN}-----------------------------------------------------------------------${NC}"
         echo
-        read -p " = = > Continue With External Subtitle Packing? (y/n): " subpack_ok
-        [[ "${subpack_ok:-n}" != "y" ]] && {
+        if ! ask_yes_no " = = > Continue With External Subtitle Packing? (y/n): "; then
             echo -e "${YELLOW} = = > External Subtitle Packing Canceled.${NC}"
             pause
             return 0
-        }
+        fi
 
         for vid in "${vids[@]}"; do
             base="${vid%.*}"
@@ -2648,7 +3070,7 @@ run_subtox() {
         return 0
     fi
 
-    echo -e "${RED} = = > Invalid Selection.${NC}"
+    echo -e "${RE} = = > Invalid Selection.${NC}"
     pause
     return 1
 }
@@ -2987,26 +3409,26 @@ run_finalize_menu() {
 
 			if [[ -d "$target" ]]; then
 				if rm -rf -- "$target"; then
-					echo -e "${GREEN} = = > [REMOVED]${NC} $target"
+					echo -e "${GR} = = > [REMOVED]${NC} $target"
 					((removed+=1)) || :
 				else
-					echo -e "${RED} = = > [FAILED]${NC} $target"
+					echo -e "${RE} = = > [FAILED]${NC} $target"
 					((failed+=1)) || :
 				fi
 			else
 				if rm -f -- "$target"; then
-					echo -e "${GREEN} = = > [REMOVED]${NC} $target"
+					echo -e "${GR} = = > [REMOVED]${NC} $target"
 					((removed+=1)) || :
 				else
-					echo -e "${RED} = = > [FAILED]${NC} $target"
+					echo -e "${RE} = = > [FAILED]${NC} $target"
 					((failed+=1)) || :
 				fi
 			fi
 		done
 
 		echo
-		echo -e "${CYAN} = = > Removed:${NC} $removed"
-		echo -e "${CYAN} = = > Failed:${NC} $failed"
+		echo -e "${RE} = = > Removed:${NC} $removed"
+		echo -e "${RE} = = > Failed:${NC} $failed"
 		echo
 	}
 
@@ -3054,25 +3476,18 @@ run_finalize_menu() {
 			return 0
 		fi
 
-		echo -ne "${YELLOW} = = > Remove These Temp / Junk Targets? (y/n | 0.=cancel): ${NC}"
-		read -r reply
-		reply="${reply//[[:space:]]/}"
-
-		if is_factory_exit_token "$reply"; then
+		if is_factory_exit_token "$(read -r reply; echo "$reply")"; then
 			echo -e "${YELLOW} = = > Cancelled.${NC}"
 			echo
 			return 0
 		fi
 
-		case "${reply,,}" in
-			y|yes)
-				cleanup_remove_targets "${targets[@]}"
-				;;
-			*)
-				echo -e "${YELLOW} = = > Temp Cleanup Cancelled.${NC}"
-				echo
-				;;
-		esac
+		if ask_yes_no "${YELLOW} = = > Remove These Temp / Junk Targets? (y/n | 0.=cancel): ${NC}"; then
+			cleanup_remove_targets "${targets[@]}"
+		else
+			echo -e "${YELLOW} = = > Temp Cleanup Cancelled.${NC}"
+			echo
+		fi
 
 		pause
 	}
@@ -3256,9 +3671,9 @@ cleanup_detection_maps() {
 		fi
 
 		if mv -- "./oem" "./$target"; then
-			echo -e "${GREEN} = = > OEM Folder Marked Finished As:${NC} $target"
+			echo -e "${GR} = = > OEM Folder Marked Finished As:${NC} $target"
 		else
-			echo -e "${RED} = = > Failed To Rename OEM Folder To:${NC} $target"
+			echo -e "${RE} = = > Failed To Rename OEM Folder To:${NC} $target"
 		fi
 
 		echo
@@ -3270,7 +3685,7 @@ cleanup_detection_maps() {
 		local -a map_templates=()
 
 		if [[ ! -d "./oem" ]]; then
-			echo -e "${YELLOW} = = > OEM Folder Not Present. Nothing To Archive.${NC}"
+			echo -e "${YE} = = > OEM Folder Not Present. Nothing To Archive.${NC}"
 			echo
 			return 0
 		fi
@@ -3292,9 +3707,9 @@ cleanup_detection_maps() {
 			oem/ \
 			"${csv_files[@]}" \
 			"${map_templates[@]}"; then
-			echo -e "${GREEN} = = > OEM Archive Created:${NC} $tar_name"
+			echo -e "${GR} = = > OEM Archive Created:${NC} $tar_name"
 		else
-			echo -e "${RED} = = > OEM Archive FAILED:${NC} $tar_name"
+			echo -e "${RE} = = > OEM Archive FAILED:${NC} $tar_name"
 		fi
 
 		echo
@@ -3304,7 +3719,7 @@ cleanup_detection_maps() {
 		local reply
 
 		if [[ ! -d "./oem" ]]; then
-			echo -e "${YELLOW} = = > OEM Folder Not Present. Nothing To Delete.${NC}"
+			echo -e "${YE} = = > OEM Folder Not Present. Nothing To Delete.${NC}"
 			echo
 			return 0
 		fi
@@ -3313,7 +3728,7 @@ cleanup_detection_maps() {
 		case "${reply,,}" in
 			y|yes) ;;
 			*)
-				echo -e "${YELLOW} = = > OEM Content Deletion Cancelled.${NC}"
+				echo -e "${YE} = = > OEM Content Deletion Cancelled.${NC}"
 				echo
 				return 0
 				;;
@@ -3321,7 +3736,7 @@ cleanup_detection_maps() {
 
 		find "./oem" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
 
-		echo -e "${GREEN} = = > OEM Folder Contents Removed.${NC}"
+		echo -e "${GR} = = > OEM Folder Contents Removed.${NC}"
 		echo
 	}
 
@@ -3381,7 +3796,7 @@ cleanup_detection_maps() {
 				cleanup_mark_oem_folder_finished
 				;;
 			*)
-				echo -e "${RED} = = > Invalid OEM Handling Choice.${NC}"
+				echo -e "${RE} = = > Invalid OEM Handling Choice.${NC}"
 				echo
 				;;
 		esac
@@ -3417,15 +3832,11 @@ cleanup_detection_maps() {
 		done
 
 		echo
-		read -r -p " = = > Delete These Working-Dir Originals Now? (y/n): " reply
-		case "${reply,,}" in
-			y|yes) ;;
-			*)
-				echo -e "${YELLOW} = = > Working-Dir Original Deletion Cancelled.${NC}"
-				echo
-				return 1
-				;;
-		esac
+		if ! ask_yes_no " = = > Delete These Working-Dir Originals Now? (y/n): "; then
+			echo -e "${YELLOW} = = > Working-Dir Original Deletion Cancelled.${NC}"
+			echo
+			return 1
+		fi
 
 		for f in "${originals[@]}"; do
 			if [[ ! -f "$f" ]]; then
@@ -3434,10 +3845,10 @@ cleanup_detection_maps() {
 			fi
 
 			if rm -f -- "$f"; then
-				echo -e "${GREEN} = = > [DELETED ORIGINAL]${NC} $f"
+				echo -e "${GR} = = > [DELETED ORIGINAL]${NC} $f"
 				((removed+=1)) || :
 			else
-				echo -e "${RED} = = > [FAILED DELETE]${NC} $f"
+				echo -e "${RE} = = > [FAILED DELETE]${NC} $f"
 				((failed+=1)) || :
 			fi
 		done
@@ -3485,21 +3896,21 @@ cleanup_detection_maps() {
 			final_name="$(cleanup_final_name_from_sutured "$s" "$custom_prefix")"
 
 			if [[ "$s" == "$final_name" ]]; then
-				echo -e "${YELLOW} = = > [SKIP SAME NAME]${NC} $s"
+				echo -e "${YE} = = > [SKIP SAME NAME]${NC} $s"
 				continue
 			fi
 
 			if [[ -e "$final_name" ]]; then
-				echo -e "${RED} = = > [NAME COLLISION]${NC} $final_name"
+				echo -e "${RE} = = > [NAME COLLISION]${NC} $final_name"
 				((failed+=1)) || :
 				continue
 			fi
 
 			if mv -- "$s" "$final_name"; then
-				echo -e "${GREEN} = = > [PROMOTED]${NC} $final_name"
+				echo -e "${GR} = = > [PROMOTED]${NC} $final_name"
 				((renamed+=1)) || :
 			else
-				echo -e "${RED} = = > [FAILED RENAME]${NC} $s"
+				echo -e "${RE} = = > [FAILED RENAME]${NC} $s"
 				((failed+=1)) || :
 			fi
 		done
@@ -3569,7 +3980,7 @@ cleanup_detection_maps() {
 				echo
 				;;
 			*)
-				echo -e "${RED} = = > Invalid Rename Mode.${NC}"
+				echo -e "${RE} = = > Invalid Rename Mode.${NC}"
 				pause
 				return 1
 				;;
@@ -3675,7 +4086,7 @@ cleanup_detection_maps() {
 				return 0
 				;;
 			*)
-				echo -e "${RED} = = > Invalid.${NC}"
+				echo -e "${RE} = = > Invalid.${NC}"
 				pause
 				;;
 		esac
@@ -4106,7 +4517,7 @@ inspect_run_keyframe_probe() {
     shopt -u nullglob nocaseglob
 
     if ((${#probe_files[@]}==0)); then
-        echo -e "${RED} = = > No Video Files Found.${NC}"
+        echo -e "${RE} = = > No Video Files Found.${NC}"
         pause
         return 0
     fi
@@ -4140,7 +4551,7 @@ inspect_run_keyframe_probe() {
 				break 2
 			fi
 
-			echo -e "${RED} = = > Invalid Selection. Enter A Listed Number, or q to cancel.${NC}"
+			echo -e "${RE} = = > Invalid Selection. Enter A Listed Number, or q to cancel.${NC}"
 			break
 		done
 	done
@@ -4151,9 +4562,9 @@ inspect_run_keyframe_probe() {
     verdict="$(get_keyframe_verdict "$probe_target" 2>/dev/null || true)"
     local verdict_color
     case "$verdict" in
-    	SAFE) verdict_color=$GREEN ;;
-    	CAUTION) verdict_color=$YELLOW ;;
-    	RISKY) verdict_color=$RED ;;
+    	SAFE) verdict_color=$GR ;;
+    	CAUTION) verdict_color=$YE ;;
+    	RISKY) verdict_color=$RE ;;
     	*) verdict_color=$NC ;;
     esac
 
@@ -4238,7 +4649,7 @@ run_inspect() {
                 return 0
                 ;;
             *)
-                echo -e "${RED} = = > Invalid.${NC}"
+                echo -e "${RE} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -4377,16 +4788,11 @@ prepare_make_oem_backups() {
     echo -e "${YELLOW}This Creates Preserved Sidecar Copies In ./oem As OEM_<filename>.${NC}"
     echo -e "${YELLOW}Existing OEM_ Copies In ./oem Are Skipped, Not Overwritten.${NC}"
     echo
-    read -r -p "Create OEM Backups For ${#targets[@]} Eligible File(s)? (y/n): " reply
-
-    case "${reply,,}" in
-        y|yes) ;;
-        *)
-            echo -e "${YELLOW} = = > OEM Backup Pass Cancelled.${NC}"
-            pause
-            return 0
-            ;;
-    esac
+    if ! ask_yes_no "Create OEM Backups For ${#targets[@]} Eligible File(s)? (y/n): "; then
+        echo -e "${YELLOW} = = > OEM Backup Pass Cancelled.${NC}"
+        pause
+        return 0
+    fi
 
     made_count=0
     skip_count=0
@@ -4411,10 +4817,10 @@ prepare_make_oem_backups() {
         # cp -a preserves timestamps/mode where possible and avoids altering
         # the original source content.
         if cp -a -- "$f" "$backup"; then
-            echo -e "${GREEN} = = > [OK]${NC} $f -> $backup"
+            echo -e "${GR} = = > [OK]${NC} $f -> $backup"
             ((made_count+=1)) || :
         else
-            echo -e "${RED} = = > [FAIL]${NC} $f"
+            echo -e "${RE} = = > [FAIL]${NC} $f"
             ((fail_count+=1)) || :
         fi
     done
@@ -4482,7 +4888,7 @@ prepare_set_rekey_preference() {
             return 0
             ;;
         *)
-            echo -e "${RED} = = > Invalid.${NC}"
+            echo -e "${RE} = = > Invalid.${NC}"
             ;;
     esac
 
@@ -4619,7 +5025,7 @@ run_prepare_sources() {
                 return 0
                 ;;
             *)
-                echo -e "${RED} = = > Invalid.${NC}"
+                echo -e "${RE} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -4670,7 +5076,7 @@ run_title_subtitle_menu() {
                 return 0
                 ;;
             *)
-                echo -e "${RED} = = > Invalid.${NC}"
+                echo -e "${RE} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -4724,7 +5130,7 @@ run_subtitlez_menu() {
                 return 0
                 ;;
             *)
-                echo -e "${RED} = = > Invalid.${NC}"
+                echo -e "${RE} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -4775,7 +5181,7 @@ run_title_playback_menu() {
                 return 0
                 ;;
             *)
-                echo -e "${RED} = = > Invalid.${NC}"
+                echo -e "${RE} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -4932,11 +5338,11 @@ run_gapman_menu() {
 
 				if [[ -f "$ORIG_MAP" ]]; then
 					mv "$ORIG_MAP" "$BACKUP_MAP"
-					echo -e "${YELLOW} = = > NOTICE: For This Temp Run intro_map.csv Renamed.${NC}"
-					echo -e "${CYAN} = = > Backup Preserved You Can Find Your Original Named >${NC} ${GREEN}$BACKUP_MAP${NC}"
+					echo -e "${YE} = = > NOTICE: For This Temp Run intro_map.csv Renamed.${NC}"
+					echo -e "${YE} = = > Backup Preserved You Can Find Your Original Named >${NC} ${GREEN}$BACKUP_MAP${NC}"
 					echo
 				else
-					echo -e "${RED} = = > intro_map.csv Not Found.${NC}"
+					echo -e "${RE} = = > intro_map.csv Not Found.${NC}"
 					break
 				fi
 
@@ -5031,6 +5437,7 @@ run_gapman_menu() {
 
 							rm -f "$PILOT_MAP"
 							mv "$BACKUP_MAP" "$ORIG_MAP"
+                        	remove_all_pilot_outputs "$PILOT_MAP"
         					echo -e "${YELLOW} = = > Backup Restored To Your Original Named >${NC} ${GREEN}intro_map.csv${NC}"
 							break
 							;;
@@ -5056,7 +5463,7 @@ run_gapman_menu() {
                 return 0
                 ;;
             *)
-                echo -e "${RED} = = > Invalid.${NC}"
+                echo -e "${RE} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -5095,7 +5502,7 @@ run_join_two_clips() {
     shopt -u nullglob nocaseglob
 
     if [[ ${#join_sources[@]} -eq 0 ]]; then
-        echo -e "${RED} = = > No Video Files Found In Current Working Directory.${NC}"
+        echo -e "${RE} = = > No Video Files Found In Current Working Directory.${NC}"
         pause
         return 1
     fi
@@ -5120,12 +5527,11 @@ run_join_two_clips() {
     echo -e "${CYAN} = = > Output:${NC} $out"
     echo
 
-    read -p " = = > Proceed With Join? (y/n): " join_ok
-    [[ "${join_ok:-n}" != "y" ]] && {
+    if ! ask_yes_no " = = > Proceed With Join? (y/n): "; then
         echo -e "${YELLOW} = = > Join Canceled.${NC}"
         pause
         return 0
-    }
+    fi
 
     join_tmpdir="_join_two_clips_tmp"
     rm -rf "$join_tmpdir"
@@ -5141,10 +5547,10 @@ run_join_two_clips() {
     if ffmpeg -hide_banner -loglevel error -nostdin \
         -f concat -safe 0 -i "$join_list" \
         -c copy "$out" -y; then
-        echo -e "${GREEN} = = > Joined Output Created: $out${NC}"
+        echo -e "${GR} = = > Joined Output Created: $out${NC}"
     else
-        echo -e "${RED} = = > Join failed.${NC}"
-        echo -e "${YELLOW} = = > Tip:Both Files Should Be Similarly Prepared Before Joining.${NC}"
+        echo -e "${RE} = = > Join failed.${NC}"
+        echo -e "${YE} = = > Tip:Both Files Should Be Similarly Prepared Before Joining.${NC}"
     fi
 
     rm -rf "$join_tmpdir"
@@ -5220,7 +5626,7 @@ run_one_file_normalize_to_mkv_tool() {
 	done
 
 	if [[ ${#filtered[@]} -eq 0 ]]; then
-		echo -e "${RED} = = > No Eligible Source Files Found.${NC}"
+		echo -e "${RE} = = > No Eligible Source Files Found.${NC}"
 		pause
 		return 1
 	fi
@@ -5244,7 +5650,7 @@ run_one_file_normalize_to_mkv_tool() {
 				break 2
 			fi
 
-			echo -e "${RED} = = > Invalid Selection.${NC}"
+			echo -e "${RE} = = > Invalid Selection.${NC}"
 			break
 		done
 	done
@@ -5252,15 +5658,11 @@ run_one_file_normalize_to_mkv_tool() {
 	echo
 	echo -e "${CYAN} = = > Selected:${NC} $src"
 	echo
-	read -r -p " = = > Proceed With One-File Normalize / MKV Pass? (y/n): " norm_ok
-	case "${norm_ok,,}" in
-		y|yes) ;;
-		*)
-			echo -e "${YELLOW} = = > One-File Normalize Cancelled.${NC}"
-			pause
-			return 0
-			;;
-	esac
+	if ! ask_yes_no " = = > Proceed With One-File Normalize / MKV Pass? (y/n): "; then
+		echo -e "${YELLOW} = = > One-File Normalize Cancelled.${NC}"
+		pause
+		return 0
+	fi
 
 	echo
 	result="$(normalize_to_mkv "$src")"
@@ -5319,7 +5721,7 @@ run_clip_join_triage_menu() {
 				run_barfix
 				;;
 			*)
-				echo -e "${RED} = = > Invalid.${NC}"
+				echo -e "${RE} = = > Invalid.${NC}"
 				pause
 				;;
 		esac
@@ -5367,6 +5769,7 @@ run_utility_menu() {
 		echo "     5) Keyframe Cut-Friendliness Check"
 		echo "     6) Triage Center / Clip Surgery Tools"
 		echo "     7) Inspect Dependency Status"
+		echo "     8) Twisted Color / Theme Engine"
 		echo
 		echo "     0.)Return  (or q)  =  Quit"
 		echo
@@ -5395,7 +5798,7 @@ run_utility_menu() {
 				fi
 				shopt -u nullglob
 				if ((${#t[@]}==0)); then
-					echo -e "${RED} = = > None Found.${NC}"
+					echo -e "${RE} = = > None Found.${NC}"
 				else
 					printf " - %s\n" "${t[@]}"
 				fi
@@ -5408,7 +5811,7 @@ run_utility_menu() {
 				local -a v=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
 				shopt -u nullglob nocaseglob
 				if ((${#v[@]}==0)); then
-					echo -e "${RED} = = > None Found.${NC}"
+					echo -e "${RE} = = > None Found.${NC}"
 				else
 					printf " - %s\n" "${v[@]}"
 				fi
@@ -5422,7 +5825,7 @@ run_utility_menu() {
 				shopt -u nullglob nocaseglob
 
 				if ((${#diff_files[@]}<2)); then
-					echo -e "${RED} = = > Need At Least 2 Diffable Files.${NC}"
+					echo -e "${RE} = = > Need At Least 2 Diffable Files.${NC}"
 					pause
 					continue
 				fi
@@ -5456,8 +5859,11 @@ run_utility_menu() {
 			7)
 				inspect_dependencies
 				;;
+		    8)
+    			run_twisted_menu
+    			;;
 			*)
-				echo -e "${RED} = = > Invalid.${NC}"
+				echo -e "${RE} = = > Invalid.${NC}"
 				pause
 				;;
 		esac
@@ -5564,7 +5970,7 @@ rebuild_if_needed() {
         -of default=noprint_wrappers=1:nokey=1 "$file")
 
     if [[ -z "$fps" ]]; then
-        echo -e "${RED} = = > FPS Detection Failed. Using Original.${NC}" >&2
+        echo -e "${RE} = = > FPS Detection Failed. Using Original.${NC}" >&2
         echo "$file"
         return
     fi
@@ -5585,7 +5991,7 @@ rebuild_if_needed() {
         fi
     fi
 
-    echo -e "${RED} = = > Rebuild Failed. Using Original File.${NC}" >&2
+    echo -e "${RE} = = > Rebuild Failed. Using Original File.${NC}" >&2
     echo "$file"
 }
 
@@ -5688,16 +6094,16 @@ probe_keyframe_suitability() {
 
   case "${verdict:-UNKNOWN}" in
     SAFE)
-      echo -e "${GREEN} = = > Copy-Based Precise Cuts Likely Suitable.${NC}"
+      echo -e "${GR} = = > Copy-Based Precise Cuts Likely Suitable.${NC}"
       ;;
     CAUTION)
-      echo -e "${YELLOW} = = > Moderate Keyframe Gaps Detected. Inspect Output Carefully.${NC}"
+      echo -e "${YE} = = > Moderate Keyframe Gaps Detected. Inspect Output Carefully.${NC}"
       ;;
     RISKY)
-      echo -e "${RED} = = > Large Keyframe Gaps Detected. Copy-Based Cuts May Tear Or Suture Poorly.${NC}"
+      echo -e "${RE} = = > Large Keyframe Gaps Detected. Copy-Based Cuts May Tear Or Suture Poorly.${NC}"
       ;;
     *)
-      echo -e "${YELLOW} = = > Could Not Determine Keyframe Suitability.${NC}"
+      echo -e "${YE} = = > Could Not Determine Keyframe Suitability.${NC}"
       ;;
   esac
 }
@@ -5721,7 +6127,7 @@ run_keyframe_suitability_check() {
 	mapfile -t targets < <(prepare_collect_rekey_scope_targets)
 
 	if [[ "${#targets[@]}" -eq 0 ]]; then
-		echo -e "${RED} = = > No Eligible Video Files Found.${NC}"
+		echo -e "${RE} = = > No Eligible Video Files Found.${NC}"
 		echo
 		pause
 		return 0
@@ -5747,7 +6153,7 @@ run_keyframe_suitability_check() {
 	fi
 
 	if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#targets[@]} )); then
-		echo -e "${RED} = = > Invalid Selection.${NC}"
+		echo -e "${RE} = = > Invalid Selection.${NC}"
 		echo
 		pause
 		return 0
@@ -5770,9 +6176,9 @@ run_keyframe_suitability_check() {
 
 	local verdict_color="$NC"
 	case "$verdict" in
-		SAFE) verdict_color="$GREEN" ;;
-		CAUTION) verdict_color="$YELLOW" ;;
-		RISKY) verdict_color="$RED" ;;
+		SAFE) verdict_color="$GR" ;;
+		CAUTION) verdict_color="$YE" ;;
+		RISKY) verdict_color="$RE" ;;
 	esac
 
 	echo
@@ -5892,7 +6298,7 @@ rebuild_cut_friendly_source() {
     old_term_trap="$(trap -p TERM || true)"
 
     # During This Rebuild Only, Ctrl+C / TERM Should Delete Partial REKEY Output.
-    trap 'echo -e "\n${RED} = = > Rebuild Interrupted. Removing Incomplete File:${NC} $out" >&2; rm -f "$out"; return 130' INT TERM
+    trap 'echo -e "\n${RE} = = > Rebuild Interrupted. Removing Incomplete File:${NC} $out" >&2; rm -f "$out"; return 130' INT TERM
 
     if run_with_progress "Rebuilding Source: $(basename "$in")" \
         ffmpeg -hide_banner -loglevel error -nostdin -y -i "$in" \
@@ -5919,7 +6325,7 @@ rebuild_cut_friendly_source() {
             echo "$out"
             return 0
         else
-            echo -e "${RED} = = > Rebuild Reported Success But Output Missing.${NC}" >&2
+            echo -e "${RE} = = > Rebuild Reported Success But Output Missing.${NC}" >&2
             return 1
         fi
     else
@@ -5945,7 +6351,7 @@ rebuild_cut_friendly_source() {
             return 130
         fi
 
-        echo -e "${RED} = = > Rebuild Failed:${NC} $in" >&2
+        echo -e "${RE} = = > Rebuild Failed:${NC} $in" >&2
         return 1
     fi
 }
@@ -5989,7 +6395,7 @@ create_template() {
 	done
 
 	if [[ ${#filtered_sources[@]} -eq 0 ]]; then
-		echo -e "${RED} = = > No Eligible Source Episodes Found For Template Builder.${NC}"
+		echo -e "${RE} = = > No Eligible Source Episodes Found For Template Builder.${NC}"
 		pause
 		return 1
 	fi
@@ -6009,17 +6415,11 @@ create_template() {
             	return 0
             fi
 
-    		if [[ "$pick" == "q" || "$pick" == "Q" || "$pick" == "0" ]]; then
-    			echo -e "${YELLOW} = = > Cancelled.${NC}"
-    			pause
-    			return 0
-    		fi
-
     		if [[ -n "${src:-}" ]]; then
     			break 2
     		fi
 
-    		echo -e "${RED} = = > Invalid Selection. Enter A Listed Number, or q to cancel.${NC}"
+    		echo -e "${RE} = = > Invalid Selection. Enter A Listed Number, or q to cancel.${NC}"
     		break
     	done
     done
@@ -6100,9 +6500,9 @@ create_template() {
 
     # Assign color based on verdict (SAFE=green, CAUTION=yellow, RISKY=red)
     case "$src_verdict" in
-        SAFE) verdict_color="$GREEN" ;;
-        CAUTION) verdict_color="$YELLOW" ;;
-        RISKY) verdict_color="$RED" ;;
+        SAFE) verdict_color="$GR" ;;
+        CAUTION) verdict_color="$YE" ;;
+        RISKY) verdict_color="$RE" ;;
         *) verdict_color="$NC" ;;
     esac
 
@@ -6111,16 +6511,13 @@ create_template() {
 
     if [[ "$src_verdict" == "RISKY" || "$src_verdict" == "CAUTION" ]]; then
         echo
-        read -p " = = > Source May Be Poor For Precise Cuts. Build Cut-Friendly Rebuilt Source First? (y/n, default: n): " rebuild_src
-        rebuild_src=${rebuild_src:-n}
-
-        if [[ "$rebuild_src" == "y" ]]; then
+        if ask_yes_no " = = > Source May Be Poor For Precise Cuts. Build Cut-Friendly Rebuilt Source First? (y/n, default: n): "; then
             rebuilt_src="$(rebuild_cut_friendly_source "$src")"
             if [[ -n "$rebuilt_src" && -f "$rebuilt_src" ]]; then
                 src="$rebuilt_src"
-                echo -e "${GREEN} = = > Using Rebuilt Source: $src${NC}"
+                echo -e "${GR} = = > Using Rebuilt Source: $src${NC}"
             else
-                echo -e "${RED} = = > Rebuild Failed. Continuing With Original Source.${NC}"
+                echo -e "${RE} = = > Rebuild Failed. Continuing With Original Source.${NC}"
             fi
         fi
     fi
@@ -6134,9 +6531,9 @@ create_template() {
             rebuilt_src="$(rebuild_cut_friendly_source "$src")"
             if [[ -n "$rebuilt_src" && -f "$rebuilt_src" ]]; then
                 src="$rebuilt_src"
-                echo -e "${GREEN} = = > Using Rebuilt Source: $src${NC}"
+                echo -e "${GR} = = > Using Rebuilt Source: $src${NC}"
             else
-                echo -e "${RED} = = > Rebuild Failed. Continuing With Original Source.${NC}"
+                echo -e "${RE} = = > Rebuild Failed. Continuing With Original Source.${NC}"
             fi
         fi
     fi
@@ -6172,10 +6569,7 @@ create_template() {
 	    echo -e "${CYAN} = = > Computed Duration:${NC} ${cut_dur}"
 	    echo
 
-	    read -p " = = > Are These Times Correct? (y/n): " confirm_times
-	    confirm_times="${confirm_times:-y}"
-
-	    if [[ "$confirm_times" == "y" ]]; then
+	    if ask_yes_no " = = > Are These Times Correct? (y/n): "; then
 	        break
 	    fi
 
@@ -6241,7 +6635,7 @@ create_template() {
       "$temp_cut"; then
         :
     else
-        echo -e "${RED} = = > Template Cut Failed.${NC}"
+        echo -e "${RE} = = > Template Cut Failed.${NC}"
         rm -f "$temp_cut"
         rmdir "$template_tmpdir" 2>/dev/null || true
         return 1
@@ -6413,10 +6807,10 @@ normalize_cut_friendly_file() {
 		-c:a aac -b:a 256k -ac 2 -ar 48000 \
 		"$out"; then
 
-		echo -e "${GREEN} = = > Normalized OK:${NC} $out"
+		echo -e "${GR} = = > Normalized OK:${NC} $out"
 		return 0
 	else
-		echo -e "${RED} = = > Normalize FAILED:${NC} $in"
+		echo -e "${RE} = = > Normalize FAILED:${NC} $in"
 		rm -f "$out"
 		return 1
 	fi
@@ -6461,7 +6855,7 @@ run_custom_cut() {
     done
 
     if [[ ${#filtered_sources[@]} -eq 0 ]]; then
-        echo -e "${RED} = = > No eligible source files found for Custom Cut.${NC}"
+        echo -e "${RE} = = > No eligible source files found for Custom Cut.${NC}"
         pause
         return 1
     fi
@@ -6485,10 +6879,6 @@ run_custom_cut() {
             # TEN-KEY EXIT HOOK
             # ========================================================
             if is_factory_exit_token "$pick"; then
-            	return 0
-            fi
-
-            if [[ "$pick" == "q" || "$pick" == "Q" || "$pick" == "0" ]]; then
                 echo -e "${YELLOW} = = > Custom Cut Cancelled.${NC}"
                 pause
                 return 0
@@ -6498,7 +6888,7 @@ run_custom_cut() {
                 break 2
             fi
 
-            echo -e "${RED} = = > Invalid Selection. Enter A Listed Number, or q to cancel.${NC}"
+            echo -e "${RE} = = > Invalid Selection. Enter A Listed Number, or q to cancel.${NC}"
             break
         done
     done
@@ -6540,12 +6930,12 @@ run_custom_cut() {
         end="$(to_seconds "$end_raw")"
 
         if [[ -z "${start:-}" || -z "${end:-}" ]]; then
-            echo -e "${RED} = = > Invalid Time Entry. Try Again.${NC}"
+            echo -e "${RE} = = > Invalid Time Entry. Try Again.${NC}"
             continue
         fi
 
         if ! awk "BEGIN {exit !($end > $start)}"; then
-            echo -e "${RED} = = > End Time Must Be Greater Than Start Time.${NC}"
+            echo -e "${RE} = = > End Time Must Be Greater Than Start Time.${NC}"
             continue
         fi
 
@@ -6556,10 +6946,7 @@ run_custom_cut() {
         echo -e "${CYAN} = = > Computed Duration:${NC} ${cut_dur}"
         echo
 
-        read -p " = = > Are These Times Correct? (y/n): " confirm_times
-        confirm_times="${confirm_times:-y}"
-
-        if [[ "$confirm_times" == "y" ]]; then
+        if ask_yes_no " = = > Are These Times Correct? (y/n): "; then
             break
         fi
 
@@ -6630,7 +7017,7 @@ run_custom_cut() {
       "$temp_cut"; then
         :
     else
-        echo -e "${RED} = = > Custom Cut Failed.${NC}"
+        echo -e "${RE} = = > Custom Cut Failed.${NC}"
         rm -f "$temp_cut"
         rmdir "$custom_tmpdir" 2>/dev/null || true
         pause
@@ -6797,7 +7184,7 @@ restore_oem_prefix() {
             echo -e "${GREEN} = = > RESTORED: $f -> $new_name${NC}"
             ((moved+=1)) || :
         else
-            echo -e "${RED} = = > FAIL: Could Not Restore $f${NC}"
+            echo -e "${RE} = = > FAIL: Could Not Restore $f${NC}"
             ((skipped+=1)) || :
         fi
     done
@@ -6899,13 +7286,12 @@ run_batch_normalizer() {
 	echo
 
     echo -e "${YELLOW}"
-	read -p " = = > Continue Into Source Scan? (y/n): " continue_norm
-    echo -e "${NC}"
-	[[ "${continue_norm:-n}" != "y" ]] && {
+	if ! ask_yes_no " = = > Continue Into Source Scan? (y/n): "; then
 		echo -e "${YELLOW} = = > Batch Normalizer Canceled.${NC}"
 		pause
 		return 0
-	}
+	fi
+    echo -e "${NC}"
 
 	# =========================
 	# #MARKER: BATCH NORMALIZER TARGET DISCOVERY
@@ -6930,7 +7316,7 @@ run_batch_normalizer() {
 
 	total=${#norm_sources[@]}
 	if [[ "$total" -eq 0 ]]; then
-		echo -e "${RED} = = > No Eligible Source Files Found For Normalization.${NC}"
+		echo -e "${RE} = = > No Eligible Source Files Found For Normalization.${NC}"
 		pause
 		return 1
 	fi
@@ -6956,9 +7342,9 @@ run_batch_normalizer() {
 	#
     echo -e "${YELLOW}"
 	echo -e "${CYAN} = = > Select Load Level:${NC}"
-	echo -e "${GREEN} = = > 1) Light   (1 File At A Time)${NC}"
-	echo -e "${YELLOW} = = > 2) Medium  (3 Files At A Time)${NC}"
-	echo -e "${RED} = = > 3) Thrash  (Default ALL Or Choose Concurrent File Count)${NC}"
+	echo -e "${GR} = = > 1) Light   (1 File At A Time)${NC}"
+	echo -e "${YE} = = > 2) Medium  (3 Files At A Time)${NC}"
+	echo -e "${RE} = = > 3) Thrash  (Default ALL Or Choose Concurrent File Count)${NC}"
 	echo
 
     echo -e "${YELLOW}"
@@ -7013,13 +7399,12 @@ run_batch_normalizer() {
 	echo
 
     echo -e "${YELLOW}"
-	read -p " = = > Start Batch Normalization Now? (y/n): " go_norm
-    echo -e "${NC}"
-	[[ "${go_norm:-n}" != "y" ]] && {
+	if ! ask_yes_no " = = > Start Batch Normalization Now? (y/n): "; then
 		echo -e "${YELLOW} = = > Batch Normalizer Canceled.${NC}"
 		pause
 		return 0
-	}
+	fi
+    echo -e "${NC}"
 
 	echo
 	echo -e "${CYAN} = = > Starting Batch Normalization...${NC}"
@@ -7260,7 +7645,7 @@ if [[ "${PILOT_MODE:-0}" == "1" ]]; then
   FILES=()
 
   if [[ ! -f "$MAP_FILE" ]]; then
-    echo -e "${RED} = = > Pilot MAP_FILE Not Found:${NC} $MAP_FILE"
+    echo -e "${RE} = = > Pilot MAP_FILE Not Found:${NC} $MAP_FILE"
     exit 1
   fi
 
@@ -7296,7 +7681,7 @@ fi
 
 TOTAL=${#FILES[@]}
 if [[ "$TOTAL" -eq 0 ]]; then
-  echo -e "${RED} = = > No Targets Found In This Folder / Map.${NC}"
+  echo -e "${RE} = = > No Targets Found In This Folder / Map.${NC}"
   exit 1
 fi
 
@@ -7380,7 +7765,7 @@ TMPDIR="_gapman_tmp_v2"
 cleanup() { rm -rf "$TMPDIR"; }
 
 on_abort() {
-	echo -e "\n${RED} = = > ABORTED. Cleaning Temp...${NC}"
+	echo -e "\n${RE} = = > ABORTED. Cleaning Temp...${NC}"
 
 	# ========================================================
 	# EMERGENCY PILOT RESTORE
@@ -7474,8 +7859,11 @@ echo -e "${CYAN} = = > Keyframe Check:${NC} $KF_CHECK"
 [[ -n "${KF_TARGET_FILE:-}" ]] && echo -e "${CYAN} = = > Keyframe Probe File:${NC} $KF_TARGET_FILE"
 echo
 
-read -p " = = > Proceed? (y/n): " GO
-[[ "${GO:-n}" != "y" ]] && { echo -e "${YELLOW} = = > Canceled.${NC}"; pause; return 0; }
+if ! ask_yes_no " = = > Proceed? (y/n): "; then
+	echo -e "${YELLOW} = = > Canceled.${NC}"
+	pause
+	return 0
+fi
 
 mkdir -p "$TMPDIR"
 
@@ -7512,7 +7900,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
   # ---- duration ----
   dur="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$in" 2>/dev/null || true)"
   if [[ -z "$dur" ]]; then
-    echo -e "${RED} = = > [FAIL] Could Not Read Duration.${NC}"
+    echo -e "${RE} = = > [FAIL] Could Not Read Duration.${NC}"
     continue
   fi
   dur="$(printf "%.3f" "$dur" 2>/dev/null || echo "$dur")"
@@ -7551,7 +7939,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
   start_keep="$(fmax0 "$PRE_TRIM")"
   end_keep="$(fsub "$dur" "$POST_TRIM")"
   if (( $(echo "$end_keep <= $start_keep" | bc -l) )); then
-    echo -e "${RED} = = > [FAIL] PRE/POST Trims Invalid (End <= Start).${NC}"
+    echo -e "${RE} = = > [FAIL] PRE/POST Trims Invalid (End <= Start).${NC}"
     continue
   fi
 
@@ -7562,7 +7950,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
 
   # sanity: prevent inverted/zero intro window
   if (( $(echo "$t_end <= $t_start" | bc -l) )); then
-    echo -e "${RED} = = > [FAIL] Pads Caused Invalid Intro Window (End <= Start). Skipping.${NC}"
+    echo -e "${RE} = = > [FAIL] Pads Caused Invalid Intro Window (End <= Start). Skipping.${NC}"
     continue
   fi
 
@@ -7580,7 +7968,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
 
   # If intro collapses to nothing, this becomes a pure pre/post trim job.
   if (( $(echo "$A1 <= $A0" | bc -l) )) && (( $(echo "$B1 <= $B0" | bc -l) )); then
-    echo -e "${RED} = = > [FAIL] Nothing Left After Trims/Intro Removal. Skipping.${NC}"
+    echo -e "${RE} = = > [FAIL] Nothing Left After Trims/Intro Removal. Skipping.${NC}"
     continue
   fi
 
@@ -7618,7 +8006,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
       "$segA" -y; then
       add_join "$segA"
     else
-      echo -e "${RED} = = > [FAIL] Segment A Slice Failed.${NC}"
+      echo -e "${RE} = = > [FAIL] Segment A Slice Failed.${NC}"
       continue
     fi
   fi
@@ -7632,7 +8020,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
       "$segB" -y; then
       add_join "$segB"
     else
-      echo -e "${RED} = = > [FAIL] Segment B Slice Failed.${NC}"
+      echo -e "${RE} = = > [FAIL] Segment B Slice Failed.${NC}"
       continue
     fi
   fi
@@ -7650,7 +8038,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
     mv "$tmpout" "$out"
     echo -e "${GREEN} = = > [OK]${NC} Created: ${GREEN}${out}${NC}"
   else
-    echo -e "${RED} = = > [FAIL]${NC} Concat-Copy refused."
+    echo -e "${RE} = = > [FAIL]${NC} Concat-Copy refused."
     echo -e "${YELLOW} = = > Tip:${NC} Ensure Files Are Normalized Consistently (codec/fps/pix_fmt/tracks)."
     echo -e "${YELLOW} = = > Tip:${NC} If A Source Is Damaged, Remux Once:"
     echo -e "  ffmpeg -i \"${base_in}\" -map 0 -c copy \"REMUX_${base_in%.*}.mkv\""
@@ -8010,7 +8398,7 @@ run_intro_detection_menu() {
                 return 0
                 ;;
             *)
-                echo -e "${RED} = = > Invalid.${NC}"
+                echo -e "${RE} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -8090,7 +8478,7 @@ case "$MODE" in
     return 0
     ;;
   *)
-    echo -e "${RED} = = > Invalid mode: $MODE${NC}"
+    echo -e "${RE} = = > Invalid mode: $MODE${NC}"
     exit 1
     ;;
 esac
@@ -8180,7 +8568,7 @@ if [[ "${MODE:-}" == "2" || "${MODE:-}" == "4" ]]; then
     fi
 
     (( ${#TEMPLATES[@]} > 0 )) || {
-        echo -e "${RED} = = > No Intro Templates Found.${NC}"
+        echo -e "${RE} = = > No Intro Templates Found.${NC}"
         exit 1
     }
 
@@ -8251,7 +8639,7 @@ if [[ "${MODE:-}" == "2" || "${MODE:-}" == "4" ]]; then
     if [[ "$resolve_status" -eq 10 ]]; then
         continue
     elif [[ "$resolve_status" -ne 0 ]]; then
-        echo -e "${RED} = = > Failed To Resolve Working Source For: $raw${NC}"
+        echo -e "${RE} = = > Failed To Resolve Working Source For: $raw${NC}"
         continue
     fi
 
@@ -8264,7 +8652,7 @@ if [[ "${MODE:-}" == "2" || "${MODE:-}" == "4" ]]; then
     duration_int=$(printf "%.0f" "${duration_raw:-0}" 2>/dev/null || echo 0)
 
     if [[ "$duration_int" -le 0 ]]; then
-      echo -e "${RED} = = > Could Not Read Duration For: $file${NC}"
+      echo -e "${RE} = = > Could Not Read Duration For: $file${NC}"
       continue
     fi
 
@@ -8320,8 +8708,8 @@ from PIL import Image
 import imagehash
 PY
 then
-  echo -e "${RED} = = > pHash Engine Missing Python Modules.${NC}"
-  echo -e "${YELLOW} = = > Install:${NC} python3 -m pip install --user pillow python-imagehash opencv-python"
+  echo -e "${RE} = = > pHash Engine Missing Python Modules.${NC}"
+  echo -e "${YE} = = > Install:${NC} python3 -m pip install --user pillow python-imagehash opencv-python"
   pause
   continue
 fi
@@ -8766,11 +9154,11 @@ EOF
     ')"
 
     if [[ $phash_status -ne 0 ]]; then
-        echo -e "${RED} = = > pHash Engine Failed For: $file${NC}"
+        echo -e "${RE} = = > pHash Engine Failed For: $file${NC}"
 
         # Helpful breadcrumb for future-you:
         if [[ -f "$PHASH_STDERR_LOG" ]]; then
-            echo -e "${YELLOW} = = > See Python stderr log:${NC} $PHASH_STDERR_LOG"
+            echo -e "${YE} = = > See Python stderr log:${NC} $PHASH_STDERR_LOG"
         fi
 
         [[ -n "$phash_output" ]] && echo "$phash_output"
@@ -8788,10 +9176,10 @@ EOF
     #   treat that as an engine-side protocol failure.
     # ========================================================
     if [[ $phash_status -eq 0 && -z "$result" ]]; then
-        echo -e "${RED} = = > pHash Engine Returned No Parseable Result For: $file${NC}"
+        echo -e "${RE} = = > pHash Engine Returned No Parseable Result For: $file${NC}"
 
         if [[ -f "$PHASH_STDERR_LOG" ]]; then
-            echo -e "${YELLOW} = = > See Python stderr log:${NC} $PHASH_STDERR_LOG"
+            echo -e "${YE} = = > See Python stderr log:${NC} $PHASH_STDERR_LOG"
         fi
 
         result="PHASH_ERROR"
@@ -8833,7 +9221,7 @@ EOF
         echo "$raw,$start,$end,$start_hms,$end_hms,$template_used,${diff_used:-}" >> "$INTRO_MAP"
 
     elif [[ "$result" == "NO_MATCH" ]]; then
-        echo -e "${RED} = = > No Perceptual Match Found Within ${limit}s.${NC}"
+        echo -e "${RE} = = > No Perceptual Match Found Within ${limit}s.${NC}"
     fi
 
     if [[ "${MODE:-}" == "2" ]]; then
@@ -8861,7 +9249,7 @@ EOF
         ;;
 
     *)
-        echo -e "${RED} = = > Invalid Mode.${NC}"
+        echo -e "${RE} = = > Invalid Mode.${NC}"
         exit 1
         ;;
     esac
