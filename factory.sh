@@ -88,13 +88,13 @@ NC="\033[0m"
 #   These are cosmetic / display-facing colors and may be remapped by twisted().
 #
 # - FIXED SEMANTIC WARNING COLORS:
-#     RE YE GR
+#     RE YE GR BW
 #   These are reserved for true meaning-based warnings / verdicts and must NOT
 #   be remapped by twisted(). Use these for:
 #     GR = SAFE / PASS / OK
 #     YE = CAUTION / NOTICE / WARNING
 #     RE = RISK / FAIL / DANGER / DESTRUCTIVE
-#
+#     BW = wording or effects or reserved for future
 # RULE:
 # - Use ${RED}/${YELLOW}/${GREEN}/etc for decorative or general display output
 # - Use ${RE}/${YE}/${GR} for any output where the actual meaning of the color
