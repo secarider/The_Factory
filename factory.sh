@@ -97,7 +97,7 @@ NC="\033[0m"
 #     BW = wording or effects or reserved for future
 # RULE:
 # - Use ${RED}/${YELLOW}/${GREEN}/etc for decorative or general display output
-# - Use ${RE}/${YE}/${GR} for any output where the actual meaning of the color
+# - Use ${RE}/${YE}/${GR}/${BW} for any output where the actual meaning of the color
 #   must remain trustworthy even if a theme or random twist is active
 # ==============================================================================
 
