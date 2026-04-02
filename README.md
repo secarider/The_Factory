@@ -112,10 +112,10 @@ Outputs:
 SUTURED_original.mkv
 
 6. Subtitle Processing (SUBTOX)
-Pack external .srt into video
-Extract internal subtitle tracks
+Pack external .srt into video,
+Extract internal subtitle tracks,
 Rename files using:
-episodes.csv mapping
+episodes.csv mapping,
 automatic title cleanup
 
 Outputs:
