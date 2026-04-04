@@ -950,7 +950,7 @@ record_working_source_state() {
 # PURPOSE:
 # - After OEM backup creation + Batch Normalizer run, verify that each
 #   eligible original source now has BOTH:
-#     1) its OEM safety copy in ./oem/OEM_<original>
+#     1) its OEM safety copy in ./OEM/OEM_<original>
 #     2) its rebuilt REKEY_<basename>.mkv working copy
 #
 # WHY THIS EXISTS:
@@ -1001,7 +1001,7 @@ prepare_collect_rekey_scope_targets() {
 
     local f
     for f in "${vids[@]}"; do
-        [[ "$f" =~ ^(REKEY_|SUTURED_|BARFIX_|SUBPACKED_|OEM_|oem_) ]] && continue
+        [[ "$f" =~ ^(REKEY_|SUTURED_|BARFIX_|SUBPACKED_|OEM_|OEM_) ]] && continue
         printf '%s\n' "$f"
     done
 }
@@ -1016,7 +1016,7 @@ prepare_count_existing_targets() {
     printf '%s\n' "$count"
 }
 
-prepare_verify_oem_and_rekey_parity() {
+prepare_verify_OEM_and_rekey_parity() {
     # OUTPUT VARIABLES:
     # - PREP_SCOPE_TOTAL
     # - PREP_OEM_MATCH_COUNT
@@ -1030,7 +1030,7 @@ prepare_verify_oem_and_rekey_parity() {
     #
     local -a targets=()
     local f base rekey backup
-    local has_oem has_rekey
+    local has_OEM has_rekey
 
     PREP_SCOPE_TOTAL=0
     PREP_OEM_MATCH_COUNT=0
@@ -1048,13 +1048,13 @@ prepare_verify_oem_and_rekey_parity() {
 
         base="${f%.*}"
         rekey="REKEY_${base}.mkv"
-        backup="oem/OEM_${f}"
+        backup="OEM/OEM_${f}"
 
-        has_oem=0
+        has_OEM=0
         has_rekey=0
 
         if [[ -f "$backup" ]]; then
-            has_oem=1
+            has_OEM=1
             ((PREP_OEM_MATCH_COUNT+=1)) || :
         fi
 
@@ -1063,7 +1063,7 @@ prepare_verify_oem_and_rekey_parity() {
             ((PREP_REKEY_MATCH_COUNT+=1)) || :
         fi
 
-        if (( has_oem == 1 && has_rekey == 1 )); then
+        if (( has_OEM == 1 && has_rekey == 1 )); then
             PREP_DELETE_ELIGIBLE+=("$f")
             ((PREP_DELETE_ELIGIBLE_COUNT+=1)) || :
         else
@@ -1100,7 +1100,7 @@ prepare_print_verified_rekey_handoff_summary() {
         for f in "${PREP_DELETE_BLOCKED[@]}"; do
             base="${f%.*}"
             rekey="REKEY_${base}.mkv"
-            backup="oem/OEM_${f}"
+            backup="OEM/OEM_${f}"
 
             echo -e "  ${YELLOW}-${NC} $f"
 
@@ -1119,7 +1119,7 @@ prepare_print_verified_rekey_handoff_summary() {
 prepare_delete_verified_originals() {
     # PURPOSE:
     # - Delete ONLY originals already verified as protected by:
-    #     oem/OEM_<original>
+    #     OEM/OEM_<original>
     #     REKEY_<basename>.mkv
     #
     # IMPORTANT:
@@ -1141,7 +1141,7 @@ prepare_delete_verified_originals() {
     echo -e "${RED} = = > CONTROLLED ORIGINAL HANDOFF / DELETE STEP${NC}"
     echo -e "${RED}================================================${NC}"
     echo -e "${YELLOW} = = > Only Verified Originals Listed Above Will Be Deleted.${NC}"
-    echo -e "${YELLOW} = = > OEM Safety Copies Remain In ./oem With oem_ Prefix.${NC}"
+    echo -e "${YELLOW} = = > OEM Safety Copies Remain In ./OEM With OEM_ Prefix.${NC}"
     echo -e "${YELLOW} = = > REKEY Working Files Remain In Place.${NC}"
     echo
 
@@ -1183,7 +1183,7 @@ prepare_delete_verified_originals() {
 }
 
 prepare_offer_delete_originals_after_verified_rekey() {
-    prepare_verify_oem_and_rekey_parity
+    prepare_verify_OEM_and_rekey_parity
     prepare_print_verified_rekey_handoff_summary
     prepare_delete_verified_originals
 }
@@ -1495,7 +1495,7 @@ OEM_FINALIZE_CHOICE=""
 ui_show_folder_state_snapshot() {
 	local cwd cwd_display drive_display
 	local free_gb free_color free total
-	local oem_size="0"
+	local OEM_size="0"
 
 	cwd="$(pwd)"
 	drive_display="$(get_drive_display "$cwd")"
@@ -1521,7 +1521,7 @@ ui_show_folder_state_snapshot() {
 
 	shopt -s nullglob nocaseglob
 	local -a all_videos=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
-	local -a oem_files=(OEM_*)
+	local -a OEM_files=(OEM_*)
 	local -a rekey_files=(REKEY_*.mkv)
 	local -a sutured_files=(SUTURED_*.mkv)
 	local -a barfix_files=(BARFIX_*.mkv)
@@ -1543,18 +1543,18 @@ ui_show_folder_state_snapshot() {
 
 	echo -e "${CYAN} = = > Video Files Total In Working Dir:${NC} ${#all_videos[@]}"
 	echo -e "${CYAN} = = > Original Working Videos:${NC} ${#original_videos[@]}"
-	echo -e "${CYAN} = = > OEM_* Files In Working Dir:${NC} ${#oem_files[@]}"
+	echo -e "${CYAN} = = > OEM_* Files In Working Dir:${NC} ${#OEM_files[@]}"
 	echo -e "${CYAN} = = > REKEY_* Files In Working Dir:${NC} ${#rekey_files[@]}"
 	echo -e "${CYAN} = = > SUTURED_* Files In Working Dir:${NC} ${#sutured_files[@]}"
 	echo -e "${CYAN} = = > BARFIX_* Files In Working Dir:${NC} ${#barfix_files[@]}"
 	echo -e "${CYAN} = = > SUBPACKED_* Files In Working Dir:${NC} ${#subpacked_files[@]}"
 	echo -e "${CYAN} = = > CSV Files In Working Dir:${NC} ${#csv_files[@]}"
 
-	if [[ -d oem ]]; then
-		oem_size="$(du -sh oem 2>/dev/null | awk '{print $1}')"
-		echo -e "${GREEN} = = > oem/ Directory Present${NC} ${YELLOW}(${oem_size})${NC}"
+	if [[ -d OEM ]]; then
+		OEM_size="$(du -sh OEM 2>/dev/null | awk '{print $1}')"
+		echo -e "${GREEN} = = > OEM/ Directory Present${NC} ${YELLOW}(${OEM_size})${NC}"
 	else
-		echo -e "${YELLOW} = = > oem/ Directory Not Present${NC}"
+		echo -e "${YELLOW} = = > OEM/ Directory Not Present${NC}"
 	fi
 
 	if [[ -d intro_template ]]; then
@@ -1621,7 +1621,7 @@ get_folder_size_human() {
 # - Called Before Finalize / Destructive Operations
 #
 show_space_overview() {
-	local cwd wd_size oem_size drive_display
+	local cwd wd_size OEM_size drive_display
 	local free total free_color free_gb
 
 	cwd="$(pwd)"
@@ -1656,8 +1656,8 @@ show_space_overview() {
 	echo -e "${CYAN} = = > Working Dir Size:${NC} ${YELLOW}$wd_size${NC}"
 
 	# OEM folder size
-	oem_size="$(get_folder_size_human "./oem")"
-	echo -e "${CYAN} = = > OEM Folder Size:${NC} ${YELLOW}$oem_size${NC}"
+	OEM_size="$(get_folder_size_human "./OEM")"
+	echo -e "${CYAN} = = > OEM Folder Size:${NC} ${YELLOW}$OEM_size${NC}"
 
 	echo
 }
@@ -2771,7 +2771,9 @@ run_barfix() {
 
     local SEG=""
     if [[ "$BARFIX_MODE" == "1" || "$BARFIX_MODE" == "3" ]]; then
-      read -p "Start TITLE At Which Underscore Segment? (1-based, e.g. 3): " SEG
+
+      echo -e "${YELLOW} Start TITLE At Which Underscore Segment? (1-based, e.g. 3): ${NC}"
+      read -r SEG
       if [[ -z "${SEG:-}" || ! "$SEG" =~ ^[0-9]+$ || "$SEG" -lt 1 ]]; then
         echo -e "${REB} = = > Invalid Segment Number.${NC}"
         pause
@@ -2837,8 +2839,10 @@ run_barfix() {
     done
 
     echo
-    read -p " = = > Proceed? (y/n): " confirm
-    [[ "${confirm:-n}" != "y" ]] && { echo " = = > Aborted."; pause; return 0; }
+
+    echo -e "${YELLOW} = = > Proceed? (y/n): ${NC}"
+    read -r confirm
+    [[ "${confirm:-n}" != "y" ]] && { echo "${REB} = = > Aborted.${NC}"; pause; return 0; }
 
     echo
     local total=${#targets[@]}
@@ -3013,9 +3017,8 @@ run_subtox() {
     echo -e "  ${YELLOW}4)= = = = = = > BARFIX: Title + Playback Default Tools <  = = = = = = ${NC}"
     echo -e "${CYAN}-----------------------------------------------------------------------${NC}"
 
-    echo -e "${YELLOW}"
-    read -p " = = > Select Mission [1/2/3/4] or [q] to cancel: " choice
-    echo -e "${NC}"
+    echo -e "${YELLOW} = = > Select Mission [1/2/3/4] or [q] to cancel: ${NC}"
+    read -r choice
     if is_factory_exit_token "$choice"; then
         return 0
     fi
@@ -3304,15 +3307,17 @@ detox_title() {
     # ------------------------------------------------------------------
     # SEASON INPUT
     # ------------------------------------------------------------------
-    read -p " = = > Enter Season Number (e.g. 1): " SEASON
-    [[ -z "$SEASON" ]] && { echo "Canceled."; return 1; }
+    echo -e "${YELLOW} = = > Enter Season Number (e.g. 1): ${NC}"
+    read -r SEASON
+    [[ -z "$SEASON" ]] && { echo -e "${YE} = = > Canceled.${NC}"; return 1; }
 
     printf -v SEASON_PAD "%02d" "$SEASON"
 
     # ------------------------------------------------------------------
     # START EPISODE NUMBER
     # ------------------------------------------------------------------
-    read -p " = = > Starting Episode Number (default 1): " EP_NUM
+    echo -e "${YELLOW} = = > Starting Episode Number (default 1): ${NC}"
+    read -r EP_NUM
     EP_NUM=${EP_NUM:-1}
 
     printf -v EP_PAD "%02d" "$EP_NUM"
@@ -3324,7 +3329,9 @@ detox_title() {
 
     while true; do
 
-        read -p "Title For S${SEASON_PAD}E${EP_PAD}: " TITLE_RAW
+
+        echo -e "${YELLOW} Title For S${SEASON_PAD}E${EP_PAD}: ${NC}"
+        read -r TITLE_RAW
 
         [[ -z "$TITLE_RAW" ]] && break
 
@@ -3374,7 +3381,7 @@ run_finalize_menu() {
 
 
 	show_space_overview() {
-		local cwd wd_size oem_size drive_display
+		local cwd wd_size OEM_size drive_display
 		local free total free_color free_gb
 
 		cwd="$(pwd)"
@@ -3405,8 +3412,8 @@ run_finalize_menu() {
 		wd_size="$(get_folder_size_human ".")"
 		echo -e "${CYAN} = = > Working Dir Size:${NC} ${YELLOW}$wd_size${NC}"
 
-		oem_size="$(get_folder_size_human "./oem")"
-		echo -e "${CYAN} = = > OEM Folder Size:${NC} ${YELLOW}$oem_size${NC}"
+		OEM_size="$(get_folder_size_human "./OEM")"
+		echo -e "${CYAN} = = > OEM Folder Size:${NC} ${YELLOW}$OEM_size${NC}"
 
 		echo
 	}
@@ -3606,6 +3613,7 @@ cleanup_show_status() {
 			return 0
 		fi
 
+		echo -ne "${YELLOW} = = > Your Keys Are In Here So Make Sure Your Done Before You Delete ${NC}"
 		echo -ne "${YELLOW} = = > Remove Template Artifacts And intro_template Directory? (y/n | 0.=cancel): ${NC}"
 		read -r reply
 		reply="${reply//[[:space:]]/}"
@@ -3652,7 +3660,7 @@ cleanup_collect_rekey_targets() {
 # HOUSE RULE:
 #   OEM remains safety material until finalize is truly done.
 # =========================================================
-cleanup_execute_oem_finalize_choice() {
+cleanup_execute_OEM_finalize_choice() {
 	echo -e "${CYAN}================================================${NC}"
 	echo -e "${CYAN}       EXECUTING SAVED OEM FINALIZE CHOICE      ${NC}"
 	echo -e "${CYAN}================================================${NC}"
@@ -3662,7 +3670,7 @@ cleanup_execute_oem_finalize_choice() {
 		archive)
 			echo -e "${YELLOW} = = > Executing OEM Choice: Archive OEM Material${NC}"
 			echo
-			cleanup_archive_oem_material
+			cleanup_archive_OEM_material
 			;;
 		leave)
 			echo -e "${YELLOW} = = > Executing OEM Choice: Leave OEM Material Alone${NC}"
@@ -3671,13 +3679,13 @@ cleanup_execute_oem_finalize_choice() {
 		dump)
 			echo -e "${YELLOW} = = > Executing OEM Choice: Delete OEM Contents, Then Mark Folder Finished${NC}"
 			echo
-			cleanup_delete_oem_contents
-			cleanup_mark_oem_folder_finished
+			cleanup_delete_OEM_contents
+			cleanup_mark_OEM_folder_finished
 			;;
 		mark)
 			echo -e "${YELLOW} = = > Executing OEM Choice: Mark OEM Folder Finished, But Keep Contents${NC}"
 			echo
-			cleanup_mark_oem_folder_finished
+			cleanup_mark_OEM_folder_finished
 			;;
 		*)
 			echo -e "${RE} = = > Unknown OEM Finalize Choice:${NC} ${OEM_FINALIZE_CHOICE}"
@@ -3816,21 +3824,21 @@ cleanup_detection_maps() {
 		done
 	}
 
-	cleanup_mark_oem_folder_finished() {
+	cleanup_mark_OEM_folder_finished() {
 		local target="Factory_WuZ_Here"
 
-		if [[ ! -d "./oem" ]]; then
+		if [[ ! -d "./OEM" ]]; then
 			return 0
 		fi
 
 		if [[ -e "./$target" ]]; then
 			echo -e "${YELLOW} = = > OEM Finished Folder Name Already Exists:${NC} $target"
-			echo -e "${YELLOW} = = > Leaving ./oem Name Unchanged To Avoid Collision.${NC}"
+			echo -e "${YELLOW} = = > Leaving ./OEM Name Unchanged To Avoid Collision.${NC}"
 			echo
 			return 0
 		fi
 
-		if mv -- "./oem" "./$target"; then
+		if mv -- "./OEM" "./$target"; then
 			echo -e "${GR} = = > OEM Folder Marked Finished As:${NC} $target"
 		else
 			echo -e "${REB} = = > Failed To Rename OEM Folder To:${NC} $target"
@@ -3883,13 +3891,13 @@ cleanup_detection_maps() {
 #   For every:
 #       SUTURED_Episode_Name.mkv
 #   require:
-#       ./oem/OEM_Episode_Name.mkv
+#       ./OEM/OEM_Episode_Name.mkv
 #
 # IMPORTANT:
 #   OEM backups in this script live in:
-#       ./oem/
+#       ./OEM/
 #   with filename pattern:
-#       oem_<original_filename>
+#       OEM_<original_filename>
 #
 # RESULT:
 #   - PASS: finalize may continue
@@ -3899,10 +3907,10 @@ cleanup_detection_maps() {
 #   Feedback is king.
 #   If parity fails, show exactly what is missing.
 # =========================================================
-cleanup_verify_oem_parity_for_sutured_targets() {
+cleanup_verify_OEM_parity_for_sutured_targets() {
 	local -a sutured_targets=()
-	local -a missing_oem=()
-	local sutured_file base_name expected_oem
+	local -a missing_OEM=()
+	local sutured_file base_name expected_OEM
 
 	mapfile -t sutured_targets < <(cleanup_collect_sutured_targets)
 
@@ -3919,34 +3927,34 @@ cleanup_verify_oem_parity_for_sutured_targets() {
 		return 1
 	fi
 
-	echo -e "${CYAN} = = > OEM Folder Present:${NC} $([[ -d ./oem ]] && echo YES || echo NO)"
+	echo -e "${CYAN} = = > OEM Folder Present:${NC} $([[ -d ./OEM ]] && echo YES || echo NO)"
 	echo
 
 	for sutured_file in "${sutured_targets[@]}"; do
 		[[ -f "$sutured_file" ]] || continue
 
 		base_name="${sutured_file#SUTURED_}"
-		expected_oem="./oem/OEM_${base_name}"
+		expected_OEM="./OEM/OEM_${base_name}"
 
 		echo -e "${CYAN} = = > SUTURED Target:${NC} $sutured_file"
-		echo -e "${CYAN} = = > Expected OEM:${NC} $expected_oem"
+		echo -e "${CYAN} = = > Expected OEM:${NC} $expected_OEM"
 
-		if [[ -f "$expected_oem" ]]; then
+		if [[ -f "$expected_OEM" ]]; then
 			echo -e "${GREEN} = = > OEM Match Found.${NC}"
 		else
 			echo -e "${REB} = = > OEM Match Missing.${NC}"
-			missing_oem+=("$expected_oem")
+			missing_OEM+=("$expected_OEM")
 		fi
 		echo
 	done
 
 	echo -e "${CYAN} = = > Finished SUTURED Targets:${NC} ${#sutured_targets[@]}"
-	echo -e "${CYAN} = = > Missing OEM Counterparts:${NC} ${#missing_oem[@]}"
+	echo -e "${CYAN} = = > Missing OEM Counterparts:${NC} ${#missing_OEM[@]}"
 	echo
 
-	if (( ${#missing_oem[@]} == 0 )); then
+	if (( ${#missing_OEM[@]} == 0 )); then
 		echo -e "${GREEN} = = > OEM Parity Check: PASS${NC}"
-		echo -e "${GREEN} = = > Every Finished SUTURED File Has A Matching OEM Backup In ./oem.${NC}"
+		echo -e "${GREEN} = = > Every Finished SUTURED File Has A Matching OEM Backup In ./OEM.${NC}"
 		echo
 		return 0
 	fi
@@ -3954,13 +3962,13 @@ cleanup_verify_oem_parity_for_sutured_targets() {
 	echo -e "${REB} = = > OEM Parity Check: FAIL${NC}"
 	echo -e "${RED} = = > Missing OEM Counterparts Were Found.${NC}"
 	echo
-	cleanup_print_targets "Missing OEM Backup(s)" "${missing_oem[@]}"
+	cleanup_print_targets "Missing OEM Backup(s)" "${missing_OEM[@]}"
 	echo
 
 	return 1
 }
 
-cleanup_archive_oem_folder() {
+cleanup_archive_OEM_folder() {
 	local stamp tar_name
 	local -a csv_files=()
 	local -a map_templates=()
@@ -3975,7 +3983,7 @@ cleanup_archive_oem_folder() {
 	# - Preserves user feedback during compression
 	# ========================================================
 
-	if [[ ! -d "./oem" ]]; then
+	if [[ ! -d "./OEM" ]]; then
 		echo -e "${YE} = = > OEM Folder Not Present. Nothing To Archive.${NC}"
 		echo
 		return 0
@@ -3993,7 +4001,7 @@ cleanup_archive_oem_folder() {
 
 	# ----- BUILD ARCHIVE NAME --------------------------------
 	stamp="$(date +%Y%m%d_%H%M%S)"
-	tar_name="oem_archive_${stamp}.tar.gz"
+	tar_name="OEM_archive_${stamp}.tar.gz"
 
 	echo -e "${CYAN} = = > Creating OEM Archive:${NC} $tar_name"
 
@@ -4003,7 +4011,7 @@ cleanup_archive_oem_folder() {
 	# ========================================================
 	if run_with_progress "Archiving OEM Folder..." \
 		tar -czf "$tar_name" \
-			oem/ \
+			OEM/ \
 			"${csv_files[@]}" \
 			"${map_templates[@]}"; then
 
@@ -4015,10 +4023,10 @@ cleanup_archive_oem_folder() {
 	echo
 }
 
-	cleanup_delete_oem_contents() {
+	cleanup_delete_OEM_contents() {
 		local reply
 
-		if [[ ! -d "./oem" ]]; then
+		if [[ ! -d "./OEM" ]]; then
 			echo -e "${YE} = = > OEM Folder Not Present. Nothing To Delete.${NC}"
 			echo
 			return 0
@@ -4034,7 +4042,7 @@ cleanup_archive_oem_folder() {
 				;;
 		esac
 
-		find "./oem" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
+		find "./OEM" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
 
 		echo -e "${GR} = = > OEM Folder Contents Removed.${NC}"
 		echo
@@ -4052,7 +4060,7 @@ cleanup_archive_oem_folder() {
 #   So we capture the decision now and execute it only
 #   after finalize succeeds.
 # =========================================================
-cleanup_handle_oem_material() {
+cleanup_handle_OEM_material() {
 	local reply
 
 	OEM_FINALIZE_CHOICE="leave"
@@ -4296,7 +4304,7 @@ cleanup_finalize_sutured_replacements() {
 	# --------------------------------------------------------
 	# PROMPT OEM DISPOSITION NOW (BUT DO NOT EXECUTE YET)
 	# --------------------------------------------------------
-	if ! cleanup_handle_oem_material; then
+	if ! cleanup_handle_OEM_material; then
 		pause
 		return 0
 	fi
@@ -4306,7 +4314,7 @@ cleanup_finalize_sutured_replacements() {
 	# Before destructive finalize steps, verify that every
 	# finished SUTURED target still has its matching OEM backup.
 	# --------------------------------------------------------
-	if ! cleanup_verify_oem_parity_for_sutured_targets; then
+	if ! cleanup_verify_OEM_parity_for_sutured_targets; then
 		echo -e "${REB} = = > Finalize Blocked: OEM Parity Safety Check Failed.${NC}"
 		echo -e "${YELLOW} = = > Resolve Missing OEM Backup(s) Before Re-Running Finalize.${NC}"
 		echo
@@ -4333,7 +4341,7 @@ cleanup_finalize_sutured_replacements() {
 		# --------------------------------------------------------
 		# OEM DISPOSITION HAPPENS ONLY AFTER SUCCESSFUL PROMOTE
 		# --------------------------------------------------------
-		cleanup_execute_oem_finalize_choice
+		cleanup_execute_OEM_finalize_choice
 
 		# --------------------------------------------------------
 		# POST-PROMOTION CLEANUP: REKEY INTERMEDIATES
@@ -4488,7 +4496,7 @@ inspect_show_notes() {
 		# Use pager with raw color support
 		"$pager" -R <<'EOF'
 	================================================
-	            THE_FACTORY :: NOTES / EXPLAIN
+	q to EXIT  THE_FACTORY :: NOTES / EXPLAIN
 	================================================
 
 	[SECTION 1 — OVERVIEW]
@@ -4641,6 +4649,7 @@ inspect_show_notes() {
 	[SECTION 4 — USER NOTES]
 	- ADD YOUR OWN COMMENTARY HERE.
 	- KEEP SECTIONS STRUCTURED FOR READABILITY.
+ q to EXIT
 
 	[END OF NOTES]
 EOF
@@ -4681,24 +4690,28 @@ inspect_print_group() {
 
 	count=${#items[@]}
 
-	# =========================
-	# #MARKER: INSPECT GROUP COLOR + STATUS
-	# =========================
-	# COLOR / STATUS RULE:
-	# - 0 items  -> GREEN  / CLEAN
-	# - 1-2 items -> YELLOW / NOTICE
-	# - 3+ items -> RED    / BUSY
-	#
-	if (( count == 0 )); then
-		color=$GREEN
-		status_label="CLEAN"
-	elif (( count < 3 )); then
-		color=$YELLOW
-		status_label="NOTICE"
-	else
-		color=$RED
-		status_label="BUSY"
-	fi
+    # =========================================================
+    # #MARKER: INSPECT GROUP COLOR + STATUS (SCALED THRESHOLDS)
+    # =========================================================
+    # COLOR / STATUS RULE:
+    # - 0 items        -> GREEN  / CLEAN
+    # - 1–10 items     -> GREEN  / NORMAL
+    # - 11–20 items    -> YELLOW / NOTICE
+    # - 21+ items      -> RED    / BUSY
+    #
+    if (( count == 0 )); then
+    	color=$GREEN
+    	status_label="CLEAN"
+    elif (( count <= 10 )); then
+    	color=$GREEN
+    	status_label="NORMAL"
+    elif (( count <= 20 )); then
+    	color=$YELLOW
+    	status_label="NOTICE"
+    else
+    	color=$RED
+    	status_label="BUSY"
+    fi
 
 	echo -e "${CYAN} = = > ${title}:${NC} ${color}${count}${NC} ${color}[${status_label}]${NC}"
 
@@ -4725,51 +4738,51 @@ inspect_show_folder_snapshot() {
 }
 
 inspect_show_file_groups() {
-    clear
-    echo -e "${CYAN}================================================${NC}"
-    echo -e "${CYAN}           INSPECT :: FILE GROUPS               ${NC}"
-    echo -e "${CYAN}================================================${NC}"
-    echo
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}           INSPECT :: FILE GROUPS               ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
 
-    # NOTE:
-    # - OEM_ files are preserved originals / backups.
-    # - REKEY_ files are normalized cut-friendly rebuilds.
-    # - SUTURED_ files are GAPMAN outputs.
-    # - BARFIX_ files are title/playback remux outputs.
-    #
-    shopt -s nullglob nocaseglob
-    local -a all_videos=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
-    local -a oem_files=(OEM_*)
-    local -a rekey_files=(REKEY_*.mkv)
-    local -a sutured_files=(SUTURED_*.mkv)
-    local -a barfix_files=(BARFIX_*.mkv)
-    local -a subpacked_files=(SUBPACKED_*)
-    shopt -u nullglob nocaseglob
+	# NOTE:
+	# - OEM_ files in ./OEM/ are preserved originals / backups.
+	# - REKEY_ files are normalized cut-friendly rebuilds.
+	# - SUTURED_ files are GAPMAN outputs.
+	# - BARFIX_ files are title/playback remux outputs.
+	#
+	shopt -s nullglob nocaseglob
+	local -a all_videos=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
+	local -a OEM_files=(./OEM/OEM_*)
+	local -a rekey_files=(REKEY_*.mkv)
+	local -a sutured_files=(SUTURED_*.mkv)
+	local -a barfix_files=(BARFIX_*.mkv)
+	local -a subpacked_files=(SUBPACKED_*)
+	shopt -u nullglob nocaseglob
 
-    # Build a "plain working targets" view:
-    # - Files that are not obvious generated derivatives.
-    # - This helps the user see likely source candidates at a glance.
-    local -a plain_targets=()
-    local f
-    for f in "${all_videos[@]}"; do
-        [[ "$f" =~ ^OEM_ ]] && continue
-        [[ "$f" =~ ^REKEY_ ]] && continue
-        [[ "$f" =~ ^(SUTURED_|PILOT_SUTURED_) ]] && continue
-        [[ "$f" =~ ^BARFIX_ ]] && continue
-        [[ "$f" =~ ^SUBPACKED_ ]] && continue
-        [[ "$f" == intro_template* ]] && continue
-        [[ "$f" == custom_cut* ]] && continue
-        plain_targets+=("$f")
-    done
+	# Build a "plain working targets" view:
+	# - Files that are not obvious generated derivatives.
+	# - This helps the user see likely source candidates at a glance.
+	local -a plain_targets=()
+	local f
+	for f in "${all_videos[@]}"; do
+		[[ "$f" =~ ^OEM_ ]] && continue
+		[[ "$f" =~ ^REKEY_ ]] && continue
+		[[ "$f" =~ ^(SUTURED_|PILOT_SUTURED_) ]] && continue
+		[[ "$f" =~ ^BARFIX_ ]] && continue
+		[[ "$f" =~ ^SUBPACKED_ ]] && continue
+		[[ "$f" == intro_template* ]] && continue
+		[[ "$f" == custom_cut* ]] && continue
+		plain_targets+=("$f")
+	done
 
-    inspect_print_group "Likely source / working targets" "${plain_targets[@]}"
-    inspect_print_group "OEM backups" "${oem_files[@]}"
-    inspect_print_group "REKEY normalized files" "${rekey_files[@]}"
-    inspect_print_group "SUTURED outputs" "${sutured_files[@]}"
-    inspect_print_group "BARFIX outputs" "${barfix_files[@]}"
-    inspect_print_group "SUBPACKED outputs" "${subpacked_files[@]}"
+	inspect_print_group "Likely source / working targets" "${plain_targets[@]}"
+	inspect_print_group "OEM backups" "${OEM_files[@]}"
+	inspect_print_group "REKEY normalized files" "${rekey_files[@]}"
+	inspect_print_group "SUTURED outputs" "${sutured_files[@]}"
+	inspect_print_group "BARFIX outputs" "${barfix_files[@]}"
+	inspect_print_group "SUBPACKED outputs" "${subpacked_files[@]}"
 
-    pause
+	pause
 }
 
 inspect_show_artifact_presence() {
@@ -4867,7 +4880,7 @@ inspect_run_keyframe_probe() {
     case "$verdict" in
     	SAFE) verdict_color=$GR ;;
     	CAUTION) verdict_color=$YE ;;
-    	RISKY) verdict_color=$RE ;;
+    	RISKY) verdict_color=$REB ;;
     	*) verdict_color=$NC ;;
     esac
 
@@ -5037,13 +5050,13 @@ prepare_show_candidates() {
     pause
 }
 
-prepare_make_oem_backups() {
+prepare_make_OEM_backups() {
     # =========================
     # #MARKER: OEM BACKUP PREP
     # =========================
     # PURPOSE:
     # - Create preserved copies of current source-style files
-    # - Store them inside ./oem/
+    # - Store them inside ./OEM/
     # - Prefix each preserved copy with OEM_
     #
     # RESULT EXAMPLE:
@@ -5051,7 +5064,7 @@ prepare_make_oem_backups() {
     #       ./Episode01.mkv
     #
     #   preserved OEM copy:
-    #       ./oem/OEM_Episode01.mkv
+    #       ./OEM/OEM_Episode01.mkv
     #
     # NOTES:
     # - Originals stay in place in working dir
@@ -5083,13 +5096,13 @@ prepare_make_oem_backups() {
     # #MARKER: OEM BACKUP DIR ENSURE
     # =========================
     # PURPOSE:
-    # - OEM preserved copies must live in ./oem/
+    # - OEM preserved copies must live in ./OEM/
     # - Create that directory before the copy pass begins
     #
-    mkdir -p oem
+    mkdir -p OEM
 
-    echo -e "${YELLOW}This Creates Preserved Sidecar Copies In ./oem As OEM_<filename>.${NC}"
-    echo -e "${YELLOW}Existing OEM_ Copies In ./oem Are Skipped, Not Overwritten.${NC}"
+    echo -e "${YELLOW}This Creates Preserved Sidecar Copies In ./OEM As OEM_<filename>.${NC}"
+    echo -e "${YELLOW}Existing OEM_ Copies In ./OEM Are Skipped, Not Overwritten.${NC}"
     echo
     if ! ask_yes_no "${YELLOW}Create OEM Backups For ${#targets[@]} Eligible File(s)? (y/n): ${NC}"; then
         echo -e "${YELLOW} = = > OEM Backup Pass Cancelled.${NC}"
@@ -5105,11 +5118,11 @@ prepare_make_oem_backups() {
     # #MARKER: OEM BACKUP COPY LOOP
     # =========================
     # PURPOSE:
-    # - Copy each eligible source into ./oem/
+    # - Copy each eligible source into ./OEM/
     # - Add OEM_ prefix while preserving original working file
     #
     for f in "${targets[@]}"; do
-        backup="oem/OEM_$(basename "$f")"
+        backup="OEM/OEM_$(basename "$f")"
 
         if [[ -e "$backup" ]]; then
             echo -e "${YELLOW} = = > [SKIP]${NC} $backup Already Exists"
@@ -5252,7 +5265,7 @@ prepare_run_combined_pass() {
             ;;
     esac
 
-    prepare_make_oem_backups
+    prepare_make_OEM_backups
     prepare_run_batch_normalizer_wrapper
     prepare_offer_delete_originals_after_verified_rekey
 
@@ -5311,7 +5324,7 @@ run_prepare_sources() {
                 prepare_show_candidates
                 ;;
             2)
-                prepare_make_oem_backups
+                prepare_make_OEM_backups
                 ;;
             3)
                 prepare_run_batch_normalizer_wrapper
@@ -5606,32 +5619,33 @@ run_gapman_menu() {
 				echo -e "${CYAN} = = > GAPMAN PILOT RUN (STRONGLY RECOMMENDED)${NC}"
 				echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 				echo
-				echo -e "${YELLOW}Purpose:${NC}"
-				echo -e "  Validate intro timing, trim accuracy, and seam quality"
-				echo -e "  before committing to a full batch run."
+				echo -e "${YELLOW}Purpose:"
+				echo -e "  • Validate intro timing, trim accuracy, and seam quality"
+				echo -e "  • Before committing to a full batch run."
 				echo
-				echo -e "${YELLOW}Why Pilot Run Matters:${NC}"
+				echo -e "Why Pilot Run Matters:"
 				echo -e "  • Confirms intro alignment is correct"
 				echo -e "  • Verifies pre-trim and post-trim timing"
 				echo -e "  • Detects drift or padding issues early"
 				echo -e "  • Prevents full-batch mistakes"
 				echo
-				echo -e "${YELLOW}What This Will Do:${NC}"
+				echo -e "What This Will Do:"
 				echo -e "  • Select 3 sample episodes from intro_map.csv"
 				echo -e "  • Run GAPMAN using those entries only"
 				echo -e "  • Output files as PILOT_SUTURED_*"
-				echo -e "  • Pause for inspection before continuing"
+				echo -e "  • Pause for inspection before continuing${NC}"
 				echo
 
-				echo -e "${CYAN} = = > Tip:${NC} Review results carefully before full run."
-				echo -e "${CYAN} = = > You may adjust pre/post trim values if needed."
+				echo -e "${CYAN} = = > Tip: Review results carefully before full run.${NC}"
+				echo -e "${CYAN} = = > You may adjust pre/post trim values if needed.${NC}"
 				echo
 
-				echo -e "${CYAN} = = > Optional: Inspect Show Notes (timing references)${NC}"
+				#echo -e "${CYAN} = = > Optional: Inspect Show Notes (timing references)${NC}"
 				#inspect_show_notes || true
-				echo
+				#echo
 
-				read -p " = = > Press ENTER to prepare pilot run..."
+				echo -e "${YELLOW} = = > Press ENTER To Prepare Pilot Run...${NC}"
+                read -r
 
 				# ========================================================
 				# BACKUP ORIGINAL MAP
@@ -5686,7 +5700,7 @@ run_gapman_menu() {
 					echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 					echo
 
-					echo -e "${YELLOW}Review:${NC}"
+					echo -e "${YELLOW}Review:"
 					echo -e "  Inspect PILOT_SUTURED_* outputs"
 					echo -e "  Confirm Timing And Seam Quality"
 					echo
@@ -5694,19 +5708,20 @@ run_gapman_menu() {
 					echo "  1) Proceed To FULL Run"
 					echo "  2) Re-Run pilot (Same 3 Files)"
 					echo "  3) Re-Run pilot (New Random 3)"
-					echo "  4) Cancel And Restore"
+					echo "  4) Cancel And Restore${NC}"
 
-					read -p " = = > Choose: " pilot_choice
-
+                    echo -e "${YELLOW} = = > Choose: ${NC}"
+                    read -r pilot_choice
 					case "$pilot_choice" in
 						1)
+                            remove_all_pilot_outputs
 							echo -e "${GREEN} = = > Proceeding To Full Run...${NC}"
 
 							rm -f "$PILOT_MAP"
 							mv "$BACKUP_MAP" "$ORIG_MAP"
         					echo -e "${CYAN} = = > Backup Restored To Your Original Named >${NC} ${GREEN}intro_map.csv${NC}"
 
-							PILOT_MODE=0
+							PILOT_MODE=0  #pilot mode off
 							run_gapman
 							break
 							;;
@@ -6071,7 +6086,7 @@ run_utility_menu() {
 		echo "     1) Show Templates"
 		echo "     2) Show Target Files"
 		echo "     3) Diff Two Files"
-		echo "     4) REKEY Validity Check"
+		echo "     4) REKEY Validity Check Redirect"
 		echo "     5) Keyframe Cut-Friendliness Check"
 		echo "     6) Triage Center / Clip Surgery Tools"
 		echo "     7) Inspect Dependency Status"
@@ -6106,7 +6121,7 @@ run_utility_menu() {
 				if ((${#t[@]}==0)); then
 					echo -e "${RE} = = > None Found.${NC}"
 				else
-					printf " - %s\n" "${t[@]}"
+					printf "${CYAN} - %s\n" "${t[@]}${NC}"
 				fi
 				pause
 				;;
@@ -6119,7 +6134,7 @@ run_utility_menu() {
 				if ((${#v[@]}==0)); then
 					echo -e "${RE} = = > None Found.${NC}"
 				else
-					printf " - %s\n" "${v[@]}"
+					printf "${CYAN} = = > %s\n" "${v[@]}${NC}"
 				fi
 				pause
 				;;
@@ -6154,7 +6169,8 @@ run_utility_menu() {
 				pause
 				;;
 			4)
-				run_rekey_validity_check
+				prepare_set_rekey_preference
+                #run_rekey_validity_check
 				;;
 			5)
 				run_keyframe_suitability_check
@@ -6406,7 +6422,7 @@ probe_keyframe_suitability() {
       echo -e "${YE} = = > Moderate Keyframe Gaps Detected. Inspect Output Carefully.${NC}"
       ;;
     RISKY)
-      echo -e "${RE} = = > Large Keyframe Gaps Detected. Copy-Based Cuts May Tear Or Suture Poorly.${NC}"
+      echo -e "${REB} = = > Large Keyframe Gaps Detected. Copy-Based Cuts May Tear Or Suture Poorly.${NC}"
       ;;
     *)
       echo -e "${YE} = = > Could Not Determine Keyframe Suitability.${NC}"
@@ -6484,7 +6500,7 @@ run_keyframe_suitability_check() {
 	case "$verdict" in
 		SAFE) verdict_color="$GR" ;;
 		CAUTION) verdict_color="$YE" ;;
-		RISKY) verdict_color="$RE" ;;
+		RISKY) verdict_color="$REB" ;;
 	esac
 
 	echo
@@ -6808,7 +6824,7 @@ create_template() {
     case "$src_verdict" in
         SAFE) verdict_color="$GR" ;;
         CAUTION) verdict_color="$YE" ;;
-        RISKY) verdict_color="$RE" ;;
+        RISKY) verdict_color="$REB" ;;
         *) verdict_color="$NC" ;;
     esac
 
@@ -6830,9 +6846,11 @@ create_template() {
 
     if [[ "$src_verdict" == "RISKY" || "$src_verdict" == "CAUTION" ]]; then
         echo
-        read -p " = = > Source May Be Poor For Precise Cuts. Build Cut-Friendly Rebuilt Source First? (y/n, default: n): " rebuild_src
+        echo -e "${YELLOW} = = > Source May Be Poor For Precise Cuts. Build Cut-Friendly Rebuilt Source First? (y/n, default: n): ${NC}"
+        read -r rebuild_src
         rebuild_src=${rebuild_src:-n}
 
+        rebuild_src="${rebuild_src,,}"
         if [[ "$rebuild_src" == "y" ]]; then
             rebuilt_src="$(rebuild_cut_friendly_source "$src")"
             if [[ -n "$rebuilt_src" && -f "$rebuilt_src" ]]; then
@@ -6861,8 +6879,11 @@ create_template() {
 	while true; do
 	    local start_raw end_raw
 	    echo
-	    read -p " Start: " start_raw
-	    read -p " End: " end_raw
+        echo -e "${CYAN} = = > Enter Cut Range:${NC}"
+        echo -e "${YELLOW} = = >  Start: ${NC}"
+        read -r start_raw
+        echo -e "${YELLOW} = = >    End: ${NC}"
+        read -r end_raw
 	    echo
 
 	    start="$(to_seconds "$start_raw")"
@@ -6870,12 +6891,12 @@ create_template() {
 
 	    cut_dur="$(echo "$end - $start" | bc)"
 
-	    echo -e "${CYAN} = = > Entered Start:${NC} $start_raw -> ${start}s"
-	    echo -e "${CYAN} = = > Entered End:${NC} ${end_raw} -> ${end}s"
-	    echo -e "${CYAN} = = > Computed Duration:${NC} ${cut_dur}"
+	    echo -e "${CYAN} = = > Entered Start: $start_raw -> ${start}s${NC}"
+	    echo -e "${CYAN} = = > Entered End: ${end_raw} -> ${end}s${NC}"
+	    echo -e "${CYAN} = = > Computed Duration: ${cut_dur}${NC}"
 	    echo
 
-	    if ask_yes_no " = = > Are These Times Correct? (y/n): "; then
+	    if ask_yes_no "${CYAN} = = > Are These Times Correct? (y/n): ${NC}"; then
 	        break
 	    fi
 
@@ -7038,11 +7059,16 @@ create_template() {
 #       • task label (repeated)
 #       • animated spinner (visual movement)
 #       • elapsed time (confidence indicator)
+#   - Keep STDOUT clean
+#   - Show one-time banner first
+#   - Redraw a single live status line on STDERR
+#   - Avoid ugly wrapping / smear when labels are long
+#   - Leave the terminal on a clean new line when done
 # USAGE:
 #   run_with_progress "Label Here..." command arg1 arg2 ...
 #
 # EXAMPLE:
-#   run_with_progress "Building OEM Archive..." tar -czf archive.tar ./oem
+#   run_with_progress "Building OEM Archive..." tar -czf archive.tar ./OEM
 #
 # NOTES:
 #   - Best used for QUIET long-running commands (tar, scans, batch ops)
@@ -7055,6 +7081,11 @@ create_template() {
 # - In Those Cases, STDOUT Must Remain Reserved For The True Return Value
 #   (Such As A File Path), While Progress Still Remains Visible On Screen.
 #
+# WHY THIS VERSION:
+#   Long labels can wrap on narrower terminal widths, which makes
+#   a carriage-return heartbeat look like repeated printed lines.
+#   This version trims the live line to fit the terminal, keeps the
+#   first banner line, and then uses a shorter status line for redraws.
 # HOUSE RULE:
 #   Feedback is king — user should NEVER wonder if the script is stuck.
 # =========================================================
@@ -7078,11 +7109,34 @@ run_with_progress() {
 	# --------------------------------------------------------
 	local cmd_status=0
 	local start_ts now elapsed
-	local spin='|/-\'        # classic spinner frames
+	local spin='|/-\'
 	local i=0
 	local frame
+	local cols max_label
+	local live_label
+	local live_line
+	local plain_prefix plain_suffix
 
 	start_ts=$(date +%s)
+
+	# --------------------------------------------------------
+	# TERMINAL WIDTH GUARD
+	# Keep the heartbeat line short enough to overwrite cleanly.
+	# --------------------------------------------------------
+	cols="${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}"
+	(( cols < 40 )) && cols=80
+
+	plain_prefix=" = = > "
+	plain_suffix="....PLEASE-STAND-BY....[00000s]"
+
+	max_label=$(( cols - ${#plain_prefix} - ${#plain_suffix} - 4 ))
+	(( max_label < 12 )) && max_label=12
+
+	if (( ${#label} > max_label )); then
+		live_label="${label:0:max_label-3}..."
+	else
+		live_label="$label"
+	fi
 
 	# --------------------------------------------------------
 	# HEARTBEAT LOOP
@@ -7091,17 +7145,15 @@ run_with_progress() {
 	while kill -0 "$cmd_pid" 2>/dev/null; do
 		now=$(date +%s)
 		elapsed=$((now - start_ts))
-
-		# rotate spinner frame
 		frame="${spin:i%${#spin}:1}"
 
-		# ----------------------------------------------------
-		# LIVE STATUS LINE (overwrites itself via carriage return)
-		# ----------------------------------------------------
-		echo -ne "${YELLOW} = = > ${label} ${frame}    ....WORKING-PLEASE-STAND-BY....    [${elapsed}s]${NC}\r" >&2
+		live_line=" = = > ${live_label} ${frame} ....PLEASE-STAND-BY....[${elapsed}s]"
+
+		# Print one in-place status line only
+		printf '\r\033[2K%s%s%s' "${YELLOW}" "$live_line" "${NC}" >&2
 
 		sleep 1
-		((i++))
+		((i+=1))
 	done
 
 	# --------------------------------------------------------
@@ -7111,9 +7163,10 @@ run_with_progress() {
 	cmd_status=$?
 
 	# --------------------------------------------------------
-	# CLEAN LINE (erase spinner line after completion)
+	# CLEAN LINE + LEAVE CURSOR ON FRESH NEW LINE
 	# --------------------------------------------------------
-	echo -ne "                                                                                                                    \r" >&2
+	printf '\r\033[2K' >&2
+	echo >&2
 
 	# --------------------------------------------------------
 	# RETURN ORIGINAL COMMAND STATUS
@@ -7288,10 +7341,13 @@ run_custom_cut() {
     #
     local start_raw end_raw start end cut_dur
     while true; do
-        echo
-        read -p " Start: " start_raw
-        read -p " End: " end_raw
-        echo
+	    echo
+        echo -e "${CYAN} = = > Enter Cut Range:${NC}"
+        echo -e "${YELLOW} = = >  Start: ${NC}"
+        read -r start_raw
+        echo -e "${YELLOW} = = >    End: ${NC}"
+        read -r end_raw
+	    echo
 
         start="$(to_seconds "$start_raw")"
         end="$(to_seconds "$end_raw")"
@@ -7422,18 +7478,18 @@ run_custom_cut() {
 # ==============================================================================
 # --- FUNCTION: RESTORE OEM PREFIX ---
 # ==============================================================================
-restore_oem_prefix() {
+restore_OEM_prefix() {
     # =========================
     # #MARKER: OEM RESTORE HEADER
     # =========================
     # PURPOSE:
     # - Undo OEM source staging
-    # - Move files out of ./oem/ back into the working directory
+    # - Move files out of ./OEM/ back into the working directory
     # - Strip the leading OEM_ prefix during the move
     #
     # RESULT EXAMPLE:
     #   before:
-    #       ./oem/OEM_Episode01.mkv
+    #       ./OEM/OEM_Episode01.mkv
     #
     #   after:
     #       ./Episode01.mkv
@@ -7441,45 +7497,45 @@ restore_oem_prefix() {
     # IMPORTANT:
     # - This is a MOVE back to working dir, not an in-place rename
     # - If target name already exists in working dir, skip safely
-    # - If ./oem becomes empty, rename it to a done-flag folder
+    # - If ./OEM becomes empty, rename it to a done-flag folder
     #
     clear
-    echo -e "${CYAN} = = > Restore OEM_ Files From /oem${NC}"
+    echo -e "${CYAN} = = > Restore OEM_ Files From /OEM${NC}"
     echo
 
     # =========================
     # #MARKER: OEM RESTORE PRECHECKS
     # =========================
     # PURPOSE:
-    # - Verify ./oem exists
+    # - Verify ./OEM exists
     # - Collect only files beginning with OEM_
     #
-    if [[ ! -d "oem" ]]; then
-        echo -e "${YELLOW} = = > No ./oem Directory Found.${NC}"
+    if [[ ! -d "OEM" ]]; then
+        echo -e "${YELLOW} = = > No ./OEM Directory Found.${NC}"
         pause
         return 0
     fi
 
     shopt -s nullglob
-    local -a oem_files=(oem/OEM_*)
+    local -a OEM_files=(OEM/OEM_*)
     shopt -u nullglob
 
-    if [[ ${#oem_files[@]} -eq 0 ]]; then
-        echo -e "${YELLOW} = = > No OEM_ Files Found In ./oem.${NC}"
+    if [[ ${#OEM_files[@]} -eq 0 ]]; then
+        echo -e "${YELLOW} = = > No OEM_ Files Found In ./OEM.${NC}"
         echo
 
         # =========================
         # #MARKER: OEM EMPTY DIR DONE FLAG (NO FILES FOUND)
         # =========================
         # PURPOSE:
-        # - If ./oem exists but is already empty, convert it into a
+        # - If ./OEM exists but is already empty, convert it into a
         #   visible "done" marker folder instead of deleting it.
         #
         shopt -s nullglob dotglob
-        local oem_contents_empty_check=(oem/*)
+        local OEM_contents_empty_check=(OEM/*)
         shopt -u nullglob dotglob
 
-        if (( ${#oem_contents_empty_check[@]} == 0 )); then
+        if (( ${#OEM_contents_empty_check[@]} == 0 )); then
             local done_dir_empty="done wow"
             local idx_empty=0
             local candidate_empty="$done_dir_empty"
@@ -7489,7 +7545,7 @@ restore_oem_prefix() {
                 candidate_empty="${done_dir_empty}_${idx_empty}"
             done
 
-            mv -- oem "$candidate_empty"
+            mv -- OEM "$candidate_empty"
             echo -e "${CYAN} = = > OEM Folder Empty -> Renamed To '$candidate_empty'${NC}"
         fi
 
@@ -7507,14 +7563,16 @@ restore_oem_prefix() {
     echo
 
     local f base new_name
-    for f in "${oem_files[@]}"; do
+    for f in "${OEM_files[@]}"; do
         base="$(basename "$f")"
         new_name="${base#OEM_}"
         echo "$f  ->  ./$new_name"
     done
 
     echo
-    read -p " = = > Proceed With Restore? (y/n): " confirm
+
+    echo -e "${YELLOW} = = > Proceed With Restore? (y/n): ${NC}"
+    read -r confirm
     confirm="${confirm:-n}"
 
     if [[ "$confirm" != "y" ]]; then
@@ -7527,7 +7585,7 @@ restore_oem_prefix() {
     # #MARKER: OEM RESTORE MOVE LOOP
     # =========================
     # PURPOSE:
-    # - Move each OEM_ file from ./oem/ back to working dir
+    # - Move each OEM_ file from ./OEM/ back to working dir
     # - Strip OEM_ prefix
     # - Skip if destination already exists
     #
@@ -7537,7 +7595,7 @@ restore_oem_prefix() {
     local moved=0
     local skipped=0
 
-    for f in "${oem_files[@]}"; do
+    for f in "${OEM_files[@]}"; do
         base="$(basename "$f")"
         new_name="${base#OEM_}"
 
@@ -7566,15 +7624,15 @@ restore_oem_prefix() {
     # #MARKER: OEM DIR FINALIZE (DONE FLAG)
     # =========================
     # PURPOSE:
-    # - If ./oem is now empty after restore, rename it instead of deleting it
+    # - If ./OEM is now empty after restore, rename it instead of deleting it
     # - This acts as a visible "done with this working dir" flag
     #
-    if [[ -d "oem" ]]; then
+    if [[ -d "OEM" ]]; then
         shopt -s nullglob dotglob
-        local oem_contents=(oem/*)
+        local OEM_contents=(OEM/*)
         shopt -u nullglob dotglob
 
-        if (( ${#oem_contents[@]} == 0 )); then
+        if (( ${#OEM_contents[@]} == 0 )); then
             local done_dir="done wow"
             local idx=0
             local candidate="$done_dir"
@@ -7585,7 +7643,7 @@ restore_oem_prefix() {
                 candidate="${done_dir}_${idx}"
             done
 
-            mv -- oem "$candidate"
+            mv -- OEM "$candidate"
             echo -e "${CYAN} = = > OEM Folder Empty -> Renamed To '$candidate'${NC}"
         else
             echo -e "${YELLOW} = = > OEM folder Not Empty, Leaving As-Is.${NC}"
@@ -7689,7 +7747,7 @@ run_batch_normalizer() {
 	fi
 
 	echo
-	echo -e "${CYAN} = = > Eligible Source Files:${NC} $total"
+	echo -e "${CYAN} = = > Eligible Source Files: $total${NC}"
 	for f in "${norm_sources[@]}"; do
 		echo " - $f"
 	done
@@ -7714,9 +7772,8 @@ run_batch_normalizer() {
 	echo -e "${REB} = = > 3) Thrash  (Default ALL Or Choose Concurrent File Count)${NC}"
 	echo
 
-    echo -e "${YELLOW}"
-	read -p " = = > Load Level [1/2/3] (Default: 2): " load_choice
-    echo -e "${NC}"
+    echo -e "${YELLOW} = = > Load Level [1/2/3] (Default: 2): ${NC}"
+    read -r load_choice
 	load_choice=${load_choice:-2}
 
 	case "$load_choice" in
@@ -7743,7 +7800,8 @@ run_batch_normalizer() {
 			# - If User Presses Enter, Use Total
 			# - User Can Still Override With A Smaller Number If Desired
 			#
-			read -p " = = > Max Concurrent Rebuild Jobs? (Default: ALL = $total): " custom_jobs
+            echo -e "${YELLOW} = = > Max Concurrent Rebuild Jobs? (Default: ALL = $total):${NC}"
+            read -r custom_jobs
 			custom_jobs=${custom_jobs:-$total}
 
 			if ! [[ "$custom_jobs" =~ ^[0-9]+$ ]] || [[ "$custom_jobs" -lt 1 ]]; then
@@ -7790,12 +7848,12 @@ run_batch_normalizer() {
 		f="${norm_sources[$idx]}"
 
 		if [[ -f "REKEY_$(basename "${f%.*}").mkv" ]]; then
-			echo -e "${YELLOW} = = > [SKIP $((idx+1)) / $total]${NC} Matching REKEY Already Exists For: $f"
+			echo -e "${GREEN} = = > [SKIP $((idx+1)) / $total] Matching REKEY Exists For: $f${NC}"
 			((skip_count+=1)) || :
 			continue
 		fi
 
-		echo -e "${MAGENTA} = = > [$((idx+1)) / $total] Queueing:${NC} $f"
+		echo -e "${MAGENTA} = = > [$((idx+1)) / $total] Queueing: $f${NC}"
 
 		(
 			if normalize_cut_friendly_file "$f"; then
@@ -7949,22 +8007,28 @@ echo -e "${MAGENTA}   GAPMAN v2 :: Normalized Pipeline = = = =     ${NC}"
 echo -e "${MAGENTA}================================================${NC}"
 echo
 
-#read -p " = = > Map CSV File? (Default: ${DEFAULT_MAP}): " MAP_FILE
+echo -e "${YELLOW} = = > Map CSV File? (Default: ${DEFAULT_MAP}): ${NC}"
+read -r MAP_FILE
 MAP_FILE=${MAP_FILE:-$DEFAULT_MAP}
 
-read -p " = = > Global offset seconds to apply to intro START (+/-) (Default: ${DEFAULT_GLOBAL_OFFSET}): " GLOBAL_OFFSET
+echo -e "${YELLOW} = = > Global offset seconds to apply to intro START (+/-) (Default: ${DEFAULT_GLOBAL_OFFSET}): ${NC}"
+read -r GLOBAL_OFFSET
 GLOBAL_OFFSET=${GLOBAL_OFFSET:-$DEFAULT_GLOBAL_OFFSET}
 
-read -p " = = > Pad intro START seconds (+/-) After Map/Manual (Default: ${DEFAULT_PAD_START}): " PAD_START
+echo -e "${YELLOW} = = > Pad intro START seconds (+/-) After Map/Manual (Default: ${DEFAULT_PAD_START}): ${NC}"
+read -r PAD_START
 PAD_START=${PAD_START:-$DEFAULT_PAD_START}
 
-read -p " = = > Pad intro END seconds (+/-) After Map/Manual (Default: ${DEFAULT_PAD_END}): " PAD_END
+echo -e "${YELLOW} = = > Pad intro END seconds (+/-) After Map/Manual (Default: ${DEFAULT_PAD_END}): ${NC}"
+read -r PAD_END
 PAD_END=${PAD_END:-$DEFAULT_PAD_END}
 
-read -p " = = > Global PRE-trim seconds (Remove From Beginning) (Default: ${DEFAULT_PRE_TRIM}): " PRE_TRIM
+echo -e "${YELLOW} = = > Global PRE-trim seconds (Remove From Beginning) (Default: ${DEFAULT_PRE_TRIM}): ${NC}"
+read -r PRE_TRIM
 PRE_TRIM=${PRE_TRIM:-$DEFAULT_PRE_TRIM}
 
-read -p " = = > Global POST-trim seconds (Remove From End) (Default: ${DEFAULT_POST_TRIM}): " POST_TRIM
+echo -e "${YELLOW} = = > Global POST-trim seconds (Remove From End) (Default: ${DEFAULT_POST_TRIM}): ${NC}"
+read -r POST_TRIM
 POST_TRIM=${POST_TRIM:-$DEFAULT_POST_TRIM}
 
 GLOBAL_OFFSET="$(num_norm "$GLOBAL_OFFSET")"
@@ -7975,14 +8039,17 @@ POST_TRIM="$(num_norm "$POST_TRIM")"
 
 echo
 echo -e "${CYAN} = = > Title Bar Repair ---${NC}"
-read -p " = = > Start Title At Which Underscore Segment? (1-based, Default: ${DEFAULT_TITLE_SEGMENT}): " TITLE_SEGMENT
+echo -e "${YELLOW} = = > Start Title At Which Underscore Segment? (1-based, Default: ${DEFAULT_TITLE_SEGMENT}): ${NC}"
+read -r TITLE_SEGMENT
 TITLE_SEGMENT=${TITLE_SEGMENT:-$DEFAULT_TITLE_SEGMENT}
 
 # commented out during development for speedy 
-#read -p " = = > Run Keyframe Suitability Check? (y/n, Default: n): " KF_CHECK
+#echo -e "${YELLOW} = = > Run Keyframe Suitability Check? (y/n, Default: n): ${NC}"
+#read -r KF_CHECK
 KF_CHECK=${KF_CHECK:-n}
-# commented out during development for speedy 
-#read -p " = = > Wipe Metadata? (y/n, Default: ${DEFAULT_WIPE_META}) [y Wipes All Tags; n Keeps Most] : " WIPE_META
+# commented out during development for speedy
+#echo -e "${YELLOW} = = > Wipe Metadata? (y/n, Default: ${DEFAULT_WIPE_META}) [y Wipes All Tags; n Keeps Most] : ${NC}"
+#read -r WIPE_META
 WIPE_META=${WIPE_META:-$DEFAULT_WIPE_META}
 
 echo
@@ -8096,11 +8163,12 @@ select_keyframe_probe_target() {
 
   echo -e "${CYAN} = = > Keyframe Probe Target Selection ====${NC}"
   for ((i=0; i<${#FILES[@]}; i++)); do
-    echo "  $((i+1))) ${FILES[$i]}"
+    echo -e "  ${CYAN}$((i+1)))${NC} ${FILES[$i]}"
   done
   echo
 
-  read -p " = = > Probe Which File Number? (blank = skip): " choice
+  echo -e "${YELLOW} = = > Probe Which File Number? (blank = skip): ${NC}"
+  read -r choice
 
   if [[ -z "$choice" ]]; then
     KF_TARGET_FILE=""
@@ -8290,8 +8358,13 @@ for ((idx=0; idx<TOTAL; idx++)); do
     echo -e "${GREEN} = = > [MAP]${NC} Start=${t_start}s End=${t_end}s Dur=${intro_dur}s"
   else
     echo -e "${YELLOW} = = > [NO MAP]${NC} Manual Entry Needed."
-    read -p "  Intro START: " t_start_raw
-    read -p "  Intro END: " t_end_raw
+    echo
+    echo -e "${CYAN} = = > Enter Cut Range:${NC}"
+    echo -e "${YELLOW} = = >  Start: ${NC}"
+    read -r start_raw
+    echo -e "${YELLOW} = = >    End: ${NC}"
+    read -r end_raw
+    echo
 
     #MARKER: NORM MANUAL TIMES
     t_start="$(to_seconds "$t_start_raw")"
@@ -8446,7 +8519,9 @@ prompt_normalize_first_workflow() {
     echo -e "${GREEN}YES:  = = > Build Missing REKEY Files If Needed (Existing Matching REKEY Files Are Skipped)${NC}"
     echo -e "${YELLOW} = = > NO:  = = > No Means No  = = > Use Original Source Files Instead${NC}"
     echo
-    read -p " = = > Use REKEY Files As Working Source For This Operation? (y/n): " normalize_first_reply
+
+    echo -e "${YELLOW} = = > Use REKEY Files As Working Source For This Operation? (y/n): ${NC}"
+    read -r normalize_first_reply
 
     case "${normalize_first_reply,,}" in
         y|yes)
@@ -8659,9 +8734,9 @@ cached_rekey_is_known_bad_for_raw() {
 run_intro_detection_menu() {
     while true; do
         clear
-        echo -e "${CYAN}================================================${NC}"
-        echo -e "${CYAN}           INTRO DETECTION TOOLZ                ${NC}"
-        echo -e "${CYAN}================================================${NC}"
+        echo -e "${CYAN}=====================================================${NC}"
+        echo -e "${CYAN}                INTRO DETECTION TOOLZ                ${NC}"
+        echo -e "${CYAN}=====================================================${NC}"
         echo
         echo -e "${YELLOW}"
         echo "     0) Create/Rebuild A Key For Introfind intro_template.mkv"
@@ -8692,19 +8767,27 @@ run_intro_detection_menu() {
             2)
                 MODE="2"
 
-                read -p " = = > Seconds To Skip Before Starting Scan? (Default ${DEFAULT_SCAN_START}): " SCAN_START
+
+
+                echo -e "${YELLOW} = = > Seconds To Skip Before Starting Scan? (Default ${DEFAULT_SCAN_START}): ${NC}"
+                read -r SCAN_START
                 SCAN_START=${SCAN_START:-$DEFAULT_SCAN_START}
 
-                read -p " = = > Max Scan Depth From Start In Seconds? (Default ${DEFAULT_MAX_SCAN}): " MAX_SCAN
+                echo -e "${YELLOW} = = > Max Scan Depth From Start In Seconds? (Default ${DEFAULT_MAX_SCAN}): ${NC}"
+                read -r MAX_SCAN
                 MAX_SCAN=${MAX_SCAN:-$DEFAULT_MAX_SCAN}
 
-                read -p " = = > Hash Diff Threshold Higher Number Easier Match? (Default ${DEFAULT_HASH_DIFF}): " HASH_DIFF
+                echo -e "${YELLOW} = = > Hash Diff Threshold Higher Number Easier Match? (Default ${DEFAULT_HASH_DIFF}): ${NC}"
+                read -r HASH_DIFF
                 HASH_DIFF=${HASH_DIFF:-$DEFAULT_HASH_DIFF}
 
-                read -p " = = > Scan Step Size In Seconds? (Default 0.5): " STEP_SIZE
+                echo -e "${YELLOW} = = > Scan Step Size In Seconds? (Default 0.5): ${NC}"
+                read -r STEP_SIZE
                 STEP_SIZE=${STEP_SIZE:-0.5}
 
-                read -p " = = > Anchor Seconds Comma List? (Default 3,5,7): " ANCHOR_SECONDS
+
+                echo -e "${YELLOW} = = > Anchor Seconds Comma List? (Default 3,5,7): ${NC}"
+                read -r ANCHOR_SECONDS
                 ANCHOR_SECONDS=${ANCHOR_SECONDS:-3,5,7}
 
                 echo
@@ -8714,25 +8797,33 @@ run_intro_detection_menu() {
             3)
                 MODE="4"
 
-                read -p " = = > Seconds To Skip Before Starting Scan? (Default ${DEFAULT_SCAN_START}): " SCAN_START
+                echo -e "${YELLOW} = = > Seconds To Skip Before Starting Scan? (Default ${DEFAULT_SCAN_START}): ${NC}"
+                read -r SCAN_START
                 SCAN_START=${SCAN_START:-$DEFAULT_SCAN_START}
 
-                read -p " = = > Max Scan Depth From Start In Seconds? (Default ${DEFAULT_MAX_SCAN}): " MAX_SCAN
+                echo -e "${YELLOW} = = > Max Scan Depth From Start In Seconds? (Default ${DEFAULT_MAX_SCAN}): ${NC}"
+                read -r MAX_SCAN
                 MAX_SCAN=${MAX_SCAN:-$DEFAULT_MAX_SCAN}
 
-                read -p " = = > Hash Diff Threshold Higher Number Easier Match? (Default ${DEFAULT_HASH_DIFF}): " HASH_DIFF
+
+                echo -e "${YELLOW} = = > Hash Diff Threshold Higher Number Easier Match? (Default ${DEFAULT_HASH_DIFF}): ${NC}"
+                read -r HASH_DIFF
                 HASH_DIFF=${HASH_DIFF:-$DEFAULT_HASH_DIFF}
 
-                read -p " = = > Scan Step Size In Seconds? (Default 0.5): " STEP_SIZE
+                echo -e "${YELLOW} = = > Scan Step Size In Seconds? (Default 0.5): ${NC}"
+                read -r STEP_SIZE
                 STEP_SIZE=${STEP_SIZE:-0.5}
 
-                read -p " = = > Anchor Seconds Comma List? (Default 3,5,7): " ANCHOR_SECONDS
+                echo -e "${YELLOW} = = > Anchor Seconds Comma List? (Default 3,5,7): ${NC}"
+                read -r ANCHOR_SECONDS
                 ANCHOR_SECONDS=${ANCHOR_SECONDS:-3,5,7}
 
-                read -p " = = > If You Chose Blackdetect Then Set Its Duration? (Default ${DEFAULT_BLACK_DURATION}): " BLACK_DUR
+                echo -e "${YELLOW} = = > If You Chose Blackdetect Then Set Its Duration? (Default ${DEFAULT_BLACK_DURATION}): ${NC}"
+                read -r BLACK_DUR
                 BLACK_DUR=${BLACK_DUR:-$DEFAULT_BLACK_DURATION}
 
-                read -p " = = > If You Chose Blackdetect Then Set Its Pixel Threshold? (Default ${DEFAULT_BLACK_PIXTH}): " BLACK_PIX
+                echo -e "${YELLOW} = = > If You Chose Blackdetect Then Set Its Pixel Threshold? (Default ${DEFAULT_BLACK_PIXTH}): ${NC}"
+                read -r BLACK_PIX
                 BLACK_PIX=${BLACK_PIX:-$DEFAULT_BLACK_PIXTH}
 
                 echo
@@ -8745,10 +8836,12 @@ run_intro_detection_menu() {
             7)
                 MODE="7"
 
-                read -p " = = > If You Chose Blackdetect Then Set Its Duration? (Default ${DEFAULT_BLACK_DURATION}): " BLACK_DUR
+                echo -e "${YELLOW} = = > If You Chose Blackdetect Then Set Its Duration? (Default ${DEFAULT_BLACK_DURATION}): ${NC}"
+                read -r BLACK_DUR
                 BLACK_DUR=${BLACK_DUR:-$DEFAULT_BLACK_DURATION}
 
-                read -p " = = > If You Chose Blackdetect Then Set Its Pixel Threshold? (Default ${DEFAULT_BLACK_PIXTH}): " BLACK_PIX
+                echo -e "${YELLOW} = = > If You Chose Blackdetect Then Set Its Pixel Threshold? (Default ${DEFAULT_BLACK_PIXTH}): ${NC}"
+                read -r BLACK_PIX
                 BLACK_PIX=${BLACK_PIX:-$DEFAULT_BLACK_PIXTH}
 
                 echo
@@ -8784,8 +8877,8 @@ echo "     7)  = = >   Blackdetect Only No Multipass"
 echo "     8)  = = >   Batch Normalize RE-encode All Files For Clean Cuts"
 echo
 
-read -p "      = = > Mode [0-8]: " MODE
-echo -e "${NC}"
+echo -e "${YELLOW}       = = > Mode [0-8]: ${NC}"
+read -r MODE
 echo
 
 if [[ "$MODE" == "0" ]]; then
@@ -8827,12 +8920,13 @@ case "$MODE" in
     # =========================
     # #MARKER: DETECTION PROMPTS (BLACKDETECT ONLY)
     # =========================
-    read -p " = = > If You Chose Blackdetect Then Set Its Duration? (default ${DEFAULT_BLACK_DURATION}): " BLACK_DUR
+    echo -e "${YELLOW} = = > If You Chose Blackdetect Then Set Its Duration? (Default ${DEFAULT_BLACK_DURATION}): ${NC}"
+    read -r BLACK_DUR
     BLACK_DUR=${BLACK_DUR:-$DEFAULT_BLACK_DURATION}
 
-    read -p " = = > If You Chose Blackdetect Then Set Its Pixel Threshold? (default ${DEFAULT_BLACK_PIXTH}): " BLACK_PIX
+    echo -e "${YELLOW} = = > If You Chose Blackdetect Then Set Its Pixel Threshold? (Default ${DEFAULT_BLACK_PIXTH}): ${NC}"
+    read -r BLACK_PIX
     BLACK_PIX=${BLACK_PIX:-$DEFAULT_BLACK_PIXTH}
-
     echo
 
     return 0
@@ -8905,7 +8999,7 @@ for f in "${all_files[@]}"; do
     [[ "$f" =~ ^(SUTURED_|PILOT_SUTURED_) ]] && continue
     [[ "$f" =~ ^REKEY_ ]] && continue
     [[ "$f" =~ ^OEM_ ]] && continue
-    [[ "$f" =~ ^oem_ ]] && continue
+    [[ "$f" =~ ^OEM_ ]] && continue
     files+=("$f")
 done
 
@@ -9041,8 +9135,11 @@ if [[ "${MODE:-}" == "2" || "${MODE:-}" == "4" ]]; then
     case "${MODE:-}" in
 
     1)
-        read -p " = = > Start Time (seconds): " start
-        read -p " = = > Duration (seconds): " dur
+        echo -e "${CYAN} = = > Enter Times:${NC}"
+        echo -e "${YELLOW} = = > Start Time (seconds): ${NC}"
+        read -r start
+        echo -e "${YELLOW} = = > Duration (seconds): ${NC}"
+        read -r dur
         end=$((start + dur))
 
         start_hms="$(seconds_to_hms "$start")"
