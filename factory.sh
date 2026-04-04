@@ -116,8 +116,10 @@ init_base_colors() {
 	# ----- FIXED SEMANTIC WARNING COLORS (DO NOT TWIST) ----------------------
 	# KEEP SEMANTIC WARNING COLORS STABLE NO MATTER WHAT THEME IS ACTIVE
     # Add '5;' after the bracket for the blinking effect
-    RE=$'\033[5;1;31m'  # Blinking Bold Red
-    YE=$'\033[1;33m'    # Solid Bold Yellow (Stable Warning)
+    RE=$'\033[1;1;31m'  # Solid Bold Red
+    REB=$'\033[5;1;31m'  # Blinking Bold Red
+    YE=$'\033[1;1;33m'    # Solid Bold Yellow (Stable Warning)
+    YEB=$'\033[5;1;33m'    # Blinking Bold Yellow (Stable Warning)
     GR=$'\033[1;32m'    # Solid Bold Green (All Clear)
     BW=$'\033[1;37m'    # Bright White
 }
@@ -176,8 +178,10 @@ apply_color_map() {
 
 	# KEEP SEMANTIC WARNING COLORS STABLE NO MATTER WHAT THEME IS ACTIVE
     # Add '5;' after the bracket for the blinking effect
-    RE=$'\033[5;1;31m'  # Blinking Bold Red
-    YE=$'\033[1;33m'    # Solid Bold Yellow (Stable Warning)
+    RE=$'\033[1;1;31m'  # Solid Bold Red
+    REB=$'\033[5;1;31m'  # Blinking Bold Red
+    YE=$'\033[1;1;33m'    # Solid Bold Yellow (Stable Warning)
+    YEB=$'\033[5;1;33m'    # Blinking Bold Yellow (Stable Warning)
     GR=$'\033[1;32m'    # Solid Bold Green (All Clear)
     BW=$'\033[1;37m'    # Bright White
 
@@ -335,7 +339,9 @@ show_current_color_map() {
 	echo -e "${WHITE} = = > Fixed Semantic Warning Palette Preview:${NC}"
 	echo -e "     ${GR}GR = SAFE / OK${NC}"
 	echo -e "     ${YE}YE = CAUTION / NOTICE${NC}"
+	echo -e "     ${YEB}YEB = Blinking CAUTION / NOTICE${NC}"
 	echo -e "     ${RE}RE = RISK / FAIL / DANGER${NC}"
+	echo -e "     ${REB}REB = Blinking RISK / FAIL / DANGER${NC}"
 	echo
 }
 
@@ -492,7 +498,7 @@ run_twisted_menu() {
 	done
 }
 
-
+# END OF COLOR SYSTEM / TWISTED THEME ENGINE ===================================
 # Safe Pause Function With Color
 pause() {
     echo -e "${GR}>->->->-> = = > Review Above Carefully.....${NC}"
@@ -514,10 +520,9 @@ output="intro_template.mkv"
 INFO_MAP="info.csv"
 
 
-# more helpers and more helpers
+# - Helpers
 
-# - start of Canonicalize names everywhere helper
-
+# - Canonicalize names everywhere helper
 canonical_factory_path() {
 	local p="$1"
 
@@ -528,9 +533,6 @@ canonical_factory_path() {
 
 	printf '%s\n' "$p"
 }
-
-# - end of Canonicalize names everywhere helper
-
 
 # =========================
 # #MARKER: FACTORY EXIT TOKEN (TEN-KEY FRIENDLY)
@@ -948,7 +950,7 @@ record_working_source_state() {
 # PURPOSE:
 # - After OEM backup creation + Batch Normalizer run, verify that each
 #   eligible original source now has BOTH:
-#     1) its OEM safety copy in ./oem/oem_<original>
+#     1) its OEM safety copy in ./oem/OEM_<original>
 #     2) its rebuilt REKEY_<basename>.mkv working copy
 #
 # WHY THIS EXISTS:
@@ -1046,7 +1048,7 @@ prepare_verify_oem_and_rekey_parity() {
 
         base="${f%.*}"
         rekey="REKEY_${base}.mkv"
-        backup="oem/oem_${f}"
+        backup="oem/OEM_${f}"
 
         has_oem=0
         has_rekey=0
@@ -1098,16 +1100,16 @@ prepare_print_verified_rekey_handoff_summary() {
         for f in "${PREP_DELETE_BLOCKED[@]}"; do
             base="${f%.*}"
             rekey="REKEY_${base}.mkv"
-            backup="oem/oem_${f}"
+            backup="oem/OEM_${f}"
 
             echo -e "  ${YELLOW}-${NC} $f"
 
             if [[ ! -f "$backup" ]]; then
-                echo -e "      ${RE}missing OEM backup:${NC} $backup"
+                echo -e "      ${REB}missing OEM backup:${NC} $backup"
             fi
 
             if [[ ! -f "$rekey" ]]; then
-                echo -e "      ${RE}missing REKEY output:${NC} $rekey"
+                echo -e "      ${REB}missing REKEY output:${NC} $rekey"
             fi
         done
         echo
@@ -1117,7 +1119,7 @@ prepare_print_verified_rekey_handoff_summary() {
 prepare_delete_verified_originals() {
     # PURPOSE:
     # - Delete ONLY originals already verified as protected by:
-    #     oem/oem_<original>
+    #     oem/OEM_<original>
     #     REKEY_<basename>.mkv
     #
     # IMPORTANT:
@@ -1169,7 +1171,7 @@ prepare_delete_verified_originals() {
 			echo -e "${GREEN} = = > [DELETED ORIGINAL]${NC} $f"
 			((removed+=1)) || :
 		else
-			echo -e "${RE} = = > [FAILED DELETE]${NC} $f"
+			echo -e "${REB} = = > [FAILED DELETE]${NC} $f"
 			((failed+=1)) || :
 		fi
 	done
@@ -1472,7 +1474,120 @@ get_templates_from_intro_map() {
 	}
 
 
+
+# =========================================================
+# MARKER: OEM FINALIZE CHOICE STATE
+# =========================================================
+# Stores the user's OEM disposition choice during the
+# finalize flow. We PROMPT early, but EXECUTE later only
+# after parity + promotion have succeeded.
+#
+# VALUES:
+#   archive
+#   leave
+#   dump
+#   mark
+# =========================================================
+OEM_FINALIZE_CHOICE=""
+
 # start of Show How Much Space Current Working Directory And OEM Folder Are Using
+
+ui_show_folder_state_snapshot() {
+	local cwd cwd_display drive_display
+	local free_gb free_color free total
+	local oem_size="0"
+
+	cwd="$(pwd)"
+	drive_display="$(get_drive_display "$cwd")"
+	cwd_display="$(trim_working_path_display "$cwd" 3)"
+
+	echo -e "${GREEN} = = > Working Drive/Folder:${NC} [${YELLOW}$drive_display${NC}] ${YELLOW}$cwd_display${NC}"
+
+	free_gb=$(df -BG . | awk 'NR==2 {gsub("G","",$4); print $4}')
+
+	if (( free_gb < 20 )); then
+		free_color=$RED
+	elif (( free_gb < 50 )); then
+		free_color=$YELLOW
+	else
+		free_color=$GREEN
+	fi
+
+	read -r free total <<< "$(df -h . | awk 'NR==2 {print $4, $2}')"
+
+	echo -e "${free_color} = = > $free${NC} ${YELLOW}<-- Total${NC}"
+	echo -e "${free_color} = = >  ^ Free Space${NC}"
+	echo
+
+	shopt -s nullglob nocaseglob
+	local -a all_videos=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
+	local -a oem_files=(OEM_*)
+	local -a rekey_files=(REKEY_*.mkv)
+	local -a sutured_files=(SUTURED_*.mkv)
+	local -a barfix_files=(BARFIX_*.mkv)
+	local -a subpacked_files=(SUBPACKED_*)
+	local -a csv_files=(*.csv)
+
+	local -a original_videos=()
+	local f
+	for f in "${all_videos[@]}"; do
+		[[ -f "$f" ]] || continue
+		case "${f^^}" in
+			OEM_*|REKEY_*|SUTURED_*|PILOT_SUTURED_*|BARFIX_*|SUBPACKED_*)
+				continue
+				;;
+		esac
+		original_videos+=("$f")
+	done
+	shopt -u nullglob nocaseglob
+
+	echo -e "${CYAN} = = > Video Files Total In Working Dir:${NC} ${#all_videos[@]}"
+	echo -e "${CYAN} = = > Original Working Videos:${NC} ${#original_videos[@]}"
+	echo -e "${CYAN} = = > OEM_* Files In Working Dir:${NC} ${#oem_files[@]}"
+	echo -e "${CYAN} = = > REKEY_* Files In Working Dir:${NC} ${#rekey_files[@]}"
+	echo -e "${CYAN} = = > SUTURED_* Files In Working Dir:${NC} ${#sutured_files[@]}"
+	echo -e "${CYAN} = = > BARFIX_* Files In Working Dir:${NC} ${#barfix_files[@]}"
+	echo -e "${CYAN} = = > SUBPACKED_* Files In Working Dir:${NC} ${#subpacked_files[@]}"
+	echo -e "${CYAN} = = > CSV Files In Working Dir:${NC} ${#csv_files[@]}"
+
+	if [[ -d oem ]]; then
+		oem_size="$(du -sh oem 2>/dev/null | awk '{print $1}')"
+		echo -e "${GREEN} = = > oem/ Directory Present${NC} ${YELLOW}(${oem_size})${NC}"
+	else
+		echo -e "${YELLOW} = = > oem/ Directory Not Present${NC}"
+	fi
+
+	if [[ -d intro_template ]]; then
+		echo -e "${GREEN} = = > intro_template/ Directory Present${NC}"
+	else
+		echo -e "${YELLOW} = = > intro_template/ Directory Not Present${NC}"
+	fi
+
+	if [[ -f "$INTRO_MAP" ]]; then
+		echo -e "${GREEN} = = > ${INTRO_MAP} Present${NC}"
+	else
+		echo -e "${YELLOW} = = > ${INTRO_MAP} Not Present Yet${NC}"
+	fi
+}
+
+ui_show_cleanup_target_snapshot() {
+	local -a temp_targets=()
+	local -a template_targets=()
+	local -a detect_targets=()
+	local -a sutured_targets=()
+
+	mapfile -t temp_targets < <(cleanup_collect_temp_targets)
+	mapfile -t template_targets < <(cleanup_collect_template_targets)
+	mapfile -t detect_targets < <(cleanup_collect_detection_targets)
+	mapfile -t sutured_targets < <(cleanup_collect_sutured_targets)
+
+	echo
+	echo -e "${CYAN} = = > Temp / junk targets:${NC} ${#temp_targets[@]}"
+	echo -e "${CYAN} = = > Template targets:${NC} ${#template_targets[@]}"
+	echo -e "${CYAN} = = > Detection map / CSV targets:${NC} ${#detect_targets[@]}"
+	echo -e "${CYAN} = = > Finished SUTURED outputs:${NC} ${#sutured_targets[@]}"
+}
+
 
 # =========================
 # #MARKER: FOLDER SIZE HELPERS
@@ -1518,7 +1633,7 @@ show_space_overview() {
 	echo -e "${CYAN}================================================${NC}"
 
 	# Working folder path
-	echo -e "${GREEN} = = > Working Folder:${NC} [${YELLOW}$drive_display${NC}] ${YELLOW}$cwd_display${NC}"
+	echo -e "${GREEN} = = > Working Drive/Folder:${NC} [${YELLOW}$drive_display${NC}] ${YELLOW}$cwd_display${NC}"
 
 	# Disk free (reuse existing logic style)
 	free_gb=$(df -BG . | awk 'NR==2 {gsub("G","",$4); print $4}')
@@ -1533,7 +1648,6 @@ show_space_overview() {
 
 	read -r free total <<< "$(df -h . | awk 'NR==2 {print $4, $2}')"
 
-    echo -e "${CYAN} = = > Disk Status:${NC}"
     echo -e "${free_color} = = > $free${NC} ${YELLOW}<-- Total${NC}"
     echo -e "${free_color} = = >  ^ Free Space${NC}"
 
@@ -1548,7 +1662,7 @@ show_space_overview() {
 	echo
 }
 
-# end of Show How Much Space Current Working Directory And OEM Folder Are Using
+# end of Show How Much Space Current Working Directory And OEM Folder
 
 
 #==================================================================================
@@ -1858,7 +1972,7 @@ show_working_folder_and_disk_free() {
     drive_display="$(get_drive_display "$cwd")"
     cwd_display="$(trim_working_path_display "$cwd" 3)"
 
-    echo -e "${GREEN} = = > Working Folder:${NC} [${YELLOW}$drive_display${NC}] ${YELLOW}$cwd_display${NC}"
+    echo -e "${GREEN} = = > Working Drive/Folder:${NC} [${YELLOW}$drive_display${NC}] ${YELLOW}$cwd_display${NC}"
 
     # Disk space (important due to copy/processing growth)
     free_gb=$(df -BG . | awk 'NR==2 {gsub("G","",$4); print $4}')
@@ -2155,7 +2269,7 @@ EOF
 print_missing_required_dep() {
 	local dep="$1"
 	echo -e "${RE}============================================================${NC}"
-	echo -e "${RE} = = > Missing Required Dependency: $dep${NC}"
+	echo -e "${REB} = = > Missing Required Dependency: $dep${NC}"
 	echo -e "${RE}============================================================${NC}"
 }
 
@@ -2163,8 +2277,8 @@ print_missing_optional_dep() {
 	local dep="$1"
 	local why="$2"
 	echo -e "${YELLOW}------------------------------------------------------------${NC}"
-	echo -e "${YE} = = > Optional Tool Missing: $dep${NC}"
-	echo -e "${YE} = = > Related Feature Impact: $why${NC}"
+	echo -e "${YEB} = = > Optional Tool Missing: $dep${NC}"
+	echo -e "${YEB} = = > Related Feature Impact: $why${NC}"
 	echo -e "${YELLOW}------------------------------------------------------------${NC}"
 }
 
@@ -2342,7 +2456,7 @@ inspect_dependencies() {
 		if have_cmd "$dep"; then
 			echo -e "${GREEN}[ OK ]${NC} $dep"
 		else
-			echo -e "${RE}[MISS]${NC} $dep"
+			echo -e "${REB}[MISS]${NC} $dep"
 		fi
 	done
 
@@ -2417,15 +2531,11 @@ run_main_menu() {
     echo -e "${RED}=======================================================================${NC}"
     echo -e "${BWHITE}                      THE_FACTORY                                      ${NC}"
     echo -e "${CYAN}-----THE UNIVERSAL VIDEO SANITIZER & TRIMMER & META TITLE FIXER--------${NC}"
-    echo -e "${RED}-----------With Integrated SubSystems Including------------------------"
+    echo -e "${RED}------Clip_Grab BitZ From VidZ Any Dir Drop_In Tool custom_cut.mkv-----${NC}"
     echo -e "${BWHITE}-----IntroFind-Engine + Perceptual_Hash_Detection----------------------${NC}"
     echo -e "${CYAN}------SUBTOX UNIFIED SUBTITLE + RENAME ENGINE -------------------------${NC}"
     echo -e "${RED}=======================================================================${NC}"
-    echo -e "${BWHITE}------BUILD_EPISODES_CSV--INTERACTIVE TITLE BUILDER--AUTO SxxEyy MODE--${NC}"
-    echo -e "${CYAN}-----TEMPLATE BUILDER intro_template.mkv-------------------------------${NC}"
-    echo -e "${RED}------Clip_Grab BitZ From VidZ Any Dir Drop_In Tool custom_cut.mkv-----${NC}"
-    echo -e "${BWHITE}----GAPMAN CSV Or MAN Intro Removal + Global Pre/Post Trim-------------"
-    echo -e "${CYAN}=======================================================================${NC}"
+    echo
     echo -e "${GREEN}        Main Menu = = = THE_FACTORY = = = Main Menu                     ${NC}"
     echo
 
@@ -2434,7 +2544,7 @@ run_main_menu() {
     drive_display="$(get_drive_display "$cwd")"
     cwd_display="$(trim_working_path_display "$cwd" 3)"
 
-    echo -e "${GREEN} = = > Working Folder:${NC} [${YELLOW}$drive_display${NC}] ${YELLOW}$cwd_display${NC}"
+    echo -e "${GREEN} = = > Working Drive/Folder:${NC} [${YELLOW}$drive_display${NC}] ${YELLOW}$cwd_display${NC}"
 
     # Disk space (important due to normalization expansion)
 	local free_gb free_color free total
@@ -2451,7 +2561,6 @@ run_main_menu() {
 
 	read -r free total <<< "$(df -h . | awk 'NR==2 {print $4, $2}')"
 
-    echo -e "${CYAN} = = > Disk Status:${NC}"
     echo -e "${free_color} = = > $free${NC} ${YELLOW}<-- Total${NC}"
     echo -e "${free_color} = = >  ^ Free Space${NC}"
     echo
@@ -2533,7 +2642,7 @@ run_main_menu() {
         ;;
 
       *)
-        echo -e "${RE} = = > Invalid.${NC}"
+        echo -e "${REB} = = > Invalid.${NC}"
         pause
         ;;
     esac
@@ -2655,7 +2764,7 @@ run_barfix() {
     fi
 
     if [[ "$BARFIX_MODE" != "1" && "$BARFIX_MODE" != "2" && "$BARFIX_MODE" != "3" ]]; then
-      echo -e "${RE} = = > Invalid BARFIX Mode.${NC}"
+      echo -e "${REB} = = > Invalid BARFIX Mode.${NC}"
       pause
       return 1
     fi
@@ -2664,7 +2773,7 @@ run_barfix() {
     if [[ "$BARFIX_MODE" == "1" || "$BARFIX_MODE" == "3" ]]; then
       read -p "Start TITLE At Which Underscore Segment? (1-based, e.g. 3): " SEG
       if [[ -z "${SEG:-}" || ! "$SEG" =~ ^[0-9]+$ || "$SEG" -lt 1 ]]; then
-        echo -e "${RE} = = > Invalid Segment Number.${NC}"
+        echo -e "${REB} = = > Invalid Segment Number.${NC}"
         pause
         return 0
       fi
@@ -2758,7 +2867,7 @@ run_barfix() {
           if mkvpropedit "$f" --edit info --set "title=$t" >/dev/null 2>&1; then
             echo -e "  ${GREEN} = = > Updated In-Place:${NC} $f"
           else
-            echo -e "  ${RE} = = > FAILED In-Place:${NC} $f"
+            echo -e "  ${REB} = = > FAILED In-Place:${NC} $f"
           fi
         else
           name="${f%.*}"
@@ -2768,7 +2877,7 @@ run_barfix() {
             "$out" -y; then
             echo -e "  ${GREEN} = = > Created:${NC} $out"
           else
-            echo -e "  ${RE} = = > FAILED:${NC} $f"
+            echo -e "  ${REB} = = > FAILED:${NC} $f"
             rm -f "$out"
           fi
         fi
@@ -2801,7 +2910,7 @@ run_barfix() {
           "$out" -y; then
           echo -e "  ${GR} = = > Created:${NC} $out"
         else
-          echo -e "  ${RE} = = > FAILED:${NC} $f"
+          echo -e "  ${REB} = = > FAILED:${NC} $f"
           rm -f "$out"
         fi
       else
@@ -2812,7 +2921,7 @@ run_barfix() {
           "$out" -y; then
           echo -e "  ${GR} = = > Created:${NC} $out"
         else
-          echo -e "  ${RE} = = > FAILED:${NC} $f"
+          echo -e "  ${REB} = = > FAILED:${NC} $f"
           rm -f "$out"
         fi
       fi
@@ -3070,7 +3179,7 @@ run_subtox() {
         return 0
     fi
 
-    echo -e "${RE} = = > Invalid Selection.${NC}"
+    echo -e "${REB} = = > Invalid Selection.${NC}"
     pause
     return 1
 }
@@ -3276,7 +3385,7 @@ run_finalize_menu() {
 		echo -e "${CYAN}        SPACE OVERVIEW / WORKING CONTEXT         ${NC}"
 		echo -e "${CYAN}================================================${NC}"
 
-		echo -e "${GREEN} = = > Working Folder:${NC} [${YELLOW}$drive_display${NC}] ${YELLOW}$cwd_display${NC}"
+		echo -e "${GREEN} = = > Working Drive/Folder:${NC} [${YELLOW}$drive_display${NC}] ${YELLOW}$cwd_display${NC}"
 
 		free_gb=$(df -BG . | awk 'NR==2 {gsub("G","",$4); print $4}')
 
@@ -3290,7 +3399,6 @@ run_finalize_menu() {
 
 		read -r free total <<< "$(df -h . | awk 'NR==2 {print $4, $2}')"
 
-	    echo -e "${CYAN} = = > Disk Status:${NC}"
         echo -e "${free_color} = = > $free${NC} ${YELLOW}<-- Total${NC}"
         echo -e "${YELLOW} = = >  ^ Free Space${NC}"
 
@@ -3412,7 +3520,7 @@ run_finalize_menu() {
 					echo -e "${GR} = = > [REMOVED]${NC} $target"
 					((removed+=1)) || :
 				else
-					echo -e "${RE} = = > [FAILED]${NC} $target"
+					echo -e "${REB} = = > [FAILED]${NC} $target"
 					((failed+=1)) || :
 				fi
 			else
@@ -3420,7 +3528,7 @@ run_finalize_menu() {
 					echo -e "${GR} = = > [REMOVED]${NC} $target"
 					((removed+=1)) || :
 				else
-					echo -e "${RE} = = > [FAILED]${NC} $target"
+					echo -e "${REB} = = > [FAILED]${NC} $target"
 					((failed+=1)) || :
 				fi
 			fi
@@ -3428,36 +3536,25 @@ run_finalize_menu() {
 
 		echo
 		echo -e "${RE} = = > Removed:${NC} $removed"
-		echo -e "${RE} = = > Failed:${NC} $failed"
+		echo -e "${REB} = = > Failed:${NC} $failed"
 		echo
 	}
 
-	cleanup_show_status() {
-		clear
-		echo -e "${CYAN}================================================${NC}"
-		echo -e "${CYAN}              CLEANUP :: STATUS                 ${NC}"
-		echo -e "${CYAN}================================================${NC}"
-		echo
+cleanup_show_status() {
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}              CLEANUP :: STATUS                 ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
 
-		local -a temp_targets=()
-		local -a template_targets=()
-		local -a detect_targets=()
-		local -a sutured_targets=()
+	ui_show_folder_state_snapshot
+	ui_show_cleanup_target_snapshot
 
-		mapfile -t temp_targets < <(cleanup_collect_temp_targets)
-		mapfile -t template_targets < <(cleanup_collect_template_targets)
-		mapfile -t detect_targets < <(cleanup_collect_detection_targets)
-		mapfile -t sutured_targets < <(cleanup_collect_sutured_targets)
-
-		echo -e "${CYAN} = = > Temp / junk targets:${NC} ${#temp_targets[@]}"
-		echo -e "${CYAN} = = > Template targets:${NC} ${#template_targets[@]}"
-		echo -e "${CYAN} = = > Detection map / CSV targets:${NC} ${#detect_targets[@]}"
-		echo -e "${CYAN} = = > Finished SUTURED outputs:${NC} ${#sutured_targets[@]}"
-		echo
-		echo -e "${YELLOW} = = > OEM Material Is Handled Through The Integrated SUTURED Finalizer.${NC}"
-		echo
-		pause
-	}
+	echo
+	echo -e "${YELLOW} = = > OEM Material Is Handled Through The Integrated SUTURED Finalizer.${NC}"
+	echo
+	pause
+}
 
 	cleanup_temp_junk() {
 		clear
@@ -3531,6 +3628,69 @@ run_finalize_menu() {
 
 		pause
 	}
+
+cleanup_collect_rekey_targets() {
+	shopt -s nullglob nocaseglob
+	local -a targets=(REKEY_*.mkv)
+	shopt -u nullglob nocaseglob
+
+	local f
+	for f in "${targets[@]}"; do
+		[[ -f "$f" ]] || continue
+		printf '%s\n' "$f"
+	done
+}
+
+# =========================================================
+# MARKER: EXECUTE OEM FINALIZE CHOICE (POST-SUCCESS)
+# =========================================================
+# PURPOSE:
+#   Carry out the OEM disposition that was chosen earlier,
+#   but ONLY after parity checks and SUTURED promotion have
+#   completed successfully.
+#
+# HOUSE RULE:
+#   OEM remains safety material until finalize is truly done.
+# =========================================================
+cleanup_execute_oem_finalize_choice() {
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}       EXECUTING SAVED OEM FINALIZE CHOICE      ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+
+	case "${OEM_FINALIZE_CHOICE:-leave}" in
+		archive)
+			echo -e "${YELLOW} = = > Executing OEM Choice: Archive OEM Material${NC}"
+			echo
+			cleanup_archive_oem_material
+			;;
+		leave)
+			echo -e "${YELLOW} = = > Executing OEM Choice: Leave OEM Material Alone${NC}"
+			echo
+			;;
+		dump)
+			echo -e "${YELLOW} = = > Executing OEM Choice: Delete OEM Contents, Then Mark Folder Finished${NC}"
+			echo
+			cleanup_delete_oem_contents
+			cleanup_mark_oem_folder_finished
+			;;
+		mark)
+			echo -e "${YELLOW} = = > Executing OEM Choice: Mark OEM Folder Finished, But Keep Contents${NC}"
+			echo
+			cleanup_mark_oem_folder_finished
+			;;
+		*)
+			echo -e "${RE} = = > Unknown OEM Finalize Choice:${NC} ${OEM_FINALIZE_CHOICE}"
+			echo -e "${YELLOW} = = > Leaving OEM Material Unchanged For Safety.${NC}"
+			echo
+			return 1
+			;;
+	esac
+
+	echo -e "${GREEN} = = > OEM Finalize Choice Processing Complete.${NC}"
+	echo
+	return 0
+}
 
 cleanup_detection_maps() {
 		clear
@@ -3657,7 +3817,7 @@ cleanup_detection_maps() {
 	}
 
 	cleanup_mark_oem_folder_finished() {
-		local target="factory_wuz_here"
+		local target="Factory_WuZ_Here"
 
 		if [[ ! -d "./oem" ]]; then
 			return 0
@@ -3673,47 +3833,187 @@ cleanup_detection_maps() {
 		if mv -- "./oem" "./$target"; then
 			echo -e "${GR} = = > OEM Folder Marked Finished As:${NC} $target"
 		else
-			echo -e "${RE} = = > Failed To Rename OEM Folder To:${NC} $target"
+			echo -e "${REB} = = > Failed To Rename OEM Folder To:${NC} $target"
 		fi
 
 		echo
 	}
 
-	cleanup_archive_oem_folder() {
-		local stamp tar_name
-		local -a csv_files=()
-		local -a map_templates=()
+# =========================================================
+# MARKER: FINALIZE OEM PARITY GUARD (SUTURED -> OEM)
+# =========================================================
+# PURPOSE:
+#   Before destructive finalize steps, verify that every
+#   finished SUTURED target still has its matching OEM backup.
+#
+# WHY THIS EXISTS:
+#   Count-only parity is not strong enough here.
+#   We do NOT merely care that "the numbers look right" —
+#   we care that EACH finalized episode still has its own
+#   recoverable OEM counterpart by base filename.
+#
+# SAFETY MODEL:
+#   For every:
+#       SUTURED_Episode_Name.mkv
+#   require:
+#       OEM_Episode_Name.mkv
+#
+# RESULT:
+#   - PASS: finalize may continue
+#   - FAIL: finalize must stop before destructive actions
+#
+# HOUSE RULE:
+#   Feedback is king.
+#   If parity fails, show exactly what is missing.
+# =========================================================
+# =========================================================
+# MARKER: FINALIZE OEM PARITY GUARD (SUTURED -> OEM)
+# =========================================================
+# PURPOSE:
+#   Before destructive finalize steps, verify that every
+#   finished SUTURED target still has its matching OEM backup.
+#
+# WHY THIS EXISTS:
+#   Count-only parity is not strong enough here.
+#   We do NOT merely care that "the numbers look right" —
+#   we care that EACH finalized episode still has its own
+#   recoverable OEM counterpart by base filename.
+#
+# SAFETY MODEL:
+#   For every:
+#       SUTURED_Episode_Name.mkv
+#   require:
+#       ./oem/OEM_Episode_Name.mkv
+#
+# IMPORTANT:
+#   OEM backups in this script live in:
+#       ./oem/
+#   with filename pattern:
+#       oem_<original_filename>
+#
+# RESULT:
+#   - PASS: finalize may continue
+#   - FAIL: finalize must stop before destructive actions
+#
+# HOUSE RULE:
+#   Feedback is king.
+#   If parity fails, show exactly what is missing.
+# =========================================================
+cleanup_verify_oem_parity_for_sutured_targets() {
+	local -a sutured_targets=()
+	local -a missing_oem=()
+	local sutured_file base_name expected_oem
 
-		if [[ ! -d "./oem" ]]; then
-			echo -e "${YE} = = > OEM Folder Not Present. Nothing To Archive.${NC}"
-			echo
-			return 0
+	mapfile -t sutured_targets < <(cleanup_collect_sutured_targets)
+
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}       FINALIZE :: OEM PARITY SAFETY CHECK      ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW} = = > Verifying That Every Finished SUTURED File Has A Matching OEM Backup...${NC}"
+	echo
+
+	if (( ${#sutured_targets[@]} == 0 )); then
+		echo -e "${YELLOW} = = > No SUTURED Targets Found. Nothing To Verify.${NC}"
+		echo
+		return 1
+	fi
+
+	echo -e "${CYAN} = = > OEM Folder Present:${NC} $([[ -d ./oem ]] && echo YES || echo NO)"
+	echo
+
+	for sutured_file in "${sutured_targets[@]}"; do
+		[[ -f "$sutured_file" ]] || continue
+
+		base_name="${sutured_file#SUTURED_}"
+		expected_oem="./oem/OEM_${base_name}"
+
+		echo -e "${CYAN} = = > SUTURED Target:${NC} $sutured_file"
+		echo -e "${CYAN} = = > Expected OEM:${NC} $expected_oem"
+
+		if [[ -f "$expected_oem" ]]; then
+			echo -e "${GREEN} = = > OEM Match Found.${NC}"
+		else
+			echo -e "${REB} = = > OEM Match Missing.${NC}"
+			missing_oem+=("$expected_oem")
 		fi
+		echo
+	done
 
-		# collect csv files
-		csv_files=( *.csv )
+	echo -e "${CYAN} = = > Finished SUTURED Targets:${NC} ${#sutured_targets[@]}"
+	echo -e "${CYAN} = = > Missing OEM Counterparts:${NC} ${#missing_oem[@]}"
+	echo
 
-		# collect templates referenced in intro_map
-		while IFS= read -r t; do
-			[[ -f "$t" ]] && map_templates+=("$t")
-		done < <(get_templates_from_intro_map "$INTRO_MAP")
+	if (( ${#missing_oem[@]} == 0 )); then
+		echo -e "${GREEN} = = > OEM Parity Check: PASS${NC}"
+		echo -e "${GREEN} = = > Every Finished SUTURED File Has A Matching OEM Backup In ./oem.${NC}"
+		echo
+		return 0
+	fi
 
-		stamp="$(date +%Y%m%d_%H%M%S)"
-		tar_name="oem_archive_${stamp}.tar.gz"
+	echo -e "${REB} = = > OEM Parity Check: FAIL${NC}"
+	echo -e "${RED} = = > Missing OEM Counterparts Were Found.${NC}"
+	echo
+	cleanup_print_targets "Missing OEM Backup(s)" "${missing_oem[@]}"
+	echo
 
-		echo -e "${CYAN} = = > Creating OEM Archive:${NC} $tar_name"
+	return 1
+}
 
-		if tar -czf "$tar_name" \
+cleanup_archive_oem_folder() {
+	local stamp tar_name
+	local -a csv_files=()
+	local -a map_templates=()
+
+	# ========================================================
+	# PURPOSE:
+	# Archive OEM folder + related CSV + referenced templates
+	# into a timestamped tar.gz bundle.
+	#
+	# NOTES:
+	# - Uses run_with_progress for long-running tar operation
+	# - Preserves user feedback during compression
+	# ========================================================
+
+	if [[ ! -d "./oem" ]]; then
+		echo -e "${YE} = = > OEM Folder Not Present. Nothing To Archive.${NC}"
+		echo
+		return 0
+	fi
+
+	# ----- COLLECT CSV FILES ---------------------------------
+	# Glob is safe; if none exist, array will be empty
+	csv_files=( *.csv )
+
+	# ----- COLLECT TEMPLATE FILES FROM INTRO MAP -------------
+	# Only include files that actually exist
+	while IFS= read -r t; do
+		[[ -f "$t" ]] && map_templates+=("$t")
+	done < <(get_templates_from_intro_map "$INTRO_MAP")
+
+	# ----- BUILD ARCHIVE NAME --------------------------------
+	stamp="$(date +%Y%m%d_%H%M%S)"
+	tar_name="oem_archive_${stamp}.tar.gz"
+
+	echo -e "${CYAN} = = > Creating OEM Archive:${NC} $tar_name"
+
+	# ========================================================
+	# LONG-RUN OPERATION
+	# Use run_with_progress wrapper instead of calling tar directly
+	# ========================================================
+	if run_with_progress "Archiving OEM Folder..." \
+		tar -czf "$tar_name" \
 			oem/ \
 			"${csv_files[@]}" \
 			"${map_templates[@]}"; then
-			echo -e "${GR} = = > OEM Archive Created:${NC} $tar_name"
-		else
-			echo -e "${RE} = = > OEM Archive FAILED:${NC} $tar_name"
-		fi
 
-		echo
-	}
+		echo -e "${GR} = = > OEM Archive Created:${NC} $tar_name"
+	else
+		echo -e "${REB} = = > OEM Archive FAILED:${NC} $tar_name"
+	fi
+
+	echo
+}
 
 	cleanup_delete_oem_contents() {
 		local reply
@@ -3740,67 +4040,74 @@ cleanup_detection_maps() {
 		echo
 	}
 
-	cleanup_handle_oem_material() {
-		local oem_size reply
+# =========================================================
+# MARKER: PROMPT OEM FINALIZE CHOICE (NO ACTION YET)
+# =========================================================
+# PURPOSE:
+#   Ask the user what should happen to OEM material during
+#   finalize, but DO NOT perform that action yet.
+#
+# WHY:
+#   OEM parity may still be required for finalize safety.
+#   So we capture the decision now and execute it only
+#   after finalize succeeds.
+# =========================================================
+cleanup_handle_oem_material() {
+	local reply
 
-		echo -e "${CYAN}================================================${NC}"
-		echo -e "${CYAN}            OEM BACKUP MATERIAL HANDLER         ${NC}"
-		echo -e "${CYAN}================================================${NC}"
+	OEM_FINALIZE_CHOICE="leave"
+
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}          OEM MATERIAL FINALIZE OPTIONS         ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo "     1) Archive OEM Material"
+	echo "     2) Leave OEM Material Alone"
+	echo "     3) Delete OEM Contents Only, Then Mark Folder Finished"
+	echo "     4) Mark OEM Folder Finished, But Keep Contents"
+	echo
+	read -r -p "     Choice: " reply
+	echo
+
+	reply="${reply//[[:space:]]/}"
+
+	# ========================================================
+	# TEN-KEY EXIT HOOK
+	# ========================================================
+	if is_factory_exit_token "$reply"; then
+		echo -e "${YELLOW} = = > OEM Finalize Choice Cancelled.${NC}"
 		echo
+		return 1
+	fi
 
-		if [[ -d "./oem" ]]; then
-			oem_size="$(get_folder_size_human "./oem")"
-			echo -e "${GREEN} = = > OEM Folder Present${NC}"
-			echo -e "${CYAN} = = > OEM Folder Size Now:${NC} ${YELLOW}$oem_size${NC}"
-		else
-			echo -e "${YELLOW} = = > OEM Folder Not Present${NC}"
+	case "$reply" in
+		1)
+			OEM_FINALIZE_CHOICE="archive"
+			echo -e "${GREEN} = = > OEM Finalize Choice Saved:${NC} Archive OEM Material"
+			;;
+		2)
+			OEM_FINALIZE_CHOICE="leave"
+			echo -e "${GREEN} = = > OEM Finalize Choice Saved:${NC} Leave OEM Material Alone"
+			;;
+		3)
+			OEM_FINALIZE_CHOICE="dump"
+			echo -e "${GREEN} = = > OEM Finalize Choice Saved:${NC} Delete OEM Contents, Then Mark Folder Finished"
+			;;
+		4)
+			OEM_FINALIZE_CHOICE="mark"
+			echo -e "${GREEN} = = > OEM Finalize Choice Saved:${NC} Mark OEM Folder Finished, But Keep Contents"
+			;;
+		*)
+			echo -e "${RE} = = > Invalid OEM Finalize Choice.${NC}"
 			echo
-			return 0
-		fi
+			return 1
+			;;
+	esac
 
-
-		echo -e "${CYAN} = = > Choose OEM Handling:${NC}"
-        echo -e "${YELLOW}"
-		echo "     1) Archive OEM Folder And Matching Templates To Tarball And Mark Folder Finished"
-		echo "     2) Leave OEM Folder As-Is For Now"
-		echo "     3) Delete OEM Contents Only, Then Mark Folder Finished"
-		echo "     4) Mark OEM Folder Finished Without Archiving Or Deleting"
-		echo
-		read -r -p "     Choice: " reply
-        echo -e "${NC}"
-        echo
-
-        reply="${reply//[[:space:]]/}"
-
-        # ========================================================
-        # TEN-KEY EXIT HOOK
-        # ========================================================
-        if is_factory_exit_token "$reply"; then
-        	return 0
-        fi
-
-        case "$reply" in
-        	1)
-				cleanup_archive_oem_folder
-				cleanup_mark_oem_folder_finished
-				;;
-			2)
-				echo -e "${YELLOW} = = > Leaving OEM Folder As-Is.${NC}"
-				echo
-				;;
-			3)
-				cleanup_delete_oem_contents
-				cleanup_mark_oem_folder_finished
-				;;
-			4)
-				cleanup_mark_oem_folder_finished
-				;;
-			*)
-				echo -e "${RE} = = > Invalid OEM Handling Choice.${NC}"
-				echo
-				;;
-		esac
-	}
+	echo -e "${YELLOW} = = > OEM Action Will Be Performed Only After Successful Finalize.${NC}"
+	echo
+	return 0
+}
 
 	cleanup_delete_replaced_working_originals() {
 		local custom_prefix="${1:-}"
@@ -3848,7 +4155,7 @@ cleanup_detection_maps() {
 				echo -e "${GR} = = > [DELETED ORIGINAL]${NC} $f"
 				((removed+=1)) || :
 			else
-				echo -e "${RE} = = > [FAILED DELETE]${NC} $f"
+				echo -e "${REB} = = > [FAILED DELETE]${NC} $f"
 				((failed+=1)) || :
 			fi
 		done
@@ -3901,7 +4208,7 @@ cleanup_detection_maps() {
 			fi
 
 			if [[ -e "$final_name" ]]; then
-				echo -e "${RE} = = > [NAME COLLISION]${NC} $final_name"
+				echo -e "${REB} = = > [NAME COLLISION]${NC} $final_name"
 				((failed+=1)) || :
 				continue
 			fi
@@ -3910,7 +4217,7 @@ cleanup_detection_maps() {
 				echo -e "${GR} = = > [PROMOTED]${NC} $final_name"
 				((renamed+=1)) || :
 			else
-				echo -e "${RE} = = > [FAILED RENAME]${NC} $s"
+				echo -e "${REB} = = > [FAILED RENAME]${NC} $s"
 				((failed+=1)) || :
 			fi
 		done
@@ -3927,84 +4234,136 @@ cleanup_detection_maps() {
 		return 0
 	}
 
-	cleanup_finalize_sutured_replacements() {
-		local rename_mode custom_prefix=""
-		local delete_ok=0
-		local -a _tmp_sutured_check=()
+cleanup_finalize_sutured_replacements() {
+	local rename_mode custom_prefix=""
+	local delete_ok=0
+	local -a _tmp_sutured_check=()
 
-		clear
-		show_space_overview
+	clear
+	show_space_overview
 
-		echo -e "${CYAN}================================================${NC}"
-		echo -e "${CYAN}      FINALIZE FINISHED SUTURED REPLACEMENTS    ${NC}"
-		echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}      FINALIZE FINISHED SUTURED REPLACEMENTS    ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW} = = > This Finalizer Treats SUTURED Files As The Goal.${NC}"
+	echo -e "${YELLOW} = = > OEM Material Is Backup/Archive Material.${NC}"
+	echo -e "${YELLOW} = = > Working-Dir Originals May Be Deleted Only By Confirmation.${NC}"
+	echo
+
+	mapfile -t _tmp_sutured_check < <(cleanup_collect_sutured_targets)
+	if (( ${#_tmp_sutured_check[@]} == 0 )); then
+		echo -e "${YELLOW} = = > No SUTURED Files Found. Nothing To Finalize.${NC}"
 		echo
-		echo -e "${YELLOW} = = > This Finalizer Treats SUTURED Files As The Goal.${NC}"
-		echo -e "${YELLOW} = = > OEM Material Is Backup/Archive Material.${NC}"
-		echo -e "${YELLOW} = = > Working-Dir Originals May Be Deleted Only By Confirmation.${NC}"
-		echo
-
-		mapfile -t _tmp_sutured_check < <(cleanup_collect_sutured_targets)
-		if (( ${#_tmp_sutured_check[@]} == 0 )); then
-			echo -e "${YELLOW} = = > No SUTURED Files Found. Nothing To Finalize.${NC}"
-			echo
-			pause
-			return 0
-		fi
-		unset _tmp_sutured_check
-
-        echo -e "${YELLOW}"
-		echo -e "${CYAN} = = > Rename Mode For Finished SUTURED Outputs:${NC}"
-		echo "     1) Remove SUTURED_ Prefix Entirely"
-		echo "     2) Replace SUTURED_ With My Custom Prefix"
-		echo
-		read -r -p "     Choice: " reply
-        echo -e "${NC}"
-        echo
-
-        reply="${reply//[[:space:]]/}"
-
-        # ========================================================
-        # TEN-KEY EXIT HOOK
-        # ========================================================
-        if is_factory_exit_token "$reply"; then
-        	return 0
-        fi
-
-        case "$reply" in
-        	1)
-				custom_prefix=""
-				;;
-			2)
-				read -r -p " = = > Enter Custom Replacement Prefix (example: FINAL_): " custom_prefix
-				echo
-				;;
-			*)
-				echo -e "${RE} = = > Invalid Rename Mode.${NC}"
-				pause
-				return 1
-				;;
-		esac
-
-		cleanup_handle_oem_material
-
-		if cleanup_delete_replaced_working_originals "$custom_prefix"; then
-			delete_ok=1
-		else
-			delete_ok=0
-		fi
-
-		if (( delete_ok == 0 )); then
-			echo -e "${YELLOW} = = > Final Rename Promotion Stopped Because Originals Still Block Final Names.${NC}"
-			echo -e "${YELLOW} = = > Delete Or Move Those Originals First, Then Re-Run This Finalizer.${NC}"
-			echo
-			pause
-			return 0
-		fi
-
-		cleanup_promote_sutured_outputs "$custom_prefix"
 		pause
-	}
+		return 0
+	fi
+	unset _tmp_sutured_check
+
+	echo -e "${YELLOW}"
+	echo -e "${CYAN} = = > Rename Mode For Finished SUTURED Outputs:${NC}"
+	echo "     1) Remove SUTURED_ Prefix Entirely"
+	echo "     2) Replace SUTURED_ With My Custom Prefix"
+	echo
+	read -r -p "     Choice: " reply
+	echo -e "${NC}"
+	echo
+
+	reply="${reply//[[:space:]]/}"
+
+	# ========================================================
+	# TEN-KEY EXIT HOOK
+	# ========================================================
+	if is_factory_exit_token "$reply"; then
+		return 0
+	fi
+
+	case "$reply" in
+		1)
+			custom_prefix=""
+			;;
+		2)
+			read -r -p " = = > Enter Custom Replacement Prefix (example: FINAL_): " custom_prefix
+			echo
+			;;
+		*)
+			echo -e "${REB} = = > Invalid Rename Mode.${NC}"
+			pause
+			return 1
+			;;
+	esac
+
+	# --------------------------------------------------------
+	# PROMPT OEM DISPOSITION NOW (BUT DO NOT EXECUTE YET)
+	# --------------------------------------------------------
+	if ! cleanup_handle_oem_material; then
+		pause
+		return 0
+	fi
+
+	# --------------------------------------------------------
+	# SAFETY GUARD:
+	# Before destructive finalize steps, verify that every
+	# finished SUTURED target still has its matching OEM backup.
+	# --------------------------------------------------------
+	if ! cleanup_verify_oem_parity_for_sutured_targets; then
+		echo -e "${REB} = = > Finalize Blocked: OEM Parity Safety Check Failed.${NC}"
+		echo -e "${YELLOW} = = > Resolve Missing OEM Backup(s) Before Re-Running Finalize.${NC}"
+		echo
+		pause
+		return 0
+	fi
+
+	if cleanup_delete_replaced_working_originals "$custom_prefix"; then
+		delete_ok=1
+	else
+		delete_ok=0
+	fi
+
+	if (( delete_ok == 0 )); then
+		echo -e "${YELLOW} = = > Final Rename Promotion Stopped Because Originals Still Block Final Names.${NC}"
+		echo -e "${YELLOW} = = > Delete Or Move Those Originals First, Then Re-Run This Finalizer.${NC}"
+		echo
+		pause
+		return 0
+	fi
+
+	if cleanup_promote_sutured_outputs "$custom_prefix"; then
+
+		# --------------------------------------------------------
+		# OEM DISPOSITION HAPPENS ONLY AFTER SUCCESSFUL PROMOTE
+		# --------------------------------------------------------
+		cleanup_execute_oem_finalize_choice
+
+		# --------------------------------------------------------
+		# POST-PROMOTION CLEANUP: REKEY INTERMEDIATES
+		# Only runs after confirmed successful promotion
+		# --------------------------------------------------------
+		mapfile -t rekey_targets < <(cleanup_collect_rekey_targets)
+
+		if (( ${#rekey_targets[@]} > 0 )); then
+			echo -e "${CYAN}================================================${NC}"
+			echo -e "${CYAN}     REKEY INTERMEDIATE CLEANUP (POST-PROMOTE)  ${NC}"
+			echo -e "${CYAN}================================================${NC}"
+			echo
+
+			cleanup_print_targets "REKEY Targets Queued" "${rekey_targets[@]}"
+
+			if ask_yes_no " = = > Remove REKEY_* Intermediate Files? (y/n): "; then
+				cleanup_remove_targets "${rekey_targets[@]}"
+			else
+				echo -e "${YELLOW} = = > REKEY Cleanup Skipped.${NC}"
+				echo
+			fi
+		fi
+
+	else
+		echo -e "${YELLOW} = = > Promotion did not complete. REKEY files preserved.${NC}"
+		echo
+	fi
+
+	pause
+}
 
 	while true; do
 		clear
@@ -4081,12 +4440,13 @@ cleanup_detection_maps() {
             		"${map_templates[@]}"
 
             	echo -e "${GREEN} = = > Created: $tarname${NC}"
+				pause
             	;;
 			[Qq])
 				return 0
 				;;
 			*)
-				echo -e "${RE} = = > Invalid.${NC}"
+				echo -e "${REB} = = > Invalid.${NC}"
 				pause
 				;;
 		esac
@@ -4353,72 +4713,15 @@ inspect_print_group() {
 }
 
 inspect_show_folder_snapshot() {
-    clear
-    echo -e "${CYAN}================================================${NC}"
-    echo -e "${CYAN}          INSPECT :: FOLDER SNAPSHOT            ${NC}"
-    echo -e "${CYAN}================================================${NC}"
-    echo
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}          INSPECT :: FOLDER SNAPSHOT            ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
 
-    local cwd cwd_display drive_display
-    cwd="$(pwd)"
-    drive_display="$(get_drive_display "$cwd")"
-    cwd_display="$(trim_working_path_display "$cwd" 3)"
-
-    echo -e "${GREEN} = = > Working Folder:${NC} [${YELLOW}$drive_display${NC}] ${YELLOW}$cwd_display${NC}"
-    # Disk space (important due to normalization expansion)
-		local free_gb free_color free total
-
-	free_gb=$(df -BG . | awk 'NR==2 {gsub("G","",$4); print $4}')
-
-	if (( free_gb < 20 )); then
-		free_color=$RED
-	elif (( free_gb < 50 )); then
-		free_color=$YELLOW
-	else
-		free_color=$GREEN
-	fi
-
-	read -r free total <<< "$(df -h . | awk 'NR==2 {print $4, $2}')"
-
-    echo -e "${CYAN} = = > Disk Status:${NC}"
-    echo -e "${free_color} = = > $free${NC} ${YELLOW}<-- Total${NC}"
-    echo -e "${free_color} = = >  ^ Free Space${NC}"
-    echo
-
-    # Collect broad file counts so the user can quickly judge folder state.
-    shopt -s nullglob nocaseglob
-    local -a all_videos=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
-    local -a oem_files=(OEM_*)
-    local -a rekey_files=(REKEY_*.mkv)
-    local -a sutured_files=(SUTURED_*.mkv)
-    local -a barfix_files=(BARFIX_*.mkv)
-    local -a subpacked_files=(SUBPACKED_*)
-    local -a csv_files=(*.csv)
-    shopt -u nullglob nocaseglob
-
-    echo -e "${CYAN} = = > Video Files Total:${NC} ${#all_videos[@]}"
-    echo -e "${CYAN} = = > OEM_* Files:${NC} ${#oem_files[@]}"
-    echo -e "${CYAN} = = > REKEY_* Files:${NC} ${#rekey_files[@]}"
-    echo -e "${CYAN} = = > SUTURED_* Files:${NC} ${#sutured_files[@]}"
-    echo -e "${CYAN} = = > BARFIX_* Files:${NC} ${#barfix_files[@]}"
-    echo -e "${CYAN} = = > SUBPACKED_* Files:${NC} ${#subpacked_files[@]}"
-    echo -e "${CYAN} = = > CSV Files:${NC} ${#csv_files[@]}"
-    echo
-
-    # Template state is important because the workflow depends on it.
-    if [[ -d intro_template ]]; then
-        echo -e "${GREEN} = = > intro_template/ Directory Present${NC}"
-    else
-        echo -e "${YELLOW} = = > intro_template/ Directory Not Present${NC}"
-    fi
-
-    if [[ -f "$INTRO_MAP" ]]; then
-        echo -e "${GREEN} = = > ${INTRO_MAP} Present${NC}"
-    else
-        echo -e "${YELLOW} = = > ${INTRO_MAP} Not Present Yet${NC}"
-    fi
-
-    pause
+	ui_show_folder_state_snapshot
+	echo
+	pause
 }
 
 inspect_show_file_groups() {
@@ -4649,7 +4952,7 @@ run_inspect() {
                 return 0
                 ;;
             *)
-                echo -e "${RE} = = > Invalid.${NC}"
+                echo -e "${REB} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -4788,7 +5091,7 @@ prepare_make_oem_backups() {
     echo -e "${YELLOW}This Creates Preserved Sidecar Copies In ./oem As OEM_<filename>.${NC}"
     echo -e "${YELLOW}Existing OEM_ Copies In ./oem Are Skipped, Not Overwritten.${NC}"
     echo
-    if ! ask_yes_no "Create OEM Backups For ${#targets[@]} Eligible File(s)? (y/n): "; then
+    if ! ask_yes_no "${YELLOW}Create OEM Backups For ${#targets[@]} Eligible File(s)? (y/n): ${NC}"; then
         echo -e "${YELLOW} = = > OEM Backup Pass Cancelled.${NC}"
         pause
         return 0
@@ -4820,7 +5123,7 @@ prepare_make_oem_backups() {
             echo -e "${GR} = = > [OK]${NC} $f -> $backup"
             ((made_count+=1)) || :
         else
-            echo -e "${RE} = = > [FAIL]${NC} $f"
+            echo -e "${REB} = = > [FAIL]${NC} $f"
             ((fail_count+=1)) || :
         fi
     done
@@ -4888,7 +5191,7 @@ prepare_set_rekey_preference() {
             return 0
             ;;
         *)
-            echo -e "${RE} = = > Invalid.${NC}"
+            echo -e "${REB} = = > Invalid.${NC}"
             ;;
     esac
 
@@ -4903,7 +5206,8 @@ prepare_run_batch_normalizer_wrapper() {
     echo -e "${CYAN}================================================${NC}"
     echo
     echo -e "${CYAN} This Rebuilds Eligible Source Videos Into REKEY_*.mkv Outputs.${NC}"
-    echo -e "${YELLOW} = = > Be Mindful Of Free Space Before Starting.${NC}"
+    echo -e "${YEB} = = > Be Mindful Of Free Space Before Starting.${NC}"
+    echo -e "${YEB} = = > This Will Double Folder Space.${NC}"
     echo
     pause
     run_batch_normalizer
@@ -5025,7 +5329,7 @@ run_prepare_sources() {
                 return 0
                 ;;
             *)
-                echo -e "${RE} = = > Invalid.${NC}"
+                echo -e "${REB} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -5076,7 +5380,7 @@ run_title_subtitle_menu() {
                 return 0
                 ;;
             *)
-                echo -e "${RE} = = > Invalid.${NC}"
+                echo -e "${REB} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -5130,7 +5434,7 @@ run_subtitlez_menu() {
                 return 0
                 ;;
             *)
-                echo -e "${RE} = = > Invalid.${NC}"
+                echo -e "${REB} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -5181,7 +5485,7 @@ run_title_playback_menu() {
                 return 0
                 ;;
             *)
-                echo -e "${RE} = = > Invalid.${NC}"
+                echo -e "${REB} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -5373,6 +5677,7 @@ run_gapman_menu() {
 					echo
 
 					prompt_normalize_first_workflow
+                    PILOT_MODE=1
 					run_gapman
 
 					echo
@@ -5446,6 +5751,7 @@ run_gapman_menu() {
 				;;
             2)
                 prompt_normalize_first_workflow # reserved for future rusty
+                PILOT_MODE=0
                 run_gapman
                 ;;
             3)
@@ -5463,7 +5769,7 @@ run_gapman_menu() {
                 return 0
                 ;;
             *)
-                echo -e "${RE} = = > Invalid.${NC}"
+                echo -e "${REB} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -5549,7 +5855,7 @@ run_join_two_clips() {
         -c copy "$out" -y; then
         echo -e "${GR} = = > Joined Output Created: $out${NC}"
     else
-        echo -e "${RE} = = > Join failed.${NC}"
+        echo -e "${REB} = = > Join failed.${NC}"
         echo -e "${YE} = = > Tip:Both Files Should Be Similarly Prepared Before Joining.${NC}"
     fi
 
@@ -5650,7 +5956,7 @@ run_one_file_normalize_to_mkv_tool() {
 				break 2
 			fi
 
-			echo -e "${RE} = = > Invalid Selection.${NC}"
+			echo -e "${REB} = = > Invalid Selection.${NC}"
 			break
 		done
 	done
@@ -5721,7 +6027,7 @@ run_clip_join_triage_menu() {
 				run_barfix
 				;;
 			*)
-				echo -e "${RE} = = > Invalid.${NC}"
+				echo -e "${REB} = = > Invalid.${NC}"
 				pause
 				;;
 		esac
@@ -5863,7 +6169,7 @@ run_utility_menu() {
     			run_twisted_menu
     			;;
 			*)
-				echo -e "${RE} = = > Invalid.${NC}"
+				echo -e "${REB} = = > Invalid.${NC}"
 				pause
 				;;
 		esac
@@ -5991,7 +6297,7 @@ rebuild_if_needed() {
         fi
     fi
 
-    echo -e "${RE} = = > Rebuild Failed. Using Original File.${NC}" >&2
+    echo -e "${REB} = = > Rebuild Failed. Using Original File.${NC}" >&2
     echo "$file"
 }
 
@@ -6153,7 +6459,7 @@ run_keyframe_suitability_check() {
 	fi
 
 	if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#targets[@]} )); then
-		echo -e "${RE} = = > Invalid Selection.${NC}"
+		echo -e "${REB} = = > Invalid Selection.${NC}"
 		echo
 		pause
 		return 0
@@ -6351,7 +6657,7 @@ rebuild_cut_friendly_source() {
             return 130
         fi
 
-        echo -e "${RE} = = > Rebuild Failed:${NC} $in" >&2
+        echo -e "${REB} = = > Rebuild Failed:${NC} $in" >&2
         return 1
     fi
 }
@@ -6517,7 +6823,7 @@ create_template() {
                 src="$rebuilt_src"
                 echo -e "${GR} = = > Using Rebuilt Source: $src${NC}"
             else
-                echo -e "${RE} = = > Rebuild Failed. Continuing With Original Source.${NC}"
+                echo -e "${REB} = = > Rebuild Failed. Continuing With Original Source.${NC}"
             fi
         fi
     fi
@@ -6533,7 +6839,7 @@ create_template() {
                 src="$rebuilt_src"
                 echo -e "${GR} = = > Using Rebuilt Source: $src${NC}"
             else
-                echo -e "${RE} = = > Rebuild Failed. Continuing With Original Source.${NC}"
+                echo -e "${REB} = = > Rebuild Failed. Continuing With Original Source.${NC}"
             fi
         fi
     fi
@@ -6635,7 +6941,7 @@ create_template() {
       "$temp_cut"; then
         :
     else
-        echo -e "${RE} = = > Template Cut Failed.${NC}"
+        echo -e "${REB} = = > Template Cut Failed.${NC}"
         rm -f "$temp_cut"
         rmdir "$template_tmpdir" 2>/dev/null || true
         return 1
@@ -6713,18 +7019,35 @@ create_template() {
 
 # End Of TEMPLATE BUILDER intro_template.mkv
 
-# =========================
-# #MARKER: LONG-RUN COMMAND PROGRESS HELPER
-# =========================
-# PURPOSE:
+# =========================================================
+# MARKER: RUN WITH PROGRESS (GENERIC LONG-RUN WRAPPER)
+# =========================================================
+# PURPOSE:LONG-RUN COMMAND PROGRESS HELPER
 # - Show Visible Life-Sign Output During Long-Running File Operations.
+#   Wrap a long-running command and provide a visible heartbeat
 # - Prevent The Script From Looking Frozen During Quiet Ffmpeg Work.
+#   so the user knows the system is alive and working. we dont need a ctrl-c right now
 #
-# DESIGN:
+# DESIGN GOALS:
 # - Runs The Target Command In Background.
 # - Prints A Simple Heartbeat Until The Command Exits.
 # - Returns The Original Command's Exit Code Unchanged.
+#   - Non-intrusive (does NOT interfere with command output)
+#   - Works with ANY command (generic wrapper)
+#   - Provides:
+#       • task label (repeated)
+#       • animated spinner (visual movement)
+#       • elapsed time (confidence indicator)
+# USAGE:
+#   run_with_progress "Label Here..." command arg1 arg2 ...
 #
+# EXAMPLE:
+#   run_with_progress "Building OEM Archive..." tar -czf archive.tar ./oem
+#
+# NOTES:
+#   - Best used for QUIET long-running commands (tar, scans, batch ops)
+#   - Avoid wrapping commands that already emit live progress (ffmpeg w/ stats)
+#   - Output is sent to STDERR so it does not pollute pipelines
 # IMPORTANT:
 # - All Progress Text Goes To STDERR.
 # - This Keeps STDOUT Clean For Functions That Are Used Inside:
@@ -6732,26 +7055,70 @@ create_template() {
 # - In Those Cases, STDOUT Must Remain Reserved For The True Return Value
 #   (Such As A File Path), While Progress Still Remains Visible On Screen.
 #
+# HOUSE RULE:
+#   Feedback is king — user should NEVER wonder if the script is stuck.
+# =========================================================
 run_with_progress() {
-    local label="$1"
-    shift
+	local label="$1"
+	shift
 
-    echo -e "${CYAN} = = > ${label}${NC}" >&2
+	# --------------------------------------------------------
+	# INITIAL USER FEEDBACK (one-time banner line)
+	# --------------------------------------------------------
+	echo -e "${CYAN} = = > ${label}${NC}" >&2
 
-    "$@" &
-    local cmd_pid=$!
+	# --------------------------------------------------------
+	# LAUNCH COMMAND IN BACKGROUND
+	# --------------------------------------------------------
+	"$@" &
+	local cmd_pid=$!
 
-    while kill -0 "$cmd_pid" 2>/dev/null; do
-        echo -ne "${YELLOW}. . . . ....WORKING-PLEASE-STAND-BY.... . . . .${NC}\r" >&2
-        sleep 2
-    done
+	# --------------------------------------------------------
+	# TRACKING / VISUAL ELEMENTS
+	# --------------------------------------------------------
+	local cmd_status=0
+	local start_ts now elapsed
+	local spin='|/-\'        # classic spinner frames
+	local i=0
+	local frame
 
-    wait "$cmd_pid"
-    local cmd_status=$?
+	start_ts=$(date +%s)
 
-    echo -ne "                    \r" >&2
+	# --------------------------------------------------------
+	# HEARTBEAT LOOP
+	# Runs until command exits
+	# --------------------------------------------------------
+	while kill -0 "$cmd_pid" 2>/dev/null; do
+		now=$(date +%s)
+		elapsed=$((now - start_ts))
 
-    return "$cmd_status"
+		# rotate spinner frame
+		frame="${spin:i%${#spin}:1}"
+
+		# ----------------------------------------------------
+		# LIVE STATUS LINE (overwrites itself via carriage return)
+		# ----------------------------------------------------
+		echo -ne "${YELLOW} = = > ${label} ${frame}    ....WORKING-PLEASE-STAND-BY....    [${elapsed}s]${NC}\r" >&2
+
+		sleep 1
+		((i++))
+	done
+
+	# --------------------------------------------------------
+	# CAPTURE EXIT STATUS
+	# --------------------------------------------------------
+	wait "$cmd_pid"
+	cmd_status=$?
+
+	# --------------------------------------------------------
+	# CLEAN LINE (erase spinner line after completion)
+	# --------------------------------------------------------
+	echo -ne "                                                                                                                    \r" >&2
+
+	# --------------------------------------------------------
+	# RETURN ORIGINAL COMMAND STATUS
+	# --------------------------------------------------------
+	return "$cmd_status"
 }
 
 # =========================
@@ -6810,7 +7177,7 @@ normalize_cut_friendly_file() {
 		echo -e "${GR} = = > Normalized OK:${NC} $out"
 		return 0
 	else
-		echo -e "${RE} = = > Normalize FAILED:${NC} $in"
+		echo -e "${REB} = = > Normalize FAILED:${NC} $in"
 		rm -f "$out"
 		return 1
 	fi
@@ -7017,7 +7384,7 @@ run_custom_cut() {
       "$temp_cut"; then
         :
     else
-        echo -e "${RE} = = > Custom Cut Failed.${NC}"
+        echo -e "${REB} = = > Custom Cut Failed.${NC}"
         rm -f "$temp_cut"
         rmdir "$custom_tmpdir" 2>/dev/null || true
         pause
@@ -7184,7 +7551,7 @@ restore_oem_prefix() {
             echo -e "${GREEN} = = > RESTORED: $f -> $new_name${NC}"
             ((moved+=1)) || :
         else
-            echo -e "${RE} = = > FAIL: Could Not Restore $f${NC}"
+            echo -e "${REB} = = > FAIL: Could Not Restore $f${NC}"
             ((skipped+=1)) || :
         fi
     done
@@ -7273,7 +7640,7 @@ run_batch_normalizer() {
     echo -e "${CYAN}------------------------------------------------------------------------${NC}"
 	echo -e "${YELLOW}WARNING: TRIPLE THE ORIGINAL FOLDER SIZE. = = = = = = = = = = = = = = = ${NC}"
     echo -e "${CYAN}------------------------------------------------------------------------${NC}"
-	echo -e "${RED}WARNING: = = = = = = = > Check Your Disk Space WARNING = = = = = = = = = = ${NC}"
+	echo -e "${REB}WARNING: = = = = = = = > Check Your Disk Space WARNING = = = = = = = = = = ${NC}"
     echo -e "${CYAN}------------------------------------------------------------------------${NC}"
 	echo -e "${CYAN} = = > This Step Is Intended To Make Later Cuts Clean And Reliable.     ${NC}"
     echo -e "${CYAN}------------------------------------------------------------------------${NC}"
@@ -7344,7 +7711,7 @@ run_batch_normalizer() {
 	echo -e "${CYAN} = = > Select Load Level:${NC}"
 	echo -e "${GR} = = > 1) Light   (1 File At A Time)${NC}"
 	echo -e "${YE} = = > 2) Medium  (3 Files At A Time)${NC}"
-	echo -e "${RE} = = > 3) Thrash  (Default ALL Or Choose Concurrent File Count)${NC}"
+	echo -e "${REB} = = > 3) Thrash  (Default ALL Or Choose Concurrent File Count)${NC}"
 	echo
 
     echo -e "${YELLOW}"
@@ -7765,7 +8132,7 @@ TMPDIR="_gapman_tmp_v2"
 cleanup() { rm -rf "$TMPDIR"; }
 
 on_abort() {
-	echo -e "\n${RE} = = > ABORTED. Cleaning Temp...${NC}"
+	echo -e "\n${REB} = = > ABORTED. Cleaning Temp...${NC}"
 
 	# ========================================================
 	# EMERGENCY PILOT RESTORE
@@ -7900,7 +8267,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
   # ---- duration ----
   dur="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$in" 2>/dev/null || true)"
   if [[ -z "$dur" ]]; then
-    echo -e "${RE} = = > [FAIL] Could Not Read Duration.${NC}"
+    echo -e "${REB} = = > [FAIL] Could Not Read Duration.${NC}"
     continue
   fi
   dur="$(printf "%.3f" "$dur" 2>/dev/null || echo "$dur")"
@@ -7939,7 +8306,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
   start_keep="$(fmax0 "$PRE_TRIM")"
   end_keep="$(fsub "$dur" "$POST_TRIM")"
   if (( $(echo "$end_keep <= $start_keep" | bc -l) )); then
-    echo -e "${RE} = = > [FAIL] PRE/POST Trims Invalid (End <= Start).${NC}"
+    echo -e "${REB} = = > [FAIL] PRE/POST Trims Invalid (End <= Start).${NC}"
     continue
   fi
 
@@ -7950,7 +8317,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
 
   # sanity: prevent inverted/zero intro window
   if (( $(echo "$t_end <= $t_start" | bc -l) )); then
-    echo -e "${RE} = = > [FAIL] Pads Caused Invalid Intro Window (End <= Start). Skipping.${NC}"
+    echo -e "${REB} = = > [FAIL] Pads Caused Invalid Intro Window (End <= Start). Skipping.${NC}"
     continue
   fi
 
@@ -7968,7 +8335,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
 
   # If intro collapses to nothing, this becomes a pure pre/post trim job.
   if (( $(echo "$A1 <= $A0" | bc -l) )) && (( $(echo "$B1 <= $B0" | bc -l) )); then
-    echo -e "${RE} = = > [FAIL] Nothing Left After Trims/Intro Removal. Skipping.${NC}"
+    echo -e "${REB} = = > [FAIL] Nothing Left After Trims/Intro Removal. Skipping.${NC}"
     continue
   fi
 
@@ -8006,7 +8373,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
       "$segA" -y; then
       add_join "$segA"
     else
-      echo -e "${RE} = = > [FAIL] Segment A Slice Failed.${NC}"
+      echo -e "${REB} = = > [FAIL] Segment A Slice Failed.${NC}"
       continue
     fi
   fi
@@ -8020,7 +8387,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
       "$segB" -y; then
       add_join "$segB"
     else
-      echo -e "${RE} = = > [FAIL] Segment B Slice Failed.${NC}"
+      echo -e "${REB} = = > [FAIL] Segment B Slice Failed.${NC}"
       continue
     fi
   fi
@@ -8038,7 +8405,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
     mv "$tmpout" "$out"
     echo -e "${GREEN} = = > [OK]${NC} Created: ${GREEN}${out}${NC}"
   else
-    echo -e "${RE} = = > [FAIL]${NC} Concat-Copy refused."
+    echo -e "${REB} = = > [FAIL]${NC} Concat-Copy refused."
     echo -e "${YELLOW} = = > Tip:${NC} Ensure Files Are Normalized Consistently (codec/fps/pix_fmt/tracks)."
     echo -e "${YELLOW} = = > Tip:${NC} If A Source Is Damaged, Remux Once:"
     echo -e "  ffmpeg -i \"${base_in}\" -map 0 -c copy \"REMUX_${base_in%.*}.mkv\""
@@ -8156,7 +8523,7 @@ get_preferred_source_file() {
     # GATE 2: TRUSTED CACHE HIT
     # ========================================================
     if cached_rekey_is_trusted_for_raw "$src" "$rekey"; then
-        echo -e "${GREEN} = = > Found Trusted Cached REKEY Source, Using:${NC} $(basename "$rekey")" >&2
+        echo -e "${GR} = = > Found Trusted Cached REKEY Source, Using:${NC} $(basename "$rekey")" >&2
         printf '%s\n' "$rekey"
         return 0
     fi
@@ -8170,7 +8537,7 @@ get_preferred_source_file() {
     # - Do NOT Waste Time Probing It Again Unless The Raw File Changed.
     #
     if cached_rekey_is_known_bad_for_raw "$src" "$rekey"; then
-        echo -e "${YELLOW} = = > REKEY Was Previously Tested And Rejected. Skipping Re-Validation:${NC} $(basename "$rekey")" >&2
+        echo -e "${YE} = = > REKEY Was Previously Tested And Rejected. Skipping Re-Validation:${NC} $(basename "$rekey")" >&2
         printf '%s\n' "$src"
         return 0
     fi
@@ -8184,7 +8551,7 @@ get_preferred_source_file() {
     if is_cut_friendly_rekey_file "$rekey"; then
         verdict="SAFE"
         record_working_source_state "$src" "$rekey" "1" "1" "$verdict" "$rekey"
-        echo -e "${GREEN} = = > Found Valid Cut-Friendly REKEY File, Using:${NC} $(basename "$rekey")" >&2
+        echo -e "${GR} = = > Found Valid Cut-Friendly REKEY File, Using:${NC} $(basename "$rekey")" >&2
         printf '%s\n' "$rekey"
         return 0
     fi
@@ -8195,16 +8562,12 @@ get_preferred_source_file() {
     verdict="RISKY"
     record_working_source_state "$src" "$rekey" "0" "1" "$verdict" "$rekey"
 
-    echo -e "${YELLOW} = = > Found REKEY File, But It Is Not Cut-Friendly. Ignoring:${NC} $(basename "$rekey")" >&2
+    echo -e "${RE} = = > Found REKEY File, But It Is Not Cut-Friendly. Ignoring:${NC} $(basename "$rekey")" >&2
     printf '%s\n' "$src"
 }
 
 # end of REKEY AUTO-SELECTION HELPERS
-
-
 # start of NEGATIVE REKEY CACHE CHECK
-
-
 # =========================
 # #MARKER: NEGATIVE REKEY CACHE CHECK
 # =========================
@@ -8272,10 +8635,7 @@ cached_rekey_is_known_bad_for_raw() {
 }
 
 # end of NEGATIVE REKEY CACHE CHECK
-
 # end of  HELPERS maybe get em all in here if poss
-
-
 # and all menus here if poss
 
 # =========================
@@ -8398,7 +8758,7 @@ run_intro_detection_menu() {
                 return 0
                 ;;
             *)
-                echo -e "${RE} = = > Invalid.${NC}"
+                echo -e "${REB} = = > Invalid.${NC}"
                 pause
                 ;;
         esac
@@ -8478,7 +8838,7 @@ case "$MODE" in
     return 0
     ;;
   *)
-    echo -e "${RE} = = > Invalid mode: $MODE${NC}"
+    echo -e "${REB} = = > Invalid mode: $MODE${NC}"
     exit 1
     ;;
 esac
@@ -8639,7 +8999,7 @@ if [[ "${MODE:-}" == "2" || "${MODE:-}" == "4" ]]; then
     if [[ "$resolve_status" -eq 10 ]]; then
         continue
     elif [[ "$resolve_status" -ne 0 ]]; then
-        echo -e "${RE} = = > Failed To Resolve Working Source For: $raw${NC}"
+        echo -e "${REB} = = > Failed To Resolve Working Source For: $raw${NC}"
         continue
     fi
 
@@ -8708,7 +9068,7 @@ from PIL import Image
 import imagehash
 PY
 then
-  echo -e "${RE} = = > pHash Engine Missing Python Modules.${NC}"
+  echo -e "${REB} = = > pHash Engine Missing Python Modules.${NC}"
   echo -e "${YE} = = > Install:${NC} python3 -m pip install --user pillow python-imagehash opencv-python"
   pause
   continue
@@ -9154,7 +9514,7 @@ EOF
     ')"
 
     if [[ $phash_status -ne 0 ]]; then
-        echo -e "${RE} = = > pHash Engine Failed For: $file${NC}"
+        echo -e "${REB} = = > pHash Engine Failed For: $file${NC}"
 
         # Helpful breadcrumb for future-you:
         if [[ -f "$PHASH_STDERR_LOG" ]]; then
@@ -9176,7 +9536,7 @@ EOF
     #   treat that as an engine-side protocol failure.
     # ========================================================
     if [[ $phash_status -eq 0 && -z "$result" ]]; then
-        echo -e "${RE} = = > pHash Engine Returned No Parseable Result For: $file${NC}"
+        echo -e "${REB} = = > pHash Engine Returned No Parseable Result For: $file${NC}"
 
         if [[ -f "$PHASH_STDERR_LOG" ]]; then
             echo -e "${YE} = = > See Python stderr log:${NC} $PHASH_STDERR_LOG"
@@ -9221,7 +9581,7 @@ EOF
         echo "$raw,$start,$end,$start_hms,$end_hms,$template_used,${diff_used:-}" >> "$INTRO_MAP"
 
     elif [[ "$result" == "NO_MATCH" ]]; then
-        echo -e "${RE} = = > No Perceptual Match Found Within ${limit}s.${NC}"
+        echo -e "${REB} = = > No Perceptual Match Found Within ${limit}s.${NC}"
     fi
 
     if [[ "${MODE:-}" == "2" ]]; then
@@ -9249,7 +9609,7 @@ EOF
         ;;
 
     *)
-        echo -e "${RE} = = > Invalid Mode.${NC}"
+        echo -e "${REB} = = > Invalid Mode.${NC}"
         exit 1
         ;;
     esac
