@@ -3614,6 +3614,7 @@ cleanup_show_status() {
 		fi
 
 		echo -ne "${YELLOW} = = > Your Keys Are In Here So Make Sure Your Done Before You Delete ${NC}"
+		echo
 		echo -ne "${YELLOW} = = > Remove Template Artifacts And intro_template Directory? (y/n | 0.=cancel): ${NC}"
 		read -r reply
 		reply="${reply//[[:space:]]/}"
@@ -3910,7 +3911,9 @@ cleanup_detection_maps() {
 cleanup_verify_OEM_parity_for_sutured_targets() {
 	local -a sutured_targets=()
 	local -a missing_OEM=()
-	local sutured_file base_name expected_OEM
+	local sutured_file base_name stem
+	local matched_OEM=""
+	local f oem_name oem_stem
 
 	mapfile -t sutured_targets < <(cleanup_collect_sutured_targets)
 
@@ -3930,21 +3933,57 @@ cleanup_verify_OEM_parity_for_sutured_targets() {
 	echo -e "${CYAN} = = > OEM Folder Present:${NC} $([[ -d ./OEM ]] && echo YES || echo NO)"
 	echo
 
+	# =========================================================
+	# #MARKER: OEM PARITY LOOP (EXTENSION-AGNOSTIC MATCH)
+	# =========================================================
+	# PURPOSE:
+	#   Match each SUTURED file to its OEM backup by episode identity,
+	#   NOT by extension.
+	#
+	# WHY:
+	#   OEM backups may be .mp4 / .avi / .mkv etc.
+	#   SUTURED is always .mkv → direct filename match fails.
+	#
+	# METHOD:
+	#   - Strip SUTURED_ prefix
+	#   - Strip extension → get "stem"
+	#   - Scan ./OEM for OEM_<stem> with ANY extension
+	#
+	# HOUSE RULE:
+	#   Match identity, not container format.
+	# =========================================================
 	for sutured_file in "${sutured_targets[@]}"; do
 		[[ -f "$sutured_file" ]] || continue
 
 		base_name="${sutured_file#SUTURED_}"
-		expected_OEM="./OEM/OEM_${base_name}"
+		stem="${base_name%.*}"
+		matched_OEM=""
 
 		echo -e "${CYAN} = = > SUTURED Target:${NC} $sutured_file"
-		echo -e "${CYAN} = = > Expected OEM:${NC} $expected_OEM"
+		echo -e "${CYAN} = = > Expected OEM Stem:${NC} ./OEM/OEM_${stem}.*"
 
-		if [[ -f "$expected_OEM" ]]; then
-			echo -e "${GREEN} = = > OEM Match Found.${NC}"
+		shopt -s nullglob
+		for f in ./OEM/OEM_*; do
+			[[ -f "$f" ]] || continue
+
+			oem_name="${f##*/}"
+			oem_stem="${oem_name#OEM_}"
+			oem_stem="${oem_stem%.*}"
+
+			if [[ "$oem_stem" == "$stem" ]]; then
+				matched_OEM="$f"
+				break
+			fi
+		done
+		shopt -u nullglob
+
+		if [[ -n "$matched_OEM" ]]; then
+			echo -e "${GREEN} = = > OEM Match Found:${NC} $matched_OEM"
 		else
 			echo -e "${REB} = = > OEM Match Missing.${NC}"
-			missing_OEM+=("$expected_OEM")
+			missing_OEM+=("./OEM/OEM_${stem}.*")
 		fi
+
 		echo
 	done
 
@@ -3962,6 +4001,9 @@ cleanup_verify_OEM_parity_for_sutured_targets() {
 	echo -e "${REB} = = > OEM Parity Check: FAIL${NC}"
 	echo -e "${RED} = = > Missing OEM Counterparts Were Found.${NC}"
 	echo
+	echo -e "${YELLOW} = = > Finalize Must Stop Before Any Destructive Promotion / Deletion.${NC}"
+	echo
+
 	cleanup_print_targets "Missing OEM Backup(s)" "${missing_OEM[@]}"
 	echo
 
@@ -5021,7 +5063,7 @@ prepare_collect_source_candidates() {
         [[ "$f" =~ ^SUBPACKED_ ]] && continue
         [[ "$f" == intro_template* ]] && continue
         [[ "$f" == custom_cut* ]] && continue
-        printf '%s\n' "$f"
+        printf "${CYAN}%s${NC}\n" "$f"
     done
 }
 
@@ -5043,7 +5085,7 @@ prepare_show_candidates() {
     fi
 
     echo -e "${CYAN} = = > Eligible Working Sources:${NC}"
-    printf ' - %s\n' "${targets[@]}"
+    printf "${CYAN}   - %s${NC}\n" "${targets[@]}"
     echo
     echo -e "${CYAN} = = > Count:${NC} ${#targets[@]}"
     echo
@@ -5190,8 +5232,10 @@ prepare_set_rekey_preference() {
             ;;
         2)
             prefer_rekey="0"
-            echo -e "${YELLOW} REKEY Preference disabled For This Shell Session.${NC}"
-            echo -e "${CYAN} Original Source Files Remain The Preferred Working Source.${NC}"
+            echo -e "${YELLOW} = = > REKEY Preference disabled For This Shell Session.${NC}"
+            echo -e "${YEB} = = > WARNING: REKEY Preference Is OFF.${NC}"
+            echo -e "${YELLOW} = = > Cutting From Originals Is Discouraged And May Produce Bad Cuts.${NC}"
+            echo -e "${CYAN} = = > Original Source Files Remain The Preferred Working Source.${NC}"
             ;;
         3)
             prompt_normalize_first_workflow
@@ -5278,7 +5322,9 @@ prepare_run_combined_pass() {
     echo
     echo -e "${CYAN}REKEY Preference Is Now Enabled For This Shell Session.${NC}"
     echo
-    read -r -p "Open BARFIX now? (y/n): " barfix_reply
+
+    echo -e "${YELLOW} Open BARFIX now? (y/n): ${NC}"
+    read -r barfix_reply
     case "${barfix_reply,,}" in
         y|yes)
             run_barfix
@@ -5305,11 +5351,11 @@ run_prepare_sources() {
         echo "     5) BARFIX Title + Playback Tools"
         echo "     6) Combined Prep Pass"
         echo
-        echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
+        echo "     10key exit > 0.Enter to Quit   (or q) to Quit${NC}"
         echo
 
-        read -r -p "     Choice: " prep_choice
-        echo -e "${NC}"
+        echo -e "${YELLOW}      Choice: ${NC}"
+        read -r prep_choice
         prep_choice="${prep_choice//[[:space:]]/}"
 
         # ========================================================
@@ -7903,9 +7949,122 @@ run_batch_normalizer() {
 	echo -e "${CYAN} = = > Failed Normalizations:${NC} $fail_count"
 	echo -e "${CYAN} = = > Outputs:${NC} REKEY_*.mkv"
 	echo -e "${CYAN}==========================================================${NC}"
-
+register_new_rekeys_after_batch_normalizer
 	pause
 	return 0
+}
+
+# ============================================================
+# #MARKER: POST-NORMALIZE REKEY REGISTRATION PASS
+# ============================================================
+# PURPOSE:
+# - After Batch Normalizer creates REKEY files, register ONLY
+#   newly-created / not-yet-recorded REKEY pairs into info.csv.
+#
+# WHY THIS EXISTS:
+# - Full refresh_rekey_auth_system() is too expensive to run
+#   every time we merely "visit" normalization controls.
+# - We only want to pay the validation cost once per new REKEY.
+#
+# WHAT THIS DOES:
+# - Scans eligible raw/original targets
+# - Looks for matching REKEY_<basename>.mkv
+# - Skips rows already trusted/current in info.csv
+# - Validates new REKEY files once
+# - Records SAFE / RISKY verdict into the ledger
+# - Enables prefer_rekey for this shell session
+#
+# HOUSE RULE:
+# - Freshly-created REKEY files should be registered immediately.
+# - Originals should NOT silently remain the preferred cutting source.
+# ============================================================
+register_new_rekeys_after_batch_normalizer() {
+	local -a targets=()
+	local raw base rekey verdict
+	local checked=0
+	local newly_recorded=0
+	local already_known=0
+	local missing_rekey=0
+	local safe_count=0
+	local risky_count=0
+
+	ensure_info_map
+	mapfile -t targets < <(prepare_collect_rekey_scope_targets)
+
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}   POST-NORMALIZE :: REKEY REGISTRATION PASS    ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW} = = > Registering Newly Available REKEY Files Into info.csv...${NC}"
+	echo
+
+	for raw in "${targets[@]}"; do
+		[[ -f "$raw" ]] || continue
+
+		base="${raw%.*}"
+		rekey="REKEY_${base}.mkv"
+
+		if [[ ! -f "$rekey" ]]; then
+			((missing_rekey+=1)) || :
+			continue
+		fi
+
+		# --------------------------------------------------------
+		# SKIP IF THIS RAW -> REKEY PAIR IS ALREADY TRUSTED/CURRENT
+		# --------------------------------------------------------
+		if cached_rekey_is_trusted_for_raw "$raw" "$rekey"; then
+			((already_known+=1)) || :
+			continue
+		fi
+
+		# --------------------------------------------------------
+		# ALSO SKIP IF THIS EXACT REKEY HAS ALREADY BEEN CHECKED
+		# FOR THIS RAW AND THE CACHE ROW IS CURRENT.
+		# --------------------------------------------------------
+		if info_cache_is_current "$raw"; then
+			if [[ "$(info_get_working_name "$raw" 2>/dev/null || true)" == "$rekey" ]]; then
+				if [[ "$(info_get_validated_once "$raw" 2>/dev/null || true)" == "1" ]]; then
+					((already_known+=1)) || :
+					continue
+				fi
+			fi
+		fi
+
+		((checked+=1)) || :
+		echo -e "${CYAN} = = > [CHECKING]${NC} RAW:   ${GREEN}$raw${NC}"
+		echo -e "${CYAN} = = > [MATCHED] ${NC} REKEY: ${GREEN}$rekey${NC}"
+
+		if is_cut_friendly_rekey_file "$rekey"; then
+			verdict="SAFE"
+			record_working_source_state "$raw" "$rekey" "1" "1" "$verdict" "$rekey"
+			echo -e "${GREEN} = = > [AUTHORIZED]${NC} $rekey"
+			((safe_count+=1)) || :
+		else
+			verdict="RISKY"
+			record_working_source_state "$raw" "$rekey" "0" "1" "$verdict" "$rekey"
+			echo -e "${YEB} = = > [RECORDED REJECT]${NC} $rekey"
+			((risky_count+=1)) || :
+		fi
+
+		((newly_recorded+=1)) || :
+		echo
+	done
+
+	# --------------------------------------------------------
+	# BIAS FUTURE SOURCE RESOLUTION TOWARD REKEY
+	# --------------------------------------------------------
+	prefer_rekey="1"
+
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}    POST-NORMALIZE REKEY REGISTRATION SUMMARY   ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > New REKEY Pairs Checked:${NC} $checked"
+	echo -e "${GREEN} = = > Newly Recorded SAFE Rows:${NC} $safe_count"
+	echo -e "${YELLOW} = = > Newly Recorded RISKY Rows:${NC} $risky_count"
+	echo -e "${CYAN} = = > Already Known / Skipped:${NC} $already_known"
+	echo -e "${CYAN} = = > Raw Targets Without REKEY:${NC} $missing_rekey"
+	echo -e "${GREEN} = = > REKEY Preference Forced ON For This Shell Session.${NC}"
+	echo
 }
 
 # ==============================================================================
@@ -8529,11 +8688,14 @@ prompt_normalize_first_workflow() {
             echo -e "${GREEN} = = > REKEY Source Preference Enabled.${NC}"
             echo -e "${CYAN} = = > Existing Matching REKEY Files Will Be Preferred As Source.${NC}"
             echo -e "${CYAN} = = > Missing REKEY Files Are Built By Batch Normalizer As Needed.${NC}"
-            run_batch_normalizer
+            #run_batch_normalizer
             ;;
         *)
             prefer_rekey="0"
-            echo -e "${YELLOW} = = > REKEY Source Preference Not Enabled. Use Original Source Files Instead.${NC}"
+            echo -e "${YELLOW} = = > REKEY Preference disabled For This Shell Session.${NC}"
+            echo -e "${YEB} = = > WARNING: REKEY Preference Is OFF.${NC}"
+            echo -e "${YELLOW} = = > Cutting From Originals Is Discouraged And May Produce Bad Cuts.${NC}"
+            echo -e "${CYAN} = = > Original Source Files Remain The Preferred Working Source.${NC}"
             ;;
     esac
 }
