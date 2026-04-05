@@ -564,11 +564,37 @@ ask_yes_no() {
 	local prompt="$1"
 	local ans
 
-	read -r -p "$prompt" ans
+	echo -e "${YELLOW}${prompt}${NC}"
+	read -r ans
+
 	ans="${ans,,}"
 	ans="${ans//[[:space:]]/}"
 
-	[[ "${ans:-n}" == y* ]]
+	# ========================================================
+	# TEN-KEY FRIENDLY YES/NO RULE
+	# ========================================================
+	# YES:
+	#   y / yes / 1
+	#
+	# NO:
+	#   n / no / 2 / blank
+	#
+	# PURPOSE:
+	# - Keep classic keyboard yes/no support
+	# - Add simple 10-key friendly 1/2 support
+	# - Treat blank as safe default NO
+	# ========================================================
+	case "${ans:-2}" in
+		y|yes|1)
+			return 0
+			;;
+		n|no|2|"")
+			return 1
+			;;
+		*)
+			return 1
+			;;
+	esac
 }
 
 # =========================
@@ -1147,15 +1173,11 @@ prepare_delete_verified_originals() {
     echo -e "${YELLOW} = = > REKEY Working Files Remain In Place.${NC}"
     echo
 
-    read -r -p " = = > Delete Verified Originals Now? (y/n): " delete_reply
-    case "${delete_reply,,}" in
-        y|yes) ;;
-        *)
-            echo -e "${YELLOW} = = > Verified Original Deletion Cancelled.${NC}"
-            echo
-            return 0
-            ;;
-    esac
+	if ! ask_yes_no " = = > Delete Verified Originals Now? (y/n or 1/2): "; then
+		echo -e "${YELLOW} = = > Verified Original Deletion Cancelled.${NC}"
+		echo
+		return 0
+	fi
 
 	for f in "${PREP_DELETE_ELIGIBLE[@]}"; do
 		# ========================================================
@@ -1218,17 +1240,13 @@ rebuild_rekey_auth_ledger() {
 	echo -e "${RED} = = > This is a real ledger rebuild, not just a reset.${NC}"
 	echo
 
-	read -r -p " = = > Proceed with FULL REKEY auth ledger rebuild? (y/n): " rebuild_reply
-	case "${rebuild_reply,,}" in
-		y|yes) ;;
-		*)
-			echo
-			echo -e "${YELLOW} = = > REKEY Auth Ledger Rebuild Cancelled.${NC}"
-			echo
-			pause
-			return 0
-			;;
-	esac
+	if ! ask_yes_no " = = > Proceed with FULL REKEY auth ledger rebuild? (y/n or 1/2): "; then
+		echo
+		echo -e "${YELLOW} = = > REKEY Auth Ledger Rebuild Cancelled.${NC}"
+		echo
+		pause
+		return 0
+	fi
 
 	local -a targets=()
 	local raw base rekey verdict
@@ -2483,13 +2501,10 @@ inspect_dependencies() {
 
 	echo
 	echo -e "${CYAN}============================================================${NC}"
-	echo -e "${YELLOW} = = > Show Install / Help Wall? (y/n): ${NC}\c"
-	read -r ans
-
-	if [[ "$ans" =~ ^[Yy]$ ]]; then
-		echo
-		show_global_dependency_help_wall
-	fi
+    if ask_yes_no " = = > Show Install / Help Wall? (y/n or 1/2): "; then
+        echo
+        show_global_dependency_help_wall
+    fi
 
 	echo
 	pause
@@ -2842,9 +2857,11 @@ run_barfix() {
 
     echo
 
-    echo -e "${YELLOW} = = > Proceed? (y/n): ${NC}"
-    read -r confirm
-    [[ "${confirm:-n}" != "y" ]] && { echo "${REB} = = > Aborted.${NC}"; pause; return 0; }
+      if ! ask_yes_no " = = > Proceed? (y/n or 1/2): "; then
+      	echo -e "${REB} = = > Aborted.${NC}"
+      	pause
+      	return 0
+      fi
 
     echo
     local total=${#targets[@]}
@@ -3361,6 +3378,452 @@ detox_title() {
 # End Of BUILD_EPISODES_CSV (INTERACTIVE TITLE BUILDER) ---
 
 
+# ============================================================
+# #MARKER: ARCHIE FILENAME SHORTENER
+# ============================================================
+# PURPOSE:
+# - Prevent absurdly long archival output names.
+# - Keep the tail of the original filename, because that is
+#   often where timestamps / clip identity live.
+# - Add a sequence number so shortened names stay unique.
+#
+# OUTPUT EXAMPLE:
+#   ARCHIVE_L2_0001_2023_11_04_153012_clipA.mkv
+# ============================================================
+archival_make_output_name() {
+	local prefix="$1"
+	local seq="$2"
+	local src="$3"
+
+	local base stem tail seq_pad
+
+	base="$(basename "$src")"
+	stem="${base%.*}"
+
+	# --------------------------------------------------------
+	# LONG-NAME CONTROL
+	# Keep only the tail end of very long stems, because that
+	# is usually where the useful timestamp / clip identity is.
+	# --------------------------------------------------------
+	if (( ${#stem} > 12 )); then
+		tail="${stem: -12}"
+	else
+		tail="$stem"
+	fi
+
+	printf -v seq_pad "%04d" "$seq"
+	printf '%s%s_%s.mkv\n' "$prefix" "$seq_pad" "$tail"
+}
+
+# ============================================================
+# #MARKER: ARCHIE BATCH LIMIT PROMPT
+# ============================================================
+# PURPOSE:
+# - Let the user decide whether to process all targets or only
+#   the first N in the current batch.
+# ============================================================
+archival_limit_targets_interactive() {
+	local -n _targets_ref=$1
+	local mode how_many
+	local total
+
+	total="${#_targets_ref[@]}"
+
+	if (( total == 0 )); then
+		return 0
+	fi
+
+	echo -e "${CYAN} = = > Batch Size Control:${NC}"
+	echo -e "${CYAN}     1) Process All Targets (${total})${NC}"
+	echo -e "${CYAN}     2) Process First N Targets${NC}"
+	echo
+	echo -e "${YELLOW} = = > Select [1/2] (Default: 1): ${NC}"
+	read -r mode
+	mode="${mode:-1}"
+	mode="${mode//[[:space:]]/}"
+
+	case "$mode" in
+		1)
+			echo -e "${GREEN} = = > Using Full Batch:${NC} ${total} file(s)"
+			echo
+			return 0
+			;;
+		2)
+			echo -e "${YELLOW} = = > How Many Files In This Batch? (1-${total}): ${NC}"
+			read -r how_many
+			how_many="${how_many//[[:space:]]/}"
+
+			if ! [[ "$how_many" =~ ^[0-9]+$ ]]; then
+				echo -e "${YELLOW} = = > Invalid Batch Count. Using Full Batch Instead.${NC}"
+				echo
+				return 0
+			fi
+
+			if (( how_many < 1 )); then
+				echo -e "${YELLOW} = = > Batch Count Too Small. Using Full Batch Instead.${NC}"
+				echo
+				return 0
+			fi
+
+			if (( how_many < total )); then
+				_targets_ref=("${_targets_ref[@]:0:how_many}")
+			fi
+
+			echo -e "${GREEN} = = > Batch Limited To:${NC} ${#_targets_ref[@]} file(s)"
+			echo
+			return 0
+			;;
+		*)
+			echo -e "${YELLOW} = = > Invalid Selection. Using Full Batch Instead.${NC}"
+			echo
+			return 0
+			;;
+	esac
+}
+
+# ============================================================
+# #MARKER: ARCHIE'S ARCHIVAL ARRAY
+# ============================================================
+# PURPOSE:
+# - Bulk re-encode large camera / evidence / archive-style footage
+#   into smaller archival copies before optional tarball packaging.
+#
+# DESIGN:
+# - NON-DESTRUCTIVE BY DEFAULT
+# - Creates ARCHIVE_L1_ / L2 / L3 / L4 outputs
+# - Optional tarball after successful encode pass
+# - Optional original deletion only by explicit confirmation
+#
+# TIERS:
+# - L1 = light archival shrink
+# - L2 = balanced archive
+# - L3 = aggressive storage-first archive
+# - L4 = brute-force shrinkage priority
+#
+# IMPORTANT:
+# - Any output that fails to come out smaller than its source is
+#   treated as a NO-GAIN result and is removed automatically.
+# - That protects the working directory from pointless archive copies.
+# ============================================================
+
+archival_collect_targets() {
+	shopt -s nullglob nocaseglob
+	local -a vids=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
+	shopt -u nullglob nocaseglob
+
+	local f
+	for f in "${vids[@]}"; do
+		[[ -f "$f" ]] || continue
+
+		# --------------------------------------------------------
+		# SKIP ANYTHING THAT IS ALREADY A GENERATED / PROCESSED
+		# WORKFLOW OUTPUT.
+		#
+		# IMPORTANT:
+		# - L4 MUST BE INCLUDED HERE NOW
+		# - Otherwise future reruns could sweep ARCHIVE_L4_ files
+		#   back up as fresh inputs
+		# --------------------------------------------------------
+		[[ "$f" =~ ^(ARCHIVE_L1_|ARCHIVE_L2_|ARCHIVE_L3_|ARCHIVE_L4_|REKEY_|SUTURED_|BARFIX_|SUBPACKED_|OEM_|PILOT_SUTURED_) ]] && continue
+
+		printf '%s\n' "$f"
+	done
+}
+
+archival_print_targets() {
+	local title="$1"
+	shift
+	local items=("$@")
+
+	echo -e "${CYAN} = = > ${title}:${NC} ${#items[@]}"
+	if ((${#items[@]} > 0)); then
+		printf "${CYAN}   - ${NC}%s\n" "${items[@]}"
+	fi
+	echo
+}
+
+archival_get_prefix_for_level() {
+	# --------------------------------------------------------
+	# PURPOSE:
+	# - Keep output naming aligned with the chosen archival tier.
+	#
+	# IMPORTANT:
+	# - L4 was previously falling through to L2 naming.
+	# - That made the file names lie about how they were encoded.
+	# --------------------------------------------------------
+	case "$1" in
+		1) printf '%s\n' "ARCHIVE_L1_" ;;
+		2) printf '%s\n' "ARCHIVE_L2_" ;;
+		3) printf '%s\n' "ARCHIVE_L3_" ;;
+		4) printf '%s\n' "ARCHIVE_L4_" ;;
+		*) printf '%s\n' "ARCHIVE_L2_" ;;
+	esac
+}
+
+archival_encode_one_file() {
+	local level="$1"
+	local in="$2"
+	local out="$3"
+
+	case "$level" in
+		1)
+			ffmpeg -y -hide_banner -nostats -loglevel error -i "$in" \
+				-c:v libx264 -preset slow -crf 21 \
+				-c:a aac -b:a 192k \
+				-map 0 \
+				"$out"
+			;;
+		2)
+			ffmpeg -y -hide_banner -nostats -loglevel error -i "$in" \
+				-c:v libx264 -preset medium -crf 25 \
+				-c:a aac -b:a 128k \
+				-map 0 \
+				"$out"
+			;;
+		3)
+			ffmpeg -y -hide_banner -nostats -loglevel error -i "$in" \
+				-c:v libx264 -preset medium -crf 29 \
+				-c:a aac -b:a 96k \
+				-map 0 \
+				"$out"
+			;;
+		4)
+			ffmpeg -y -hide_banner -nostats -loglevel error -i "$in" \
+				-c:v libx264 -preset slow -crf 32 \
+				-c:a aac -b:a 96k \
+				-map 0 \
+				"$out"
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+archival_build_tarball() {
+	local tar_name="$1"
+	shift
+	local files=("$@")
+
+	# --------------------------------------------------------
+	# PURPOSE:
+	# - Build a tarball only when we actually have kept outputs.
+	#
+	# RETURN CONTRACT:
+	# - return 0 = tarball was built
+	# - return 1 = no files supplied, nothing built
+	# - non-zero from tar if tar itself fails
+	# --------------------------------------------------------
+	if [[ "${#files[@]}" -eq 0 ]]; then
+		echo -e "${YELLOW} = = > No New Archival Outputs Were Kept. Tarball Step Skipped.${NC}"
+		return 1
+	fi
+
+	run_with_progress "Building Archival Tarball..." tar -cf "$tar_name" "${files[@]}"
+}
+
+run_archies_archival_array() {
+	local level choice prefix tar_name
+	local orig_size new_size deleted_originals
+	local -a targets=()
+	local -a outputs=()
+	local -a source_output_pairs=()
+	local f out pair src_from_pair out_from_pair
+	local success_count=0
+	local fail_count=0
+	local no_gain_count=0
+	local delete_success_count=0
+
+	clear
+	show_space_overview
+
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}               ARCHIE'S ARCHIVAL ARRAY          ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW} = = > PURPOSE: Re-encode large video collections into smaller archival copies.${NC}"
+	echo -e "${YELLOW} = = > Originals remain untouched unless you explicitly delete them later.${NC}"
+	echo -e "${YELLOW} = = > Outputs that fail to shrink will be discarded automatically.${NC}"
+	echo
+	echo -e "${CYAN} = = > Archival Levels:${NC}"
+	echo -e "${CYAN}     1) Light Shrink   (Higher Quality / Larger Files)${NC}"
+	echo -e "${CYAN}     2) Balanced       (Good Archive Default)${NC}"
+	echo -e "${CYAN}     3) Aggressive     (Storage First / Smaller Files)${NC}"
+	echo -e "${CYAN}     4) Brute Force    (Shrinkage Priority / Hard Squeeze)${NC}"
+	echo
+
+	mapfile -t targets < <(archival_collect_targets)
+	archival_limit_targets_interactive targets
+
+	if ((${#targets[@]} == 0)); then
+		echo -e "${YELLOW} = = > No Eligible Source Videos Found In Current Folder.${NC}"
+		echo
+		pause
+		return 0
+	fi
+
+	archival_print_targets "Eligible Archival Targets" "${targets[@]}"
+
+	echo -e "${YELLOW}"
+	read -r -p " = = > Choose Archival Level [1-4]: " level
+	echo -e "${NC}"
+
+	level="${level//[[:space:]]/}"
+
+	case "$level" in
+		1|2|3|4)
+			;;
+		*)
+			echo -e "${YE} = = > Invalid Archival Level.${NC}"
+			pause
+			return 0
+			;;
+	esac
+
+	prefix="$(archival_get_prefix_for_level "$level")"
+
+	echo
+	echo -e "${CYAN} = = > Selected Level:${NC} $level"
+	echo -e "${CYAN} = = > Output Prefix:${NC} ${YELLOW}$prefix${NC}"
+	echo
+
+	if ! ask_yes_no " = = > Start Archival Encode Pass Now? (y/n or 1/2): "; then
+		echo -e "${YELLOW} = = > Archival Encode Pass Cancelled.${NC}"
+		echo
+		pause
+		return 0
+	fi
+
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}            ARCHIVAL ENCODE PASS NOW STARTING   ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+
+	for f in "${targets[@]}"; do
+		out="$(archival_make_output_name "$prefix" "$((success_count + fail_count + no_gain_count + 1))" "$f")"
+
+		echo -e "${CYAN} = = > Archiving:${NC} $f"
+		echo -e "${CYAN} = = > Output Name:${NC} ${YELLOW}$out${NC}"
+
+		if run_with_progress "Archival Array: $(basename "$f")" archival_encode_one_file "$level" "$f" "$out"; then
+
+			# ----------------------------------------------------
+			# SIZE-CHECK SAFETY GATE
+			# ----------------------------------------------------
+			# PURPOSE:
+			# - Keep only outputs that actually improved storage use.
+			# - If an encode comes out larger or equal, kill it now.
+			#
+			# IMPORTANT:
+			# - This is not a hard encoder failure.
+			# - It is a NO-GAIN RESULT and gets its own counter.
+			# ----------------------------------------------------
+			orig_size=$(stat -c%s "$f")
+			new_size=$(stat -c%s "$out")
+
+			if (( new_size >= orig_size )); then
+				echo -e "${YELLOW} = = > No Size Gain. Removing Archival Copy:${NC} ${CYAN}$out${NC}"
+				echo -e "${YELLOW} = = > Original Size:${NC} $orig_size bytes"
+				echo -e "${YELLOW} = = > New Size:${NC} $new_size bytes"
+				rm -f -- "$out"
+				((no_gain_count+=1)) || :
+			else
+				echo -e "${GR} = = > Created:${NC} ${CYAN}$out${NC}"
+				echo -e "${GREEN} = = > Size Reduced From:${NC} $orig_size ${GREEN}to${NC} $new_size bytes"
+				outputs+=("$out")
+				source_output_pairs+=("$f|$out")
+				((success_count+=1)) || :
+			fi
+		else
+			echo -e "${REB} = = > Failed:${NC} $f"
+			((fail_count+=1)) || :
+		fi
+
+		echo
+	done
+
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}              ARCHIVAL ENCODE SUMMARY           ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${GREEN} = = > Successful Outputs Kept:${NC} $success_count"
+	echo -e "${YELLOW} = = > No-Gain Outputs Removed:${NC} $no_gain_count"
+	echo -e "${REB} = = > Failed Outputs:${NC} $fail_count"
+	echo
+
+	if ((${#outputs[@]} > 0)); then
+		archival_print_targets "New Archival Outputs" "${outputs[@]}"
+	else
+		echo -e "${YELLOW} = = > No New Archival Outputs Survived The Size-Gain Filter.${NC}"
+		echo
+	fi
+
+	# --------------------------------------------------------
+	# OPTIONAL TARBALL STEP
+	# --------------------------------------------------------
+	# IMPORTANT:
+	# - Ask only if there are real kept outputs.
+	# - Prevent the old false-positive "Tarball Ready" message path.
+	# --------------------------------------------------------
+	if ((${#outputs[@]} > 0)); then
+		if ask_yes_no " = = > Build Tarball From New Archival Outputs? (y/n or 1/2): "; then
+			tar_name="${prefix}ARCHIVE_SET.tar"
+
+			if archival_build_tarball "$tar_name" "${outputs[@]}"; then
+				echo -e "${GR} = = > Tarball Ready:${NC} ${CYAN}$tar_name${NC}"
+			else
+				echo -e "${YELLOW} = = > Tarball Was Not Built.${NC}"
+			fi
+			echo
+		else
+			echo -e "${YELLOW} = = > Tarball Step Skipped.${NC}"
+			echo
+		fi
+	else
+		echo -e "${YELLOW} = = > Tarball Prompt Skipped Because No Outputs Were Kept.${NC}"
+		echo
+	fi
+
+	# --------------------------------------------------------
+	# OPTIONAL ORIGINAL DELETE STEP
+	# --------------------------------------------------------
+	# IMPORTANT:
+	# - Only sources that have a surviving archival output pair
+	#   are candidates for deletion.
+	# - No surviving output = no delete pairing.
+	# --------------------------------------------------------
+	if ((${#source_output_pairs[@]} > 0)); then
+		if ask_yes_no " = = > Delete Original Source Files After Successful Archival? (y/n or 1/2, default: n): "; then
+			echo -e "${REB} = = > ORIGINAL DELETE PHASE ENABLED.${NC}"
+			echo -e "${YELLOW} = = > Only sources with matching archival outputs will be removed.${NC}"
+			echo
+
+			for pair in "${source_output_pairs[@]}"; do
+				src_from_pair="${pair%%|*}"
+				out_from_pair="${pair#*|}"
+
+				if [[ -f "$out_from_pair" && -f "$src_from_pair" ]]; then
+					rm -f -- "$src_from_pair"
+					echo -e "${GR} = = > Deleted Original:${NC} $src_from_pair"
+					((delete_success_count+=1)) || :
+				fi
+			done
+
+			echo
+			echo -e "${CYAN} = = > Originals Deleted After Verified Archival:${NC} $delete_success_count"
+			echo
+		else
+			echo -e "${YELLOW} = = > Original Sources Preserved.${NC}"
+			echo
+		fi
+	else
+		echo -e "${YELLOW} = = > Original Delete Prompt Skipped Because No Successful Output Pairs Exist.${NC}"
+		echo
+	fi
+
+	pause
+}
+
 # =========================
 # #MARKER: FINALIZE / CLEANUP MENU
 # =========================
@@ -3617,26 +4080,15 @@ cleanup_show_status() {
 
 		echo -ne "${YELLOW} = = > Your Keys Are In Here So Make Sure Your Done Before You Delete ${NC}"
 		echo
-		echo -ne "${YELLOW} = = > Remove Template Artifacts And intro_template Directory? (y/n | 0.=cancel): ${NC}"
-		read -r reply
-		reply="${reply//[[:space:]]/}"
 
-		if is_factory_exit_token "$reply"; then
-			echo -e "${YELLOW} = = > Cancelled.${NC}"
+		if ! ask_yes_no " = = > Remove Template Artifacts And intro_template Directory? (y/n or 1/2 | 0.=cancel): "; then
+			echo -e "${YELLOW} = = > Template Cleanup Cancelled.${NC}"
 			echo
+			pause
 			return 0
 		fi
 
-		case "${reply,,}" in
-			y|yes)
-				cleanup_remove_targets "${targets[@]}"
-				;;
-			*)
-				echo -e "${YELLOW} = = > Template Cleanup Cancelled.${NC}"
-				echo
-				;;
-		esac
-
+		cleanup_remove_targets "${targets[@]}"
 		pause
 	}
 
@@ -3720,28 +4172,32 @@ cleanup_detection_maps() {
 			return 0
 		fi
 
-        echo -ne "${YELLOW} = = > Remove Detection-Map / CSV Style Artifacts? (y/n | 0.=cancel): ${NC}"
-        read -r reply
-        reply="${reply//[[:space:]]/}"
+	echo -e "${YELLOW} = = > Remove Detection-Map / CSV Style Artifacts? (y/n | 1/2 | 0.=cancel): ${NC}"
+	read -r reply
+	reply="${reply//[[:space:]]/}"
 
-        if is_factory_exit_token "$reply"; then
-        	echo -e "${YELLOW} = = > Cancelled.${NC}"
-        	echo
-        	return 0
-        fi
+	if is_factory_exit_token "$reply"; then
+		echo -e "${YELLOW} = = > Cancelled.${NC}"
+		echo
+		return 0
+	fi
 
-        case "${reply,,}" in
-        	y|yes)
-				cleanup_remove_targets "${targets[@]}"
-				;;
-			*)
-				echo -e "${YELLOW} = = > Detection / CSV Cleanup Cancelled.${NC}"
-				echo
-				;;
-		esac
+	case "${reply,,}" in
+		y|yes|1)
+			cleanup_remove_targets "${targets[@]}"
+			;;
+		n|no|2|"")
+			echo -e "${YELLOW} = = > Detection / CSV Cleanup Cancelled.${NC}"
+			echo
+			;;
+		*)
+			echo -e "${YELLOW} = = > Detection / CSV Cleanup Cancelled.${NC}"
+			echo
+			;;
+	esac
 
-		pause
-	}
+	pause
+}
 
 	cleanup_run_all_safe() {
 		clear
@@ -3760,16 +4216,11 @@ cleanup_detection_maps() {
 		echo " = = >  - finished SUTURED outputs"
 		echo
 
-		read -r -p " = = > Run Safe Cleanup Pass Now? (y/n): " reply
-        echo -e "${NC}"
-		case "${reply,,}" in
-			y|yes) ;;
-			*)
-				echo -e "${YELLOW} = = > Safe Cleanup Pass Cancelled.${NC}"
-				pause
-				return 0
-				;;
-		esac
+		if ! ask_yes_no " = = > Run Safe Cleanup Pass Now? (y/n or 1/2): "; then
+			echo -e "${YELLOW} = = > Safe Cleanup Pass Cancelled.${NC}"
+			pause
+			return 0
+		fi
 
 		local -a temp_targets=()
 		local -a template_targets=()
@@ -4076,15 +4527,11 @@ cleanup_archive_OEM_folder() {
 			return 0
 		fi
 
-		read -r -p " = = > Delete OEM Folder Contents Only? (y/n): " reply
-		case "${reply,,}" in
-			y|yes) ;;
-			*)
-				echo -e "${YE} = = > OEM Content Deletion Cancelled.${NC}"
-				echo
-				return 0
-				;;
-		esac
+		if ! ask_yes_no " = = > Delete OEM Folder Contents Only? (y/n or 1/2): "; then
+			echo -e "${YELLOW} = = > OEM Content Deletion Cancelled.${NC}"
+			pause
+			return 0
+		fi
 
 		find "./OEM" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
 
@@ -5177,7 +5624,7 @@ prepare_make_OEM_backups() {
         # cp -a preserves timestamps/mode where possible and avoids altering
         # the original source content.
         if cp -a -- "$f" "$backup"; then
-            echo -e "${GR} = = > [OK]${NC} $f -> $backup"
+            echo -e "${GR} = = > [OK] $f -> $backup${NC}"
             ((made_count+=1)) || :
         else
             echo -e "${REB} = = > [FAIL]${NC} $f"
@@ -5300,16 +5747,11 @@ prepare_run_combined_pass() {
     echo " = = >  - Offer BARFIX handoff at the end"
     echo
 
-    read -r -p " = = > Run Combined Prep Pass Now? (y/n): " combo_reply
-    echo -e "${NC}"
-    case "${combo_reply,,}" in
-        y|yes) ;;
-        *)
-            echo -e "${YELLOW} = = > Combined Prep Pass Cancelled.${NC}"
-            pause
-            return 0
-            ;;
-    esac
+	if ! ask_yes_no " = = > Run Combined Prep Pass Now? (y/n or 1/2): "; then
+		echo -e "${YELLOW} = = > Combined Prep Pass Cancelled.${NC}"
+		pause
+		return 0
+	fi
 
     prepare_make_OEM_backups
     prepare_run_batch_normalizer_wrapper
@@ -5325,15 +5767,9 @@ prepare_run_combined_pass() {
     echo -e "${CYAN}REKEY Preference Is Now Enabled For This Shell Session.${NC}"
     echo
 
-    echo -e "${YELLOW} Open BARFIX now? (y/n): ${NC}"
-    read -r barfix_reply
-    case "${barfix_reply,,}" in
-        y|yes)
-            run_barfix
-            ;;
-        *)
-            ;;
-    esac
+	if ask_yes_no " = = > Open BARFIX now? (y/n or 1/2): "; then
+		run_barfix
+	fi
 }
 
 run_prepare_sources() {
@@ -5575,14 +6011,9 @@ run_subtox_pack() {
     echo -e "${YELLOW} = = > Current Implementation Still Lives Inside SUBTOX.${NC}"
     echo -e "${CYAN} = = > Use SUBTOX Mission 2 For External Subtitle Packing.${NC}"
     echo
-    read -r -p " = = > Open SUBTOX Now? (y/n): " open_subtox
-    case "${open_subtox,,}" in
-        y|yes)
-            run_subtox
-            ;;
-        *)
-            ;;
-    esac
+    if ask_yes_no " = = > Open SUBTOX Now? (y/n or 1/2): "; then
+    	run_subtox
+    fi
 }
 
 run_subtox_extract() {
@@ -5594,14 +6025,10 @@ run_subtox_extract() {
     echo -e "${YELLOW} = = > Current Implementation Still Lives Inside SUBTOX.${NC}"
     echo -e "${CYAN} = = > Use SUBTOX Mission 3 For External Subtitle Packing.${NC}"
     echo
-    read -r -p " = = > Open SUBTOX Now? (y/n): " open_subtox
-    case "${open_subtox,,}" in
-        y|yes)
-            run_subtox
-            ;;
-        *)
-            ;;
-    esac
+
+    if ask_yes_no " = = > Open SUBTOX Now? (y/n or 1/2): "; then
+    	run_subtox
+    fi
 }
 
 run_subtox_rename() {
@@ -5613,14 +6040,10 @@ run_subtox_rename() {
     echo -e "${YELLOW} = = > Current Implementation Still Lives Inside SUBTOX.${NC}"
     echo -e "${CYAN} = = > Use SUBTOX Mission 1 For Rename / Detox Operations.${NC}"
     echo
-    read -r -p " = = > Open SUBTOX Now? (y/n): " open_subtox
-    case "${open_subtox,,}" in
-        y|yes)
-            run_subtox
-            ;;
-        *)
-            ;;
-    esac
+
+    if ask_yes_no " = = > Open SUBTOX Now? (y/n or 1/2): "; then
+    	run_subtox
+    fi
 }
 
 
@@ -5664,24 +6087,24 @@ run_gapman_menu() {
 			1)
 				echo
 				echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-				echo -e "${CYAN} = = > GAPMAN PILOT RUN (STRONGLY RECOMMENDED)${NC}"
+				echo -e "${CYAN}      = = > GAPMAN PILOT RUN (STRONGLY RECOMMENDED)${NC}"
 				echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 				echo
-				echo -e "${YELLOW}Purpose:"
-				echo -e "  • Validate intro timing, trim accuracy, and seam quality"
-				echo -e "  • Before committing to a full batch run."
+				echo -e "${YELLOW}     Purpose:"
+				echo -e "       • Validate intro timing, trim accuracy, and seam quality"
+				echo -e "       • Before committing to a full batch run."
 				echo
-				echo -e "Why Pilot Run Matters:"
-				echo -e "  • Confirms intro alignment is correct"
-				echo -e "  • Verifies pre-trim and post-trim timing"
-				echo -e "  • Detects drift or padding issues early"
-				echo -e "  • Prevents full-batch mistakes"
+				echo -e "     Why Pilot Run Matters:"
+				echo -e "       • Confirms intro alignment is correct"
+				echo -e "       • Verifies pre-trim and post-trim timing"
+				echo -e "       • Detects drift or padding issues early"
+				echo -e "       • Prevents full-batch mistakes"
 				echo
-				echo -e "What This Will Do:"
-				echo -e "  • Select 3 sample episodes from intro_map.csv"
-				echo -e "  • Run GAPMAN using those entries only"
-				echo -e "  • Output files as PILOT_SUTURED_*"
-				echo -e "  • Pause for inspection before continuing${NC}"
+				echo -e "     What This Will Do:"
+				echo -e "       • Select 3 sample episodes from intro_map.csv"
+				echo -e "       • Run GAPMAN using those entries only"
+				echo -e "       • Output files as PILOT_SUTURED_*"
+				echo -e "       • Pause for inspection before continuing${NC}"
 				echo
 
 				echo -e "${CYAN} = = > Tip: Review results carefully before full run.${NC}"
@@ -5744,21 +6167,21 @@ run_gapman_menu() {
 
 					echo
 					echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-					echo -e "${CYAN} = = > PILOT RUN COMPLETE${NC}"
+					echo -e "${CYAN}      = = > PILOT RUN COMPLETE${NC}"
 					echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 					echo
 
-					echo -e "${YELLOW}Review:"
-					echo -e "  Inspect PILOT_SUTURED_* outputs"
-					echo -e "  Confirm Timing And Seam Quality"
+					echo -e "${YELLOW}     Review:"
+					echo -e "       Inspect PILOT_SUTURED_* outputs"
+					echo -e "       Confirm Timing And Seam Quality"
 					echo
 
-					echo "  1) Proceed To FULL Run"
-					echo "  2) Re-Run pilot (Same 3 Files)"
-					echo "  3) Re-Run pilot (New Random 3)"
-					echo "  4) Cancel And Restore${NC}"
+					echo "       1) Proceed To FULL Run"
+					echo "       2) Re-Run pilot (Same 3 Files)"
+					echo "       3) Re-Run pilot (New Random 3)"
+					echo "       4) Cancel And Restore${NC}"
 
-                    echo -e "${YELLOW} = = > Choose: ${NC}"
+                    echo -e "${YELLOW}      = = > Choose: ${NC}"
                     read -r pilot_choice
 					case "$pilot_choice" in
 						1)
@@ -6134,22 +6557,20 @@ run_utility_menu() {
 		echo "     1) Show Templates"
 		echo "     2) Show Target Files"
 		echo "     3) Diff Two Files"
-		echo "     4) REKEY Validity Check Redirect"
+		echo "     4) REKEY Validity Check"
 		echo "     5) Keyframe Cut-Friendliness Check"
 		echo "     6) Triage Center / Clip Surgery Tools"
 		echo "     7) Inspect Dependency Status"
 		echo "     8) Twisted Color / Theme Engine"
+		echo "     9) Archie's Archival Array"
 		echo
 		echo "     0.)Return  (or q)  =  Quit"
 		echo
 
-		read -r -p "     Choice: " util_choice
-		echo -e "${NC}"
+		echo -e "${YELLOW}     Choice: ${NC}"
+		read -r util_choice
 		util_choice="${util_choice//[[:space:]]/}"
 
-		# ========================================================
-		# TEN-KEY EXIT HOOK
-		# ========================================================
 		if is_factory_exit_token "$util_choice"; then
 			return 0
 		fi
@@ -6169,7 +6590,7 @@ run_utility_menu() {
 				if ((${#t[@]}==0)); then
 					echo -e "${RE} = = > None Found.${NC}"
 				else
-					printf "${CYAN} - %s\n" "${t[@]}${NC}"
+					printf "${CYAN}   - %s\n" "${t[@]}${NC}"
 				fi
 				pause
 				;;
@@ -6182,7 +6603,7 @@ run_utility_menu() {
 				if ((${#v[@]}==0)); then
 					echo -e "${RE} = = > None Found.${NC}"
 				else
-					printf "${CYAN} = = > %s\n" "${v[@]}${NC}"
+					printf "${CYAN}   - %s\n" "${v[@]}${NC}"
 				fi
 				pause
 				;;
@@ -6211,17 +6632,15 @@ run_utility_menu() {
 				done
 
 				echo
-				echo -e "${CYAN}================ DIFF ================${NC}"
-				diff -u -- "$a" "$b" || true
-				echo
+				diff -u -- "$a" "$b" | less
 				pause
 				;;
 			4)
-				prepare_set_rekey_preference
+                prepare_set_rekey_preference
                 #run_rekey_validity_check
 				;;
 			5)
-				run_keyframe_suitability_check
+				run_keyframe_probe_menu
 				;;
 			6)
 				run_clip_join_triage_menu
@@ -6229,9 +6648,12 @@ run_utility_menu() {
 			7)
 				inspect_dependencies
 				;;
-		    8)
-    			run_twisted_menu
-    			;;
+			8)
+				run_twisted_menu
+				;;
+			9)
+				run_archies_archival_array
+				;;
 			*)
 				echo -e "${REB} = = > Invalid.${NC}"
 				pause
@@ -6386,14 +6808,10 @@ run_rebuild_rekey_handoff_tool() {
 	echo -e "${YELLOW} = = > Current Rebuild / REKEY Engine Lives In Prepare Sources.${NC}"
 	echo -e "${CYAN} = = > This Opens The Existing Batch Normalizer Wrapper Directly.${NC}"
 	echo
-	read -r -p " = = > Open Rebuild / REKEY Path Now? (y/n): " rekey_handoff
-	case "${rekey_handoff,,}" in
-		y|yes)
-			prepare_run_batch_normalizer_wrapper
-			;;
-		*)
-			;;
-	esac
+
+    if ask_yes_no " = = > Open Rebuild / REKEY Path Now? (y/n or 1/2): "; then
+    	prepare_run_batch_normalizer_wrapper
+    fi
 }
 
 # end of do over all reyey auth =======================================================================
@@ -6894,12 +7312,7 @@ create_template() {
 
     if [[ "$src_verdict" == "RISKY" || "$src_verdict" == "CAUTION" ]]; then
         echo
-        echo -e "${YELLOW} = = > Source May Be Poor For Precise Cuts. Build Cut-Friendly Rebuilt Source First? (y/n, default: n): ${NC}"
-        read -r rebuild_src
-        rebuild_src=${rebuild_src:-n}
-
-        rebuild_src="${rebuild_src,,}"
-        if [[ "$rebuild_src" == "y" ]]; then
+        if ask_yes_no " = = > Source May Be Poor For Precise Cuts. Build Cut-Friendly Rebuilt Source First? (y/n, default: n): "; then
             rebuilt_src="$(rebuild_cut_friendly_source "$src")"
             if [[ -n "$rebuilt_src" && -f "$rebuilt_src" ]]; then
                 src="$rebuilt_src"
@@ -7175,7 +7588,7 @@ run_with_progress() {
 	(( cols < 40 )) && cols=80
 
 	plain_prefix=" = = > "
-	plain_suffix="....PLEASE-STAND-BY....[00000s]"
+	plain_suffix="- PLEASE-STAND-BY - [00000s]"
 
 	max_label=$(( cols - ${#plain_prefix} - ${#plain_suffix} - 4 ))
 	(( max_label < 12 )) && max_label=12
@@ -7195,7 +7608,7 @@ run_with_progress() {
 		elapsed=$((now - start_ts))
 		frame="${spin:i%${#spin}:1}"
 
-		live_line=" = = > ${live_label} ${frame} ....PLEASE-STAND-BY....[${elapsed}s]"
+		live_line=" = = > ${live_label} ${frame}- PLEASE-STAND-BY - [${elapsed}s]"
 
 		# Print one in-place status line only
 		printf '\r\033[2K%s%s%s' "${YELLOW}" "$live_line" "${NC}" >&2
@@ -7619,14 +8032,12 @@ restore_OEM_prefix() {
 
     echo
 
-    echo -e "${YELLOW} = = > Proceed With Restore? (y/n): ${NC}"
-    read -r confirm
-    confirm="${confirm:-n}"
+    echo
 
-    if [[ "$confirm" != "y" ]]; then
-        echo -e "${YELLOW} = = > OEM Restore Cancelled.${NC}"
-        pause
-        return 0
+    if ! ask_yes_no " = = > Proceed With Restore? (y/n or 1/2, default: n): "; then
+    	echo -e "${YELLOW} = = > OEM Restore Cancelled.${NC}"
+    	pause
+    	return 0
     fi
 
     # =========================
@@ -8203,14 +8614,7 @@ echo -e "${CYAN} = = > Title Bar Repair ---${NC}"
 echo -e "${YELLOW} = = > Start Title At Which Underscore Segment? (1-based, Default: ${DEFAULT_TITLE_SEGMENT}): ${NC}"
 read -r TITLE_SEGMENT
 TITLE_SEGMENT=${TITLE_SEGMENT:-$DEFAULT_TITLE_SEGMENT}
-
-# commented out during development for speedy 
-#echo -e "${YELLOW} = = > Run Keyframe Suitability Check? (y/n, Default: n): ${NC}"
-#read -r KF_CHECK
 KF_CHECK=${KF_CHECK:-n}
-# commented out during development for speedy
-#echo -e "${YELLOW} = = > Wipe Metadata? (y/n, Default: ${DEFAULT_WIPE_META}) [y Wipes All Tags; n Keeps Most] : ${NC}"
-#read -r WIPE_META
 WIPE_META=${WIPE_META:-$DEFAULT_WIPE_META}
 
 echo
@@ -8433,8 +8837,6 @@ trap on_abort SIGINT SIGTERM
 		echo
 	}
 
-
-
 # =========================
 # #MARKER: KEYFRAME TARGET SELECT
 # =========================
@@ -8474,7 +8876,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
 
   echo
   echo -e "${MAGENTA}----------------------------------------------${NC}"
-  echo -e "${MAGENTA} = = > [$((idx+1)) / $TOTAL] TARGET: ${GREEN}${base_in}${NC}${MAGENTA}${NC}"
+  echo -e "${MAGENTA} = = > [$((idx+1)) / $TOTAL] TARGET: ${GREEN}${base_in}${NC}"
 
   if [[ "$in" != "$orig_in" ]]; then
     echo -e "${CYAN} = = > Working Source Selected:${NC} ${GREEN}$(basename "$in")${NC}"
@@ -8516,7 +8918,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
     t_start="$(fmax0 "$t_start")"
     t_end="$(fadd "$t_start" "$intro_dur")"
 
-    echo -e "${GREEN} = = > [MAP]${NC} Start=${t_start}s End=${t_end}s Dur=${intro_dur}s"
+    echo -e "${GREEN} = = > [MAP]${NC} ${YE}Start=${t_start}s End=${t_end}s Dur=${intro_dur}s${NC}"
   else
     echo -e "${YELLOW} = = > [NO MAP]${NC} Manual Entry Needed."
     echo
@@ -8628,7 +9030,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
 
   # ---- concat copy ----
   tmpout="$work/out.mkv"
-  echo -e "${CYAN} = = > [CONCAT]${NC} Building Output..."
+  echo -e "${CYAN} = = > [CONCAT] Building Output...${NC}"
   if ffmpeg -hide_banner -loglevel error -nostdin \
     -f concat -safe 0 -i "$join" \
     -c copy \
@@ -8637,7 +9039,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
     "$tmpout" -y; then
 
     mv "$tmpout" "$out"
-    echo -e "${GREEN} = = > [OK]${NC} Created: ${GREEN}${out}${NC}"
+    echo -e "${GREEN} = = > [OK] Created: ${CYAN}${out}${NC}"
   else
     echo -e "${REB} = = > [FAIL]${NC} Concat-Copy refused."
     echo -e "${YELLOW} = = > Tip:${NC} Ensure Files Are Normalized Consistently (codec/fps/pix_fmt/tracks)."
@@ -8681,25 +9083,18 @@ prompt_normalize_first_workflow() {
     echo -e "${YELLOW} = = > NO:  = = > No Means No  = = > Use Original Source Files Instead${NC}"
     echo
 
-    echo -e "${YELLOW} = = > Use REKEY Files As Working Source For This Operation? (y/n): ${NC}"
-    read -r normalize_first_reply
-
-    case "${normalize_first_reply,,}" in
-        y|yes)
-            prefer_rekey="1"
-            echo -e "${GREEN} = = > REKEY Source Preference Enabled.${NC}"
-            echo -e "${CYAN} = = > Existing Matching REKEY Files Will Be Preferred As Source.${NC}"
-            echo -e "${CYAN} = = > Missing REKEY Files Are Built By Batch Normalizer As Needed.${NC}"
-            #run_batch_normalizer
-            ;;
-        *)
-            prefer_rekey="0"
-            echo -e "${YELLOW} = = > REKEY Preference disabled For This Shell Session.${NC}"
-            echo -e "${YEB} = = > WARNING: REKEY Preference Is OFF.${NC}"
-            echo -e "${YELLOW} = = > Cutting From Originals Is Discouraged And May Produce Bad Cuts.${NC}"
-            echo -e "${CYAN} = = > Original Source Files Remain The Preferred Working Source.${NC}"
-            ;;
-    esac
+	if ask_yes_no " = = > Use REKEY Files As Working Source For This Operation? (y/n or 1/2): "; then
+		prefer_rekey="1"
+		echo -e "${GREEN} = = > REKEY Source Preference Enabled.${NC}"
+		echo -e "${CYAN} = = > Existing Matching REKEY Files Will Be Preferred As Source.${NC}"
+		echo -e "${CYAN} = = > Missing REKEY Files Are Built By Batch Normalizer As Needed.${NC}"
+	else
+		prefer_rekey="0"
+		echo -e "${YELLOW} = = > REKEY Preference Disabled For This Shell Session.${NC}"
+		echo -e "${YEB} = = > WARNING: REKEY Preference Is OFF.${NC}"
+		echo -e "${YELLOW} = = > Cutting From Originals Is Discouraged And May Produce Bad Cuts.${NC}"
+		echo -e "${CYAN} = = > Original Source Files Remain The Preferred Working Source.${NC}"
+	fi
 }
 
 # start of REKEY AUTO-SELECTION HELPERS
@@ -8762,7 +9157,7 @@ get_preferred_source_file() {
     # GATE 2: TRUSTED CACHE HIT
     # ========================================================
     if cached_rekey_is_trusted_for_raw "$src" "$rekey"; then
-        echo -e "${GR} = = > Found Trusted Cached REKEY Source, Using:${NC} $(basename "$rekey")" >&2
+        echo -e "${GR} = = > Found Trusted Cached REKEY Source, Using:${NC} ${CYAN}$(basename "$rekey")${NC}" >&2
         printf '%s\n' "$rekey"
         return 0
     fi
