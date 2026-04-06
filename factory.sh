@@ -501,14 +501,6 @@ run_twisted_menu() {
 }
 
 # END OF COLOR SYSTEM / TWISTED THEME ENGINE ===================================
-# Safe Pause Function With Color
-pause() {
-    echo -e "${GR}>->->->-> = = > Review Above Carefully.....${NC}"
-    echo -e "${BW}>->->->-> = = > Screen Will Clear When You ${NC}"
-    echo -e "${YE}>->->->-> = = > Press Enter To Continue....${NC}"
-    read -r _
-}
-
 
 # ------------------ DEFAULTS ------------------
 DEFAULT_SCAN_START=30
@@ -521,8 +513,50 @@ INTRO_MAP="intro_map.csv"
 output="intro_template.mkv"
 INFO_MAP="info.csv"
 
+# =========================
+# #MARKER: REKEY BATCH DEFAULTS / SANITY BAND
+# =========================
+# PURPOSE:
+# - One clear place to tune REKEY video quality for testing / calibration.
+# - Hold The Default Quality Knob For REKEY Production
+# - Hold The Acceptable Size-Movement Sanity Band For The
+#    First-File Calibration Check In Batch Mode
+#
+# DESIGN INTENT:
+# - REKEY is a QUALITY-FIRST, CUT-FRIENDLY working source.
+# - The 1-second GOP structure stays fixed.
+# - This knob only adjusts x264 quality pressure.
+# - Audio Copy-Through
+# - Avoid Unnecessary Size Movement Either Way
+#
+# GUIDANCE:
+# - 18 = very conservative / quality-leaning baseline
+# - 20 = lighter file weight, often still visually excellent
+# - 22 = stronger reduction, inspect more carefully
+#
+# BAND RULE:
+# - Growth Beyond REKEY_GROWTH_WARN_PERCENT  => Worth User Attention
+# - Shrink Beyond REKEY_SHRINK_WARN_PERCENT  => Worth User Attention
+#
+# NOTE:
+# - These Are CLUE / HINT Thresholds, Not Absolute Truth Detectors.
+# - They Exist To Pull Human Eyes To Suspicious Outcomes Early.
+# - Change this ONLY when deliberately testing or re-tuning REKEY behavior.
+# - Audio policy for REKEY is copy-through; we are not here to "improve" audio.
+# =========================
+REKEY_GROWTH_WARN_PERCENT=25
+REKEY_SHRINK_WARN_PERCENT=25
+REKEY_CRF=22
 
 # - Helpers
+
+# Safe Pause Function With Color
+pause() {
+    echo -e "${GR}>->->->-> = = > Review Above Carefully.....${NC}"
+    echo -e "${BW}>->->->-> = = > Screen Will Clear When You ${NC}"
+    echo -e "${YE}>->->->-> = = > Press Enter To Continue....${NC}"
+    read -r _
+}
 
 # - Canonicalize names everywhere helper
 canonical_factory_path() {
@@ -622,7 +656,131 @@ ensure_intro_map() {
 	fi
 }
 
-# start new rekey validation skipped scheme helpers
+# start new rekey helpers all rekey related
+# start new rekey and rekey-validation skipped scheme helpers
+
+# =========================
+# #MARKER: REKEY SIZE SANITY HELPERS
+# =========================
+# PURPOSE:
+# - Give Batch REKEY A Lightweight "Eyes Open" Calibration Check
+# - Compare Original vs REKEY Output On The FIRST FILE ONLY
+# - Flag Suspicious Growth OR Suspicious Shrink For Human Review
+#
+# IMPORTANT:
+# - This is NOT a tell-all quality detector.
+# - It is an early-warning clue system that stays within bash-script scope.
+# =========================
+
+rekey_percent_change() {
+	local orig_size="$1"
+	local new_size="$2"
+
+	awk -v o="$orig_size" -v n="$new_size" 'BEGIN {
+		if (o <= 0) {
+			print 0
+		} else {
+			printf "%.0f", ((n - o) / o) * 100
+		}
+	}'
+}
+
+rekey_size_sanity_bucket() {
+	local delta_percent="$1"
+	local grow_warn="${2:-$REKEY_GROWTH_WARN_PERCENT}"
+	local shrink_warn="${3:-$REKEY_SHRINK_WARN_PERCENT}"
+
+	if (( delta_percent > grow_warn )); then
+		printf '%s\n' "GROWTH_WARN"
+		return 0
+	fi
+
+	if (( delta_percent < -shrink_warn )); then
+		printf '%s\n' "SHRINK_WARN"
+		return 0
+	fi
+
+	printf '%s\n' "OK"
+}
+
+rekey_print_size_sanity_report() {
+	local src="$1"
+	local out="$2"
+	local orig_size="$3"
+	local new_size="$4"
+	local delta_percent="$5"
+	local bucket="$6"
+
+	local bucket_color="$GR"
+	case "$bucket" in
+		GROWTH_WARN|SHRINK_WARN) bucket_color="$YE" ;;
+		OK) bucket_color="$GR" ;;
+		*) bucket_color="$NC" ;;
+	esac
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}        REKEY FIRST-FILE SIZE SANITY CHECK      ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$src${NC}"
+	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+	echo -e "${CYAN} = = > Original Size:${NC} ${YELLOW}$orig_size${NC} bytes"
+	echo -e "${CYAN} = = > REKEY Size:${NC} ${YELLOW}$new_size${NC} bytes"
+
+	if (( delta_percent >= 0 )); then
+		echo -e "${CYAN} = = > Percent Change:${NC} ${YELLOW}+${delta_percent}%${NC}"
+	else
+		echo -e "${CYAN} = = > Percent Change:${NC} ${YELLOW}${delta_percent}%${NC}"
+	fi
+
+	case "$bucket" in
+		GROWTH_WARN)
+			echo -e "${bucket_color} = = > Sanity Band Result:${NC} ${bucket_color}GROWTH WARN${NC}"
+			echo -e "${YE} = = > This REKEY Grew Beyond The Current Warning Band.${NC}"
+			echo -e "${YE} = = > Worth Reviewing CRF Before Full Batch Continues.${NC}"
+			;;
+		SHRINK_WARN)
+			echo -e "${bucket_color} = = > Sanity Band Result:${NC} ${bucket_color}SHRINK WARN${NC}"
+			echo -e "${YE} = = > This REKEY Shrunk Beyond The Current Warning Band.${NC}"
+			echo -e "${YE} = = > Smaller Is Not Auto-Bad, But It Is Worth Pulling Eyes To.${NC}"
+			;;
+		OK)
+			echo -e "${bucket_color} = = > Sanity Band Result:${NC} ${bucket_color}WITHIN EXPECTED RANGE${NC}"
+			;;
+		*)
+			echo -e "${bucket_color} = = > Sanity Band Result:${NC} ${bucket_color}UNKNOWN${NC}"
+			;;
+	esac
+	echo
+}
+
+rekey_prompt_for_new_batch_crf() {
+	local current_crf="$1"
+	local new_crf
+
+	while true; do
+		echo -e "${CYAN} = = > Current Batch REKEY CRF:${NC} ${YELLOW}$current_crf${NC}"
+		echo -e "${YELLOW} = = > Enter New Batch REKEY CRF [18 / 20 / 22 | 0.=cancel | q]: ${NC}"
+		read -r new_crf
+		new_crf="${new_crf//[[:space:]]/}"
+
+		if is_factory_exit_token "$new_crf"; then
+			printf '%s\n' "$current_crf"
+			return 0
+		fi
+
+		case "$new_crf" in
+			18|20|22)
+				printf '%s\n' "$new_crf"
+				return 0
+				;;
+			*)
+				echo -e "${YE} = = > Invalid CRF Choice. Enter 18, 20, 22, or 0./q To Cancel.${NC}"
+				echo
+				;;
+		esac
+	done
+}
 
 # =========================
 # #MARKER: INFO CSV LEDGER / REKEY CACHE STATE
@@ -969,7 +1127,7 @@ record_working_source_state() {
 }
 
 #end of new rekey validation skipped scheme helpers
-# more rekey helpers below
+# but more rekey helpers below
 
 
 # ============================================================
@@ -5313,25 +5471,25 @@ inspect_show_artifact_presence() {
 }
 
 inspect_run_keyframe_probe() {
-    clear
-    echo -e "${CYAN}================================================${NC}"
-    echo -e "${CYAN}      INSPECT :: KEYFRAME SUITABILITY PROBE     ${NC}"
-    echo -e "${CYAN}================================================${NC}"
-    echo
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}      INSPECT :: KEYFRAME SUITABILITY PROBE     ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
 
-    shopt -s nullglob nocaseglob
-    local -a probe_files=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
-    shopt -u nullglob nocaseglob
+	shopt -s nullglob nocaseglob
+	local -a probe_files=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
+	shopt -u nullglob nocaseglob
 
-    if ((${#probe_files[@]}==0)); then
-        echo -e "${RE} = = > No Video Files Found.${NC}"
-        pause
-        return 0
-    fi
+	if ((${#probe_files[@]}==0)); then
+		echo -e "${RE} = = > No Video Files Found.${NC}"
+		pause
+		return 0
+	fi
 
 	echo -e "${CYAN} = = > KEYFRAME SUITABILITY CHECK${NC}"
-    echo -e "${CYAN} = = > Select File For Analysis:${NC}"
-	local probe_target verdict pick
+	echo -e "${CYAN} = = > Select File For Analysis:${NC}"
+	local probe_target pick
 
 	while true; do
 		echo
@@ -5340,12 +5498,13 @@ inspect_run_keyframe_probe() {
 
 		select probe_target in "${probe_files[@]}"; do
 			pick="${REPLY//[[:space:]]/}"
-            # ========================================================
-            # TEN-KEY EXIT HOOK
-            # ========================================================
-            if is_factory_exit_token "$pick"; then
-            	return 0
-            fi
+
+			# ========================================================
+			# TEN-KEY EXIT HOOK
+			# ========================================================
+			if is_factory_exit_token "$pick"; then
+				return 0
+			fi
 
 			if [[ "$pick" == "q" || "$pick" == "Q" || "$pick" == "0" ]]; then
 				echo -e "${YELLOW} = = > Keyframe Check Cancelled.${NC}"
@@ -5354,7 +5513,7 @@ inspect_run_keyframe_probe() {
 			fi
 
 			if [[ -n "${probe_target:-}" ]]; then
-                echo -e "${GREEN} = = > Selected:${NC} ${BWHITE}$probe_target${NC}"
+				echo -e "${GREEN} = = > Selected:${NC} ${BWHITE}$probe_target${NC}"
 				break 2
 			fi
 
@@ -5363,21 +5522,17 @@ inspect_run_keyframe_probe() {
 		done
 	done
 
-    echo
-    probe_keyframe_suitability "$probe_target"
-    echo
-    verdict="$(get_keyframe_verdict "$probe_target" 2>/dev/null || true)"
-    local verdict_color
-    case "$verdict" in
-    	SAFE) verdict_color=$GR ;;
-    	CAUTION) verdict_color=$YE ;;
-    	RISKY) verdict_color=$REB ;;
-    	*) verdict_color=$NC ;;
-    esac
+	echo
+	if run_with_progress "Probing keyframe cut-friendliness: $(basename "$probe_target")" \
+		probe_keyframe_suitability "$probe_target"; then
+		:
+	else
+		echo
+		echo -e "${REB} = = > Keyframe Probe Failed.${NC}"
+	fi
+	echo
 
-    echo -e "${CYAN} = = > Cut-Friendliness Verdict:${NC} ${verdict_color}${verdict:-UNKNOWN}${NC}"
-
-    pause
+	pause
 }
 
 run_inspect() {
@@ -5484,61 +5639,67 @@ run_inspect() {
 #   SUTURED_, SUBPACKED_, templates, and existing OEM_ files.
 #
 prepare_collect_source_candidates() {
-    # OUTPUT CONTRACT:
-    # - Prints one eligible source file per line.
-    # - Intended for mapfile/readarray callers.
-    #
-    # ELIGIBLE:
-    # - Plain source-ish videos in the current folder
-    #
-    # SKIPPED:
-    # - OEM_ backups
-    # - REKEY_ rebuilds
-    # - SUTURED_ outputs
-    # - BARFIX_ outputs
-    # - SUBPACKED_ outputs
-    # - intro_template artifacts
-    #
-    shopt -s nullglob nocaseglob
-    local -a files=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
-    shopt -u nullglob nocaseglob
+	# OUTPUT CONTRACT:
+	# - Prints one eligible source file per line.
+	# - Intended for mapfile/readarray callers.
+	#
+	# ELIGIBLE:
+	# - Plain source-ish videos in the current folder
+	#
+	# SKIPPED:
+	# - OEM_ backups
+	# - REKEY_ rebuilds
+	# - SUTURED_ outputs
+	# - BARFIX_ outputs
+	# - SUBPACKED_ outputs
+	# - intro_template artifacts
+	#
+	# IMPORTANT:
+	# - THIS FUNCTION MUST STAY MACHINE-SAFE.
+	# - Do NOT inject color codes here.
+	# - mapfile callers (like OEM backup creation) consume this output as
+	#   real filenames, not display text.
+	#
+	shopt -s nullglob nocaseglob
+	local -a files=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
+	shopt -u nullglob nocaseglob
 
-    local f
-    for f in "${files[@]}"; do
-        [[ "$f" =~ ^OEM_ ]] && continue
-        [[ "$f" =~ ^REKEY_ ]] && continue
-        [[ "$f" =~ ^(SUTURED_|PILOT_SUTURED_) ]] && continue
-        [[ "$f" =~ ^BARFIX_ ]] && continue
-        [[ "$f" =~ ^SUBPACKED_ ]] && continue
-        [[ "$f" == intro_template* ]] && continue
-        [[ "$f" == custom_cut* ]] && continue
-        printf "${CYAN}%s${NC}\n" "$f"
-    done
+	local f
+	for f in "${files[@]}"; do
+		[[ "$f" =~ ^OEM_ ]] && continue
+		[[ "$f" =~ ^REKEY_ ]] && continue
+		[[ "$f" =~ ^(SUTURED_|PILOT_SUTURED_) ]] && continue
+		[[ "$f" =~ ^BARFIX_ ]] && continue
+		[[ "$f" =~ ^SUBPACKED_ ]] && continue
+		[[ "$f" == intro_template* ]] && continue
+		[[ "$f" == custom_cut* ]] && continue
+		printf '%s\n' "$f"
+	done
 }
 
 prepare_show_candidates() {
-    clear
-    echo -e "${CYAN}================================================${NC}"
-    echo -e "${CYAN}         PREPARE SOURCES :: SOURCE CANDIDATES   ${NC}"
-    echo -e "${CYAN}================================================${NC}"
-    echo
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}         PREPARE SOURCES :: SOURCE CANDIDATES   ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
 
-    local -a targets=()
-    mapfile -t targets < <(prepare_collect_source_candidates)
+	local -a targets=()
+	mapfile -t targets < <(prepare_collect_source_candidates)
 
-    if ((${#targets[@]}==0)); then
-        echo -e "${YELLOW} = = > No Eligible Source-Style Video Files Found.${NC}"
-        echo
-        pause
-        return 0
-    fi
+	if ((${#targets[@]}==0)); then
+		echo -e "${YELLOW} = = > No Eligible Source-Style Video Files Found.${NC}"
+		echo
+		pause
+		return 0
+	fi
 
-    echo -e "${CYAN} = = > Eligible Working Sources:${NC}"
-    printf "${CYAN}   - %s${NC}\n" "${targets[@]}"
-    echo
-    echo -e "${CYAN} = = > Count:${NC} ${#targets[@]}"
-    echo
-    pause
+	echo -e "${CYAN} = = > Eligible Working Sources:${NC}"
+	printf "${CYAN}   - %s${NC}\n" "${targets[@]}"
+	echo
+	echo -e "${CYAN} = = > Count:${NC} ${#targets[@]}"
+	echo
+	pause
 }
 
 prepare_make_OEM_backups() {
@@ -5624,7 +5785,7 @@ prepare_make_OEM_backups() {
         # cp -a preserves timestamps/mode where possible and avoids altering
         # the original source content.
         if cp -a -- "$f" "$backup"; then
-            echo -e "${GR} = = > [OK] $f -> $backup${NC}"
+            echo -e "${GR} = = > [OK]${NC} $f -> $backup"
             ((made_count+=1)) || :
         else
             echo -e "${REB} = = > [FAIL]${NC} $f"
@@ -6663,71 +6824,77 @@ run_utility_menu() {
 }
 
 normalize_to_mkv() {
-    file="$1"
+	local file="$1"
+	local ext base
 
-    ext="${file##*.}"
-    base="${file%.*}"
+	ext="${file##*.}"
+	base="${file%.*}"
 
-    # NOTE: Ext Compare Should Be Case-Insensitive To Avoid "MKV" Edge Cases.
-    if [[ "${ext,,}" != "mkv" ]]; then
-        echo -e "${CYAN} = = > Converting $file → ${base}.mkv${NC}"
+	# NOTE: Ext Compare Should Be Case-Insensitive To Avoid "MKV" Edge Cases.
+	if [[ "${ext,,}" != "mkv" ]]; then
+		echo -e "${CYAN} = = > Converting $file → ${base}.mkv${NC}" >&2
 
-        # ============================================================
-        # #MARKER: NORMALIZE PLAYBACK DEFAULTS
-        # ============================================================
-        # GOAL:
-        # - Prefer English Audio Track If Available
-        # - Disable Subtitles By Default
-        # - Keep Operation Lossless (Stream Copy Only)
-        #
-        # LOGIC:
-        # - First English Audio Stream Gets Default Disposition
-        # - All Subtitle Streams Explicitly Set To Non-Default
-        #
-        # NOTE:
-        # - Does NOT Remove Subtitles, Only Disables Auto-Display
-        # - Safe For Later SUBTOX Operations (Pre-GAPMAN)
-        #
-        ffmpeg -hide_banner -loglevel error -nostdin -y \
-            -i "$file" \
-            -map 0 \
-            -c copy \
-            -disposition:a:0 default \
-            -disposition:s 0 \
-            -metadata:s:a:0 language=eng \
-            "${base}.mkv"
+		# ============================================================
+		# #MARKER: NORMALIZE PLAYBACK DEFAULTS
+		# ============================================================
+		# GOAL:
+		# - Prefer English Audio Track If Available
+		# - Disable Subtitles By Default
+		# - Keep Operation Lossless (Stream Copy Only)
+		#
+		# LOGIC:
+		# - First English Audio Stream Gets Default Disposition
+		# - All Subtitle Streams Explicitly Set To Non-Default
+		#
+		# NOTE:
+		# - Do NOT print display chatter to stdout here.
+		# - This helper is often consumed via command substitution.
+		# - Keep stdout reserved for the final returned path only.
+		# ============================================================
+		if run_with_progress "Normalizing To MKV: $(basename "$file")" \
+			ffmpeg -hide_banner -loglevel error -nostdin -y \
+				-i "$file" \
+				-map 0 \
+				-c copy \
+				-disposition:a:0 default \
+				-disposition:s 0 \
+				-metadata:s:a:0 language=eng \
+				"${base}.mkv"; then
+			echo "${base}.mkv"
+		else
+			echo -e "${REB} = = > Normalize To MKV Failed. Using Original File.${NC}" >&2
+			echo "$file"
+		fi
+	else
+		# ============================================================
+		# #MARKER: MKV IN-PLACE NORMALIZATION (LIGHT TOUCH)
+		# ============================================================
+		# Even If Already MKV, We May Still Want To Enforce:
+		# - English Audio Default
+		# - Subtitles Off
+		#
+		# NOTE:
+		# - Uses Mkvpropedit If Available (Fast, No Remux)
+		# - Falls Back To No-Op If Unavailable (Preserve Behavior)
+		# ============================================================
+		if command -v mkvpropedit >/dev/null 2>&1; then
+			echo -e "${CYAN} = = > Applying Playback Defaults (In-Place): $file${NC}" >&2
 
-        echo "${base}.mkv"
-    else
-        # ============================================================
-        # #MARKER: MKV IN-PLACE NORMALIZATION (LIGHT TOUCH)
-        # ============================================================
-        # Even If Already MKV, We May Still Want To Enforce:
-        # - English Audio Default
-        # - Subtitles Off
-        #
-        # NOTE:
-        # - Uses Mkvpropedit If Available (Fast, No Remux)
-        # - Falls Back To No-Op If Unavailable (Preserve Behavior)
-        #
-        if command -v mkvpropedit >/dev/null 2>&1; then
-            echo -e "${CYAN} = = > Applying Playback Defaults (In-Place): $file${NC}" >&2
+			# Set First Audio Track As Default And English
+			mkvpropedit "$file" \
+				--edit track:a1 --set flag-default=1 \
+				--edit track:a1 --set language=eng \
+				>/dev/null 2>&1 || true
 
-            # Set First Audio Track As Default And English
-            mkvpropedit "$file" \
-                --edit track:a1 --set flag-default=1 \
-                --edit track:a1 --set language=eng \
-                >/dev/null 2>&1 || true
+			# Disable All Subtitle Tracks As Default
+			# NOTE: mkvpropedit Cannot Bulk-Edit Easily; Best-Effort Only
+			mkvpropedit "$file" \
+				--edit track:s1 --set flag-default=0 \
+				>/dev/null 2>&1 || true
+		fi
 
-            # Disable All Subtitle Tracks As Default
-            # NOTE: mkvpropedit Cannot Bulk-Edit Easily; Best-Effort Only
-            mkvpropedit "$file" \
-                --edit track:s1 --set flag-default=0 \
-                >/dev/null 2>&1 || true
-        fi
-
-        echo "$file"
-    fi
+		echo "$file"
+	fi
 }
 
 keyframe_interval() {
@@ -6742,49 +6909,54 @@ keyframe_interval() {
 }
 
 rebuild_if_needed() {
-    file="$1"
+	local file="$1"
+	local interval fps fps_calc out
 
-    interval=$(keyframe_interval "$file")
-    interval=${interval:-999}
+	interval=$(keyframe_interval "$file")
+	interval=${interval:-999}
 
-    echo -e "${YELLOW} = = > Keyframe interval: ${interval}s${NC}" >&2
+	echo -e "${YELLOW} = = > Keyframe interval: ${interval}s${NC}" >&2
 
-    if (( $(echo "$interval <= 1.0" | bc -l) )); then
-        echo -e "${GREEN} = = > High Precision Detected. Rebuild Skipped.${NC}" >&2
-        echo "$file"
-        return
-    fi
+	if (( $(echo "$interval <= 1.0" | bc -l) )); then
+		echo -e "${GREEN} = = > High Precision Detected. Rebuild Skipped.${NC}" >&2
+		echo "$file"
+		return
+	fi
 
-    echo -e "${CYAN} = = > Rebuilding To 1-sec GOP Precision...${NC}" >&2
+	echo -e "${CYAN} = = > Rebuilding To 1-sec GOP Precision...${NC}" >&2
+	echo -e "${CYAN} = = > REKEY CRF:${NC} ${YELLOW}${REKEY_CRF}${NC} ${CYAN}(quality knob)${NC}" >&2
+    echo -e "${CYAN} = = > Audio Policy:${NC} ${GREEN}copy-through${NC}" >&2
 
-    fps=$(ffprobe -v error -select_streams v:0 \
-        -show_entries stream=r_frame_rate \
-        -of default=noprint_wrappers=1:nokey=1 "$file")
+	fps=$(ffprobe -v error -select_streams v:0 \
+		-show_entries stream=r_frame_rate \
+		-of default=noprint_wrappers=1:nokey=1 "$file")
 
-    if [[ -z "$fps" ]]; then
-        echo -e "${RE} = = > FPS Detection Failed. Using Original.${NC}" >&2
-        echo "$file"
-        return
-    fi
+	if [[ -z "$fps" ]]; then
+		echo -e "${RE} = = > FPS Detection Failed. Using Original.${NC}" >&2
+		echo "$file"
+		return
+	fi
 
-    fps_calc=$(echo "$fps" | awk -F'/' '{printf "%.0f", $1/$2}')
-    out="${file%.mkv}_rebuilt.mkv"
+	fps_calc=$(echo "$fps" | awk -F'/' '{printf "%.0f", $1/$2}')
+	out="${file%.mkv}_rebuilt.mkv"
 
-    if ffmpeg -y -i "$file" \
-        -c:v libx264 -preset medium \
-        -g "$fps_calc" -keyint_min "$fps_calc" \
-        -sc_threshold 0 \
-        -c:a copy "$out"; then
+	if run_with_progress "Rebuilding GOP Precision: $(basename "$file")" \
+		ffmpeg -hide_banner -loglevel error -nostdin -y -i "$file" \
+			-c:v libx264 -preset medium -crf "$REKEY_CRF" \
+			-g "$fps_calc" -keyint_min "$fps_calc" \
+			-sc_threshold 0 \
+			-c:a copy \
+			"$out"; then
 
-        if [[ -f "$out" ]]; then
-            echo -e "${GREEN} = = > Rebuild Successful.${NC}" >&2
-            echo "$out"
-            return
-        fi
-    fi
+		if [[ -f "$out" ]]; then
+			echo -e "${GREEN} = = > Rebuild Successful.${NC}" >&2
+			echo "$out"
+			return
+		fi
+	fi
 
-    echo -e "${REB} = = > Rebuild Failed. Using Original File.${NC}" >&2
-    echo "$file"
+	echo -e "${REB} = = > Rebuild Failed. Using Original File.${NC}" >&2
+	echo "$file"
 }
 
 # part of advanced tools=====================================================================
@@ -6954,23 +7126,20 @@ run_keyframe_suitability_check() {
 	echo
 
 	# ========================================================
-	# ACTUAL ENGINE CALL (THIS IS WHAT STILL EXISTS)
+	# ACTUAL ENGINE CALL
 	# ========================================================
-	probe_keyframe_suitability "$selected" || true
-
-	local verdict
-	verdict="$(get_keyframe_verdict "$selected" 2>/dev/null || true)"
-	verdict="${verdict:-UNKNOWN}"
-
-	local verdict_color="$NC"
-	case "$verdict" in
-		SAFE) verdict_color="$GR" ;;
-		CAUTION) verdict_color="$YE" ;;
-		RISKY) verdict_color="$REB" ;;
-	esac
-
-	echo
-	echo -e "${CYAN} = = > Final Verdict:${NC} ${verdict_color}${verdict}${NC}"
+	# NOTE:
+	# - Wrap the expensive probe so the screen does not feel frozen.
+	# - Do NOT call get_keyframe_verdict() again afterward.
+	# - probe_keyframe_suitability already prints the verdict block.
+	# ========================================================
+	if run_with_progress "Probing keyframe cut-friendliness: $(basename "$selected")" \
+		probe_keyframe_suitability "$selected"; then
+		:
+	else
+		echo
+		echo -e "${REB} = = > Keyframe Probe Failed.${NC}"
+	fi
 	echo
 
 	pause
@@ -7640,32 +7809,41 @@ run_with_progress() {
 # =========================
 # PURPOSE:
 # - Normalize One Source File Into A Cut-Friendly REKEY_ Output Using The
-#   Same Known-Good Recipe Used By Template Builder Rebuilds.
+#    Current Batch CRF Knob Passed Down By Batch Normalize.
 #
 # WHY THIS EXISTS:
-# - Template Builder Rebuild Helper Is Interactive-Context Oriented.
-# - Batch Mode Needs A Dedicated Worker That Can Be Launched In Background
-#   Jobs Safely And Repeatedly Across Many Files.
+# - Batch Mode Needs A Dedicated Worker That Can Be Launched Safely
+#   Across Many Files Without Dragging In Interactive One-Off Logic.
+#
+# REKEY PHILOSOPHY:
+# - QUALITY FIRST
+# - 1-SECOND GOP FOR CUT-FRIENDLINESS
+# - AUDIO PASSES THROUGH UNCHANGED
+# - NOT A SIZE-SQUEEZE TOOL
 #
 # DESIGN RULE:
+# - Keep GOP / keyframe structure fixed and trustworthy.
+# - Use REKEY_CRF as the single quality tuning knob.
+# - Do NOT re-encode audio here; REKEY is not an audio "improvement" pass.
 # - Keep Quality/Settings FIXED.
 # - Throttle By Number Of Simultaneous Files, NOT By Lowering Encode Quality.
-
+# =========================
 normalize_cut_friendly_file() {
 	local in="$1"
+	local rekey_crf="${2:-$REKEY_CRF}"
 	local out fps fps_calc
 
 	out="REKEY_$(basename "${in%.*}").mkv"
 
 	# Skip only if existing rebuilt file is actually valid/readable.
 	if is_valid_video_file "$out"; then
-		echo -e "${YELLOW} = = > Skip Existing Rebuilt File:${NC} $out"
+		echo -e "${YELLOW} = = > Skip Existing Rebuilt File:${NC} ${GREEN}$out${NC}"
 		return 0
 	fi
 
 	# If a stale/corrupt partial file exists, remove it before rebuilding.
 	if [[ -f "$out" ]]; then
-		echo -e "${YELLOW} = = > Existing Rebuilt File Is Invalid. Removing Stale File:${NC} $out"
+		echo -e "${YELLOW} = = > Existing Rebuilt File Is Invalid. Removing Stale File:${NC} ${GREEN}$out${NC}"
 		rm -f "$out"
 	fi
 
@@ -7677,26 +7855,28 @@ normalize_cut_friendly_file() {
 	fps_calc=$(echo "$fps" | awk -F'/' '{if ($2>0) printf "%.0f", $1/$2}')
 	[[ -z "$fps_calc" ]] && fps_calc=24
 
-	echo -e "${CYAN} = = > Normalizing:${NC} $in"
-	echo -e "${CYAN} = = > Output:${NC} $out"
-	echo -e "${CYAN} = = > GOP target:${NC} ~1 second (${fps_calc} frames)${NC}"
+	echo -e "${CYAN} = = > Normalizing:${NC} ${GREEN}$in${NC}"
+	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+	echo -e "${CYAN} = = > GOP target:${NC} ${YELLOW}~1 second (${fps_calc} frames)${NC}"
+	echo -e "${CYAN} = = > REKEY CRF:${NC} ${YELLOW}$rekey_crf${NC}"
+	echo -e "${CYAN} = = > Audio Policy:${NC} ${GREEN}copy-through${NC}"
 
-	if ffmpeg -hide_banner -loglevel error -nostdin -y -i "$in" \
-		-c:v libx264 -preset medium -crf 18 \
-		-g "$fps_calc" -keyint_min "$fps_calc" \
-		-sc_threshold 0 \
-		-c:a aac -b:a 256k -ac 2 -ar 48000 \
-		"$out"; then
+	if run_with_progress "Batch Normalize: $(basename "$in")" \
+		ffmpeg -hide_banner -loglevel error -nostdin -y -i "$in" \
+			-c:v libx264 -preset medium -crf "$rekey_crf" \
+			-g "$fps_calc" -keyint_min "$fps_calc" \
+			-sc_threshold 0 \
+			-c:a copy \
+			"$out"; then
 
-		echo -e "${GR} = = > Normalized OK:${NC} $out"
+		echo -e "${GR} = = > Normalized OK:${NC} ${GREEN}$out${NC}"
 		return 0
 	else
-		echo -e "${REB} = = > Normalize FAILED:${NC} $in"
+		echo -e "${REB} = = > Normalize FAILED:${NC} ${GREEN}$in${NC}"
 		rm -f "$out"
 		return 1
 	fi
 }
-
 
 # ==============================================================================
 # --- FUNCTION: CUSTOM CUT (BRUTAL ONE-OFF CLIP TOOL) ---
@@ -8141,7 +8321,9 @@ run_batch_normalizer() {
 
 	local load_mode max_jobs custom_jobs
 	local -a norm_sources
-	local total idx f active_jobs success_count fail_count skip_count
+    local total idx f active_jobs success_count fail_count skip_count
+    local batch_rekey_crf first_file first_out
+    local first_orig_size first_new_size first_delta_percent first_bucket
 
 	clear
 	echo -e "${CYAN}==========================================================${NC}"
@@ -8296,26 +8478,131 @@ run_batch_normalizer() {
 	success_count=0
 	fail_count=0
 	skip_count=0
+	batch_rekey_crf="$REKEY_CRF"
+
+	# ========================================================
+	# #MARKER: FIRST-FILE CALIBRATION PASS
+	# ========================================================
+	# WHY:
+	# - Batch Normalize Normally Fans Out Into Concurrent Background Jobs.
+	# - If We Want One Human-Eyes Sanity Check, It Must Happen BEFORE
+	#   The Concurrency Loop Starts.
+	#
+	# DESIGN:
+	# - First eligible file runs alone
+	# - Compare original size vs REKEY size
+	# - If outside sanity band, prompt ONCE
+	# - Optional retry at a different CRF
+	# - Optional use of that CRF for the rest of THIS batch only
+	# ========================================================
+	first_file=""
+
+	for ((idx=0; idx<total; idx++)); do
+		f="${norm_sources[$idx]}"
+
+		if [[ -f "REKEY_$(basename "${f%.*}").mkv" ]]; then
+			echo -e "${GREEN} = = > [SKIP $((idx+1)) / $total] Matching REKEY Exists For:${NC} ${GREEN}$f${NC}"
+			((skip_count+=1)) || :
+			continue
+		fi
+
+		first_file="$f"
+		break
+	done
+
+	if [[ -n "${first_file:-}" ]]; then
+		echo
+		echo -e "${CYAN}==========================================================${NC}"
+		echo -e "${CYAN}        BATCH NORMALIZER :: FIRST-FILE CALIBRATION        ${NC}"
+		echo -e "${CYAN}==========================================================${NC}"
+		echo -e "${CYAN} = = > First Calibration File:${NC} ${GREEN}$first_file${NC}"
+		echo -e "${CYAN} = = > Starting Batch REKEY CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
+		echo
+
+		if normalize_cut_friendly_file "$first_file" "$batch_rekey_crf"; then
+			first_out="REKEY_$(basename "${first_file%.*}").mkv"
+
+			if [[ -f "$first_out" ]]; then
+				first_orig_size=$(stat -c%s "$first_file")
+				first_new_size=$(stat -c%s "$first_out")
+				first_delta_percent=$(rekey_percent_change "$first_orig_size" "$first_new_size")
+				first_bucket="$(rekey_size_sanity_bucket "$first_delta_percent")"
+
+				rekey_print_size_sanity_report \
+					"$first_file" "$first_out" \
+					"$first_orig_size" "$first_new_size" \
+					"$first_delta_percent" "$first_bucket"
+
+				if [[ "$first_bucket" != "OK" ]]; then
+					if ask_yes_no " = = > First File Landed Outside The REKEY Sanity Band. Retry It At A Different CRF? (y/n or 1/2): "; then
+						local new_batch_crf
+						new_batch_crf="$(rekey_prompt_for_new_batch_crf "$batch_rekey_crf")"
+
+						if [[ "$new_batch_crf" != "$batch_rekey_crf" ]]; then
+							echo -e "${YELLOW} = = > Removing First REKEY So It Can Be Rebuilt At New CRF...${NC}"
+							rm -f -- "$first_out"
+
+							if normalize_cut_friendly_file "$first_file" "$new_batch_crf"; then
+								first_out="REKEY_$(basename "${first_file%.*}").mkv"
+
+								if [[ -f "$first_out" ]]; then
+									first_new_size=$(stat -c%s "$first_out")
+									first_delta_percent=$(rekey_percent_change "$first_orig_size" "$first_new_size")
+									first_bucket="$(rekey_size_sanity_bucket "$first_delta_percent")"
+
+									rekey_print_size_sanity_report \
+										"$first_file" "$first_out" \
+										"$first_orig_size" "$first_new_size" \
+										"$first_delta_percent" "$first_bucket"
+
+									if ask_yes_no " = = > Use This New CRF For The Rest Of This Batch? (y/n or 1/2): "; then
+										batch_rekey_crf="$new_batch_crf"
+										echo -e "${GREEN} = = > Batch REKEY CRF Updated For This Batch Only:${NC} ${YELLOW}$batch_rekey_crf${NC}"
+									else
+										echo -e "${YELLOW} = = > Rest Of Batch Will Continue Using Starting CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
+									fi
+								fi
+							else
+								echo -e "${REB} = = > Retry Failed. Rest Of Batch Will Continue With Existing CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
+							fi
+						else
+							echo -e "${YELLOW} = = > Batch REKEY CRF Left Unchanged.${NC}"
+						fi
+					fi
+				fi
+			fi
+
+			((success_count+=1)) || :
+		else
+			echo -e "${REB} = = > First Calibration File Failed:${NC} ${GREEN}$first_file${NC}"
+			((fail_count+=1)) || :
+		fi
+	fi
+
+	echo
+	echo -e "${CYAN} = = > Starting Batch Normalization With Batch REKEY CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
 
 	# =========================
 	# #MARKER: BATCH NORMALIZER CONCURRENCY LOOP
 	# =========================
 	# Jobs Are Launched In The Background Up To The Selected Cap.
-	# We Then Wait Until At Least One Slot Opens Before Launching More.
+	# First calibration file was already handled above, so skip it here.
 	#
 	for ((idx=0; idx<total; idx++)); do
 		f="${norm_sources[$idx]}"
 
+		[[ -n "${first_file:-}" && "$f" == "$first_file" ]] && continue
+
 		if [[ -f "REKEY_$(basename "${f%.*}").mkv" ]]; then
-			echo -e "${GREEN} = = > [SKIP $((idx+1)) / $total] Matching REKEY Exists For: $f${NC}"
+			echo -e "${GREEN} = = > [SKIP $((idx+1)) / $total] Matching REKEY Exists For:${NC} ${GREEN}$f${NC}"
 			((skip_count+=1)) || :
 			continue
 		fi
 
-		echo -e "${MAGENTA} = = > [$((idx+1)) / $total] Queueing: $f${NC}"
+		echo -e "${MAGENTA} = = > [$((idx+1)) / $total] Queueing:${NC} ${GREEN}$f${NC}"
 
 		(
-			if normalize_cut_friendly_file "$f"; then
+			if normalize_cut_friendly_file "$f" "$batch_rekey_crf"; then
 				exit 0
 			else
 				exit 1
@@ -8325,18 +8612,8 @@ run_batch_normalizer() {
 		# =========================
 		# #MARKER: BATCH NORMALIZER ACTIVE JOB INDICATOR
 		# =========================
-		# WHY:
-		# - Ffmpeg Is Intentionally Quiet In This Script, So Concurrent Jobs Can
-		#   Look Deceptively Serial In The Terminal Output.
-		# - Show Current Active Background Normalize Jobs So The User Can Confirm
-		#   That Light/Medium/Thrash Load Control Is Actually Working.
-		#
-		# NOTE:
-		# - This Is Informational Only.
-		# - It Does Not Change Scheduling Behavior.
-		#
 		active_jobs=$(jobs -rp | wc -l)
-		echo -e "${CYAN} = = > Active Normalize Jobs:${NC} $active_jobs / $max_jobs"
+		echo -e "${CYAN} = = > Active Normalize Jobs:${NC} ${GREEN}$active_jobs${NC} ${CYAN}/${NC} ${YELLOW}$max_jobs${NC}"
 
 		while true; do
 			active_jobs=$(jobs -rp | wc -l)
