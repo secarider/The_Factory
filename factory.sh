@@ -530,13 +530,19 @@ INFO_MAP="info.csv"
 # - Avoid Unnecessary Size Movement Either Way
 #
 # GUIDANCE:
-# - 18 = very conservative / quality-leaning baseline
-# - 20 = lighter file weight, often still visually excellent
+# - 18 = conservative / quality-leaning
+# - 19 = slight size relief from 18
+# - 20 = balanced default
+# - 21 = slight additional size reduction
 # - 22 = stronger reduction, inspect more carefully
 #
 # BAND RULE:
 # - Growth Beyond REKEY_GROWTH_WARN_PERCENT  => Worth User Attention
 # - Shrink Beyond REKEY_SHRINK_WARN_PERCENT  => Worth User Attention
+#
+# TARGET RULE:
+# - TARGET_MAX_GROWTH / TARGET_MAX_SHRINK are the tighter "auto-try" band
+# - The warn band can stay looser so the report still communicates drift
 #
 # NOTE:
 # - These Are CLUE / HINT Thresholds, Not Absolute Truth Detectors.
@@ -546,7 +552,9 @@ INFO_MAP="info.csv"
 # =========================
 REKEY_GROWTH_WARN_PERCENT=25
 REKEY_SHRINK_WARN_PERCENT=25
-REKEY_CRF=22
+TARGET_MAX_GROWTH=10
+TARGET_MAX_SHRINK=10
+REKEY_CRF=20
 
 # - Helpers
 
@@ -657,7 +665,7 @@ ensure_intro_map() {
 }
 
 # start new rekey helpers all rekey related
-# start new rekey and rekey-validation skipped scheme helpers
+# start new rekey builder and rekey-validation skipped scheme helpers
 
 # =========================
 # #MARKER: REKEY SIZE SANITY HELPERS
@@ -671,7 +679,6 @@ ensure_intro_map() {
 # - This is NOT a tell-all quality detector.
 # - It is an early-warning clue system that stays within bash-script scope.
 # =========================
-
 rekey_percent_change() {
 	local orig_size="$1"
 	local new_size="$2"
@@ -701,6 +708,51 @@ rekey_size_sanity_bucket() {
 	fi
 
 	printf '%s\n' "OK"
+}
+
+# =========================
+# #MARKER: REKEY AUTO-STEP CRF HELPER
+# =========================
+# PURPOSE:
+# - On First-File Calibration, Automatically Try The Next Logical CRF Step
+#   Before Interrupting The User
+#
+# DESIGN:
+# - If File Grew Too Much  -> Raise CRF By 1
+# - If File Shrunk Too Much -> Lower CRF By 1
+# - Keep The Search Narrow / Conservative
+# - Stay Inside A Sane Working Range
+#
+# WHY:
+# - We Already Know WHICH WAY The First File Missed
+# - So We Can Nudge The CRF One Click In The Correct Direction
+# - This avoids needless prompting for obvious near-misses
+# =========================
+rekey_auto_step_crf() {
+	local current_crf="$1"
+	local bucket="$2"
+	local next_crf="$current_crf"
+
+	case "$bucket" in
+		GROWTH_WARN)
+			# Too big -> increase CRF -> reduce size
+			((next_crf+=1))
+			;;
+		SHRINK_WARN)
+			# Too small -> decrease CRF -> allow more bitrate / size
+			((next_crf-=1))
+			;;
+		*)
+			printf '%s\n' "$current_crf"
+			return 0
+			;;
+	esac
+
+	# Keep The Search In A Conservative REKEY Window
+	(( next_crf < 18 )) && next_crf=18
+	(( next_crf > 22 )) && next_crf=22
+
+	printf '%s\n' "$next_crf"
 }
 
 rekey_print_size_sanity_report() {
@@ -760,7 +812,7 @@ rekey_prompt_for_new_batch_crf() {
 
 	while true; do
 		echo -e "${CYAN} = = > Current Batch REKEY CRF:${NC} ${YELLOW}$current_crf${NC}"
-		echo -e "${YELLOW} = = > Enter New Batch REKEY CRF [18 / 20 / 22 | 0.=cancel | q]: ${NC}"
+		echo -e "${YELLOW} = = > Enter New Batch REKEY CRF [18 / 19 / 20 / 21 / 22 | 0.=cancel | q]: ${NC}"
 		read -r new_crf
 		new_crf="${new_crf//[[:space:]]/}"
 
@@ -770,12 +822,12 @@ rekey_prompt_for_new_batch_crf() {
 		fi
 
 		case "$new_crf" in
-			18|20|22)
+			18|19|20|21|22)
 				printf '%s\n' "$new_crf"
 				return 0
 				;;
 			*)
-				echo -e "${YE} = = > Invalid CRF Choice. Enter 18, 20, 22, or 0./q To Cancel.${NC}"
+				echo -e "${YE} = = > Invalid CRF Choice. Enter 18, 19, 20, 21, 22, or 0./q To Cancel.${NC}"
 				echo
 				;;
 		esac
@@ -5773,22 +5825,27 @@ prepare_make_OEM_backups() {
     # - Copy each eligible source into ./OEM/
     # - Add OEM_ prefix while preserving original working file
     #
+    # WHY run_with_progress LIVES HERE:
+    # - OEM copy can take a while on large camera/bodycam files
+    # - We want a visible "working" heartbeat during each copy
+    # - We still keep per-file OK / FAIL / SKIP reporting afterward
+    #
     for f in "${targets[@]}"; do
         backup="OEM/OEM_$(basename "$f")"
 
         if [[ -e "$backup" ]]; then
-            echo -e "${YELLOW} = = > [SKIP]${NC} $backup Already Exists"
+            echo -e "${YE} = = > [SKIP]${NC} ${CYAN}$backup${NC} ${YELLOW}Already Exists${NC}"
             ((skip_count+=1)) || :
             continue
         fi
 
         # cp -a preserves timestamps/mode where possible and avoids altering
         # the original source content.
-        if cp -a -- "$f" "$backup"; then
-            echo -e "${GR} = = > [OK]${NC} $f -> $backup"
+        if run_with_progress "OEM Backup Copy: $(basename "$f")" cp -a -- "$f" "$backup"; then
+            echo -e "${GR} = = > [OK]${NC} ${GREEN}$f${NC} ${CYAN}->${NC} ${GREEN}$backup${NC}"
             ((made_count+=1)) || :
         else
-            echo -e "${REB} = = > [FAIL]${NC} $f"
+            echo -e "${REB} = = > [FAIL]${NC} ${GREEN}$f${NC}"
             ((fail_count+=1)) || :
         fi
     done
@@ -8491,8 +8548,8 @@ run_batch_normalizer() {
 	# DESIGN:
 	# - First eligible file runs alone
 	# - Compare original size vs REKEY size
-	# - If outside sanity band, prompt ONCE
-	# - Optional retry at a different CRF
+	# - If outside sanity band, auto-try one logical CRF step first
+	# - Then fall back to manual retry if still needed
 	# - Optional use of that CRF for the rest of THIS batch only
 	# ========================================================
 	first_file=""
@@ -8534,39 +8591,129 @@ run_batch_normalizer() {
 					"$first_delta_percent" "$first_bucket"
 
 				if [[ "$first_bucket" != "OK" ]]; then
-					if ask_yes_no " = = > First File Landed Outside The REKEY Sanity Band. Retry It At A Different CRF? (y/n or 1/2): "; then
-						local new_batch_crf
-						new_batch_crf="$(rekey_prompt_for_new_batch_crf "$batch_rekey_crf")"
+					local auto_try_crf auto_bucket
 
-						if [[ "$new_batch_crf" != "$batch_rekey_crf" ]]; then
-							echo -e "${YELLOW} = = > Removing First REKEY So It Can Be Rebuilt At New CRF...${NC}"
-							rm -f -- "$first_out"
+					echo -e "${YELLOW} = = > First File Landed Outside The REKEY Sanity Band.${NC}"
 
-							if normalize_cut_friendly_file "$first_file" "$new_batch_crf"; then
-								first_out="REKEY_$(basename "${first_file%.*}").mkv"
+					# ========================================================
+					# AUTO-TRY THE NEXT LOGICAL CRF STEP FIRST
+					# ========================================================
+					# WHY:
+					# - We Already Know Which Direction The Size Drift Went
+					# - So We Can Try One Small Corrective Step Before Prompting
+					#
+					# RULE:
+					# - GROWTH_WARN -> CRF + 1
+					# - SHRINK_WARN -> CRF - 1
+					# ========================================================
+					auto_try_crf="$(rekey_auto_step_crf "$batch_rekey_crf" "$first_bucket")"
 
-								if [[ -f "$first_out" ]]; then
-									first_new_size=$(stat -c%s "$first_out")
-									first_delta_percent=$(rekey_percent_change "$first_orig_size" "$first_new_size")
-									first_bucket="$(rekey_size_sanity_bucket "$first_delta_percent")"
+					if [[ "$auto_try_crf" != "$batch_rekey_crf" ]]; then
+						echo -e "${CYAN} = = > Auto-Trying Next CRF Step:${NC} ${YELLOW}$batch_rekey_crf -> $auto_try_crf${NC}"
+						echo -e "${YELLOW} = = > Removing First REKEY So It Can Be Rebuilt At Auto-Try CRF...${NC}"
+						rm -f -- "$first_out"
 
-									rekey_print_size_sanity_report \
-										"$first_file" "$first_out" \
-										"$first_orig_size" "$first_new_size" \
-										"$first_delta_percent" "$first_bucket"
+						if normalize_cut_friendly_file "$first_file" "$auto_try_crf"; then
+							first_out="REKEY_$(basename "${first_file%.*}").mkv"
 
-									if ask_yes_no " = = > Use This New CRF For The Rest Of This Batch? (y/n or 1/2): "; then
-										batch_rekey_crf="$new_batch_crf"
+							if [[ -f "$first_out" ]]; then
+								first_new_size=$(stat -c%s "$first_out")
+								first_delta_percent=$(rekey_percent_change "$first_orig_size" "$first_new_size")
+								first_bucket="$(rekey_size_sanity_bucket "$first_delta_percent")"
+
+								rekey_print_size_sanity_report \
+									"$first_file" "$first_out" \
+									"$first_orig_size" "$first_new_size" \
+									"$first_delta_percent" "$first_bucket"
+
+								auto_bucket="$(rekey_size_sanity_bucket \
+									"$first_delta_percent" \
+									"$TARGET_MAX_GROWTH" \
+									"$TARGET_MAX_SHRINK")"
+
+								if [[ "$auto_bucket" == "OK" ]]; then
+									if ask_yes_no " = = > Auto-Try Landed Inside The Tight Target Band. Use This CRF For The Rest Of This Batch? (y/n or 1/2): "; then
+										batch_rekey_crf="$auto_try_crf"
 										echo -e "${GREEN} = = > Batch REKEY CRF Updated For This Batch Only:${NC} ${YELLOW}$batch_rekey_crf${NC}"
 									else
 										echo -e "${YELLOW} = = > Rest Of Batch Will Continue Using Starting CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
 									fi
+								else
+									if ask_yes_no " = = > Auto-Try Still Landed Outside The Tight Target Band. Retry It At A Different CRF? (y/n or 1/2): "; then
+										local new_batch_crf
+										new_batch_crf="$(rekey_prompt_for_new_batch_crf "$auto_try_crf")"
+
+										if [[ "$new_batch_crf" != "$auto_try_crf" ]]; then
+											echo -e "${YELLOW} = = > Removing First REKEY So It Can Be Rebuilt At New CRF...${NC}"
+											rm -f -- "$first_out"
+
+											if normalize_cut_friendly_file "$first_file" "$new_batch_crf"; then
+												first_out="REKEY_$(basename "${first_file%.*}").mkv"
+
+												if [[ -f "$first_out" ]]; then
+													first_new_size=$(stat -c%s "$first_out")
+													first_delta_percent=$(rekey_percent_change "$first_orig_size" "$first_new_size")
+													first_bucket="$(rekey_size_sanity_bucket "$first_delta_percent")"
+
+													rekey_print_size_sanity_report \
+														"$first_file" "$first_out" \
+														"$first_orig_size" "$first_new_size" \
+														"$first_delta_percent" "$first_bucket"
+
+													if ask_yes_no " = = > Use This New CRF For The Rest Of This Batch? (y/n or 1/2): "; then
+														batch_rekey_crf="$new_batch_crf"
+														echo -e "${GREEN} = = > Batch REKEY CRF Updated For This Batch Only:${NC} ${YELLOW}$batch_rekey_crf${NC}"
+													else
+														echo -e "${YELLOW} = = > Rest Of Batch Will Continue Using Starting CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
+													fi
+												fi
+											else
+												echo -e "${REB} = = > Retry Failed. Rest Of Batch Will Continue With Existing CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
+											fi
+										else
+											echo -e "${YELLOW} = = > Batch REKEY CRF Left Unchanged.${NC}"
+										fi
+									fi
 								fi
-							else
-								echo -e "${REB} = = > Retry Failed. Rest Of Batch Will Continue With Existing CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
 							fi
 						else
-							echo -e "${YELLOW} = = > Batch REKEY CRF Left Unchanged.${NC}"
+							echo -e "${REB} = = > Auto-Try Failed. Falling Back To Manual Choice.${NC}"
+
+							if ask_yes_no " = = > Retry It At A Different CRF? (y/n or 1/2): "; then
+								local new_batch_crf
+								new_batch_crf="$(rekey_prompt_for_new_batch_crf "$batch_rekey_crf")"
+
+								if [[ "$new_batch_crf" != "$batch_rekey_crf" ]]; then
+									echo -e "${YELLOW} = = > Removing First REKEY So It Can Be Rebuilt At New CRF...${NC}"
+									rm -f -- "$first_out"
+
+									if normalize_cut_friendly_file "$first_file" "$new_batch_crf"; then
+										first_out="REKEY_$(basename "${first_file%.*}").mkv"
+
+										if [[ -f "$first_out" ]]; then
+											first_new_size=$(stat -c%s "$first_out")
+											first_delta_percent=$(rekey_percent_change "$first_orig_size" "$first_new_size")
+											first_bucket="$(rekey_size_sanity_bucket "$first_delta_percent")"
+
+											rekey_print_size_sanity_report \
+												"$first_file" "$first_out" \
+												"$first_orig_size" "$first_new_size" \
+												"$first_delta_percent" "$first_bucket"
+
+											if ask_yes_no " = = > Use This New CRF For The Rest Of This Batch? (y/n or 1/2): "; then
+												batch_rekey_crf="$new_batch_crf"
+												echo -e "${GREEN} = = > Batch REKEY CRF Updated For This Batch Only:${NC} ${YELLOW}$batch_rekey_crf${NC}"
+											else
+												echo -e "${YELLOW} = = > Rest Of Batch Will Continue Using Starting CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
+											fi
+										fi
+									else
+										echo -e "${REB} = = > Retry Failed. Rest Of Batch Will Continue With Existing CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
+									fi
+								else
+									echo -e "${YELLOW} = = > Batch REKEY CRF Left Unchanged.${NC}"
+								fi
+							fi
 						fi
 					fi
 				fi
@@ -9364,7 +9511,6 @@ prompt_normalize_first_workflow() {
 		prefer_rekey="1"
 		echo -e "${GREEN} = = > REKEY Source Preference Enabled.${NC}"
 		echo -e "${CYAN} = = > Existing Matching REKEY Files Will Be Preferred As Source.${NC}"
-		echo -e "${CYAN} = = > Missing REKEY Files Are Built By Batch Normalizer As Needed.${NC}"
 	else
 		prefer_rekey="0"
 		echo -e "${YELLOW} = = > REKEY Preference Disabled For This Shell Session.${NC}"
