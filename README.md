@@ -119,11 +119,14 @@ Processing a full TV season:
 
 Typical flow:
 
-- Build Template → create a clean intro reference  
-- Detect Intros → generate `intro_map.csv`  
-- Run GAPMAN → remove intros cleanly  
-- Apply Title / Subtitle fixes  
-- Finalize outputs  
+- OEM_Backups  →  Copy Eligible Targets To OEM dir
+- Check Sources suitability for clean cuts and if "Risky"
+- Allow REKEY_rebuild of files for perfect cuts and joins
+- Build Template → create example of the intro reference, hopefully from REKEY_ Sources
+- Detect Intros → `This Is Magic Right Here Folks` it finds the intro and enters times into generated `intro_map.csv`  
+- Run GAPMAN → remove intros cleanly with pre, post, overall drift, and start of, and end of, intro cut padding
+- Apply Title / Subtitle fixes and set what you see in the titlebar of your player not just filenames
+- Finalize outputs  wow you just have to see and reads  and watch
 
 ---
 
