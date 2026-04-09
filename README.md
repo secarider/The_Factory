@@ -154,6 +154,8 @@ Typical flow:
 Throughput is safety-driven rather than purely speed-driven.  
 When adaptive normalization logic is active, parallelism may be reduced so each completed file can inform later decisions.
 
+---
+
 ### 3. Template Builder
 
 - Extracts clean intro templates from sources  
