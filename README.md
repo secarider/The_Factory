@@ -148,38 +148,11 @@ Typical flow:
 - Converts sources into cut-friendly format  
 - Enforces controlled GOP structure (~1s keyframes)  
 - Aligns encoding for safe downstream operations  
+- Uses rolling output evaluation to detect unexpected growth or shrink behavior  
+- Can adapt CRF strategy based on real file results during a batch  
 
-Supports two operating modes:
-
-#### Throughput Mode (Concurrency Presets)
-
-For users prioritizing speed, THE_FACTORY supports parallel processing:
-
-- Light (1 job)  
-- Medium (3 jobs)  
-- Thrash (max parallel)  
-
-This mode maximizes throughput and is suitable when sources are consistent and predictable.
-
----
-
-#### Adaptive Mode (Rolling Evaluation)
-
-For users prioritizing final output quality and consistency:
-
-- Evaluates each file after processing  
-- Detects unexpected size growth or shrink behavior  
-- Adjusts CRF strategy dynamically based on real results  
-
-In this mode, throughput may be reduced intentionally so each completed file can inform subsequent decisions.
-
----
-
-**Design Intent:**
-
-> Run fast when you can.  
-> Slow down when you must.  
-> Let the results decide.
+Throughput is safety-driven rather than purely speed-driven.  
+When adaptive normalization logic is active, parallelism may be reduced so each completed file can inform later decisions.
 
 ### 3. Template Builder
 
