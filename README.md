@@ -119,14 +119,15 @@ Processing a full TV season:
 
 Typical flow:
 
-- OEM_Backups  →  Copy Eligible Targets To OEM dir
+- OEM_Backups  →  Copy Eligible Targets To `OEM dir` and Prefix the name with `OEM_filename` 
 - Check Sources suitability for clean cuts and if "Risky"
-- Allow REKEY_rebuild of files for perfect cuts and joins
-- Build Template → create example of the intro reference, hopefully from REKEY_ Sources
-- Detect Intros → `This Is Magic Right Here Folks` it finds the intro and enters times into generated `intro_map.csv`  
-- Run GAPMAN → remove intros cleanly with pre, post, overall drift, and start of, and end of, intro cut padding
+- Allow `REKEY_rebuild` of files for perfect cuts and joins thanks to a 1 second keyframe rate
+- Everything comes out MKV no matter what it was going in That Is All. exception is OEM_backups they are whatever they were
+- Build Template → create example of the intro reference, hopefully from `REKEY_ Sources`
+- Detect Intros → `This Is Magic Right Here Folks` IntroFind finds the intro and enters times into generated `intro_map.csv`  
+- Run GAPMAN → remove intros cleanly, make minor adjustments of cut times "if needed" with ( pre , post , overall drift, start of, end of ) intro cut padding
 - Apply Title / Subtitle fixes and set what you see in the titlebar of your player not just filenames
-- Finalize outputs  wow you just have to see and reads  and watch
+- Finalize outputs → cleanup and rename files, dump temps, originals, and decide what to do with protected OEM_backups, option to tar them up 
 
 ---
 
