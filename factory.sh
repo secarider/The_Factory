@@ -11,7 +11,7 @@
 # -----------------------------------------------------------------------------------------
 #   OLD Setup Command Or Minimal If You Are On Any Of The New *NixZ This Will Likely Be Enough
 # sudo apt update && sudo apt install ffmpeg bc pipx mkvtoolnix -y && pipx install "scenedetect[opencv]"
-# -----------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------/\IntroFind Magic Right Here Do It
 #   NEW Setup Command no word wrap with this baby,it installs the bathroom sink and all
 # sudo apt update && sudo apt install ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less -y && pipx install "scenedetect[opencv]"
 # -------------------------DEPENDENCY DESCRIPTIONS INSTALL THESE---------------------------
@@ -551,10 +551,10 @@ INFO_MAP="info.csv"
 # - Audio policy for REKEY is copy-through; we are not here to "improve" audio.
 # =========================
 REKEY_GROWTH_WARN_PERCENT=25
-REKEY_SHRINK_WARN_PERCENT=25
+REKEY_SHRINK_WARN_PERCENT=15
 TARGET_MAX_GROWTH=10
-TARGET_MAX_SHRINK=10
-REKEY_CRF=20
+TARGET_MAX_SHRINK=5
+REKEY_CRF=22
 
 # - Helpers
 
@@ -772,7 +772,7 @@ rekey_print_size_sanity_report() {
 
 	echo
 	echo -e "${CYAN}================================================${NC}"
-	echo -e "${CYAN}        REKEY FIRST-FILE SIZE SANITY CHECK      ${NC}"
+	echo -e "${CYAN}        REKEY ROLLING SIZE SANITY CHECK         ${NC}"
 	echo -e "${CYAN}================================================${NC}"
 	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$src${NC}"
 	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
@@ -789,12 +789,10 @@ rekey_print_size_sanity_report() {
 		GROWTH_WARN)
 			echo -e "${bucket_color} = = > Sanity Band Result:${NC} ${bucket_color}GROWTH WARN${NC}"
 			echo -e "${YE} = = > This REKEY Grew Beyond The Current Warning Band.${NC}"
-			echo -e "${YE} = = > Worth Reviewing CRF Before Full Batch Continues.${NC}"
 			;;
 		SHRINK_WARN)
 			echo -e "${bucket_color} = = > Sanity Band Result:${NC} ${bucket_color}SHRINK WARN${NC}"
 			echo -e "${YE} = = > This REKEY Shrunk Beyond The Current Warning Band.${NC}"
-			echo -e "${YE} = = > Smaller Is Not Auto-Bad, But It Is Worth Pulling Eyes To.${NC}"
 			;;
 		OK)
 			echo -e "${bucket_color} = = > Sanity Band Result:${NC} ${bucket_color}WITHIN EXPECTED RANGE${NC}"
@@ -806,32 +804,148 @@ rekey_print_size_sanity_report() {
 	echo
 }
 
-rekey_prompt_for_new_batch_crf() {
-	local current_crf="$1"
-	local new_crf
+# =========================
+# #MARKER: REKEY ROLLING CRF ENGINE
+# =========================
+# PURPOSE:
+# - Replace First-File Calibration With Per-File Rolling Calibration
+#
+# DESIGN RULES:
+# - Each file starts from the last known good CRF
+# - No blocking prompts
+# - Up to 2 total tries per file
+# - No reverse-direction ping-pong
+# - Safety bias: prefer the larger candidate if neither lands cleanly
+#
+# OUTPUT:
+# - Prints: chosen_crf|chosen_output|chosen_bucket|chosen_delta|orig_size|new_size
+# - Returns 0 on success
+# - Returns 1 on failure
+# =========================
+rekey_process_with_rolling_crf() {
+	local src="$1"
+	local starting_crf="$2"
 
-	while true; do
-		echo -e "${CYAN} = = > Current Batch REKEY CRF:${NC} ${YELLOW}$current_crf${NC}"
-		echo -e "${YELLOW} = = > Enter New Batch REKEY CRF [18 / 19 / 20 / 21 / 22 | 0.=cancel | q]: ${NC}"
-		read -r new_crf
-		new_crf="${new_crf//[[:space:]]/}"
+	local attempt_count=0
+	local current_crf="$starting_crf"
+	local direction_lock=""
+	local next_crf
 
-		if is_factory_exit_token "$new_crf"; then
-			printf '%s\n' "$current_crf"
-			return 0
+	local orig_size
+	local out
+	local new_size
+	local delta_percent
+	local bucket
+
+	local -a tried_crfs=()
+	local -a tried_outs=()
+	local -a tried_sizes=()
+	local -a tried_deltas=()
+	local -a tried_buckets=()
+
+	local best_idx=-1
+	local i
+
+	orig_size=$(stat -c%s "$src" 2>/dev/null || printf '0\n')
+	[[ "$orig_size" -gt 0 ]] || return 1
+
+	while (( attempt_count < 2 )); do
+		out="REKEY_$(basename "${src%.*}").mkv"
+
+		rm -f -- "$out"
+
+		if ! normalize_cut_friendly_file "$src" "$current_crf"; then
+			rm -f -- "$out"
+			break
 		fi
 
-		case "$new_crf" in
-			18|19|20|21|22)
-				printf '%s\n' "$new_crf"
-				return 0
-				;;
-			*)
-				echo -e "${YE} = = > Invalid CRF Choice. Enter 18, 19, 20, 21, 22, or 0./q To Cancel.${NC}"
-				echo
-				;;
-		esac
+		[[ -f "$out" ]] || break
+
+		new_size=$(stat -c%s "$out" 2>/dev/null || printf '0\n')
+		[[ "$new_size" -gt 0 ]] || break
+
+		delta_percent="$(rekey_percent_change "$orig_size" "$new_size")"
+		bucket="$(rekey_size_sanity_bucket "$delta_percent")"
+
+		tried_crfs+=("$current_crf")
+		tried_outs+=("$out")
+		tried_sizes+=("$new_size")
+		tried_deltas+=("$delta_percent")
+		tried_buckets+=("$bucket")
+
+		if [[ "$bucket" == "OK" ]]; then
+			best_idx=$(( ${#tried_outs[@]} - 1 ))
+			break
+		fi
+
+		if [[ -z "$direction_lock" ]]; then
+			case "$bucket" in
+				GROWTH_WARN) direction_lock="grow" ;;
+				SHRINK_WARN) direction_lock="shrink" ;;
+			esac
+		fi
+
+		next_crf="$(rekey_auto_step_crf "$current_crf" "$bucket")"
+
+		if [[ "$next_crf" == "$current_crf" ]]; then
+			break
+		fi
+
+		if [[ " ${tried_crfs[*]} " == *" $next_crf "* ]]; then
+			break
+		fi
+
+		if [[ "$direction_lock" == "grow" && "$next_crf" -lt "$current_crf" ]]; then
+			break
+		fi
+		if [[ "$direction_lock" == "shrink" && "$next_crf" -gt "$current_crf" ]]; then
+			break
+		fi
+
+		mv -f -- "$out" "${out%.mkv}.try${attempt_count}.mkv"
+		tried_outs[$(( ${#tried_outs[@]} - 1 ))]="${out%.mkv}.try${attempt_count}.mkv"
+
+		current_crf="$next_crf"
+		((attempt_count+=1)) || :
 	done
+
+	if (( best_idx < 0 )); then
+		for ((i=0; i<${#tried_outs[@]}; i++)); do
+			if [[ "${tried_buckets[$i]}" == "OK" ]]; then
+				best_idx="$i"
+				break
+			fi
+		done
+	fi
+
+	if (( best_idx < 0 )); then
+		best_idx=0
+		for ((i=1; i<${#tried_outs[@]}; i++)); do
+			if (( ${tried_sizes[$i]} > ${tried_sizes[$best_idx]} )); then
+				best_idx="$i"
+			fi
+		done
+	fi
+
+	(( best_idx >= 0 )) || return 1
+	[[ -f "${tried_outs[$best_idx]}" ]] || return 1
+
+	out="REKEY_$(basename "${src%.*}").mkv"
+	rm -f -- "$out"
+	mv -f -- "${tried_outs[$best_idx]}" "$out"
+
+	for ((i=0; i<${#tried_outs[@]}; i++)); do
+		[[ "$i" -eq "$best_idx" ]] && continue
+		rm -f -- "${tried_outs[$i]}"
+	done
+
+	printf '%s|%s|%s|%s|%s|%s\n' \
+		"${tried_crfs[$best_idx]}" \
+		"$out" \
+		"${tried_buckets[$best_idx]}" \
+		"${tried_deltas[$best_idx]}" \
+		"$orig_size" \
+		"${tried_sizes[$best_idx]}"
 }
 
 # =========================
@@ -1180,7 +1294,6 @@ record_working_source_state() {
 
 #end of new rekey validation skipped scheme helpers
 # but more rekey helpers below
-
 
 # ============================================================
 # #MARKER: PREPARE SOURCES :: VERIFIED REKEY HANDOFF HELPERS
@@ -1544,11 +1657,8 @@ refresh_rekey_auth_system() {
 	rebuild_rekey_auth_ledger
 }
 
-
 # more rekey helpers below
-
 #=====================================================================================
-
 # wrapper helper whose whole job is to redirect the workflow in the right order
 
 # =========================
@@ -1633,7 +1743,6 @@ resolve_working_source_for_detection() {
 
 #    end of wrapper helper whose whole job is to redirect the workflow in the right order
 
-
 # start of EXTRACT TEMPLATES that were a match for archival purposes FROM INTRO_MAP
 # =========================
 # #MARKER: EXTRACT USED TEMPLATES FROM INTRO_MAP
@@ -1645,12 +1754,10 @@ get_templates_from_intro_map() {
 
 	awk -F',' 'NR>1 && $6 != "" {print $6}' "$map" | sort -u
 }
+
 # end of EXTRACT TEMPLATES that were a match for archival purposes FROM INTRO_MAP
-
 #====================================================================================
-
 # more helpers
-
 
 	remove_pilot_outputs_for_current_map() {
 		local map="${1:-$INTRO_MAP}"
@@ -1703,7 +1810,1001 @@ get_templates_from_intro_map() {
 		echo
 	}
 
+#duplicate detox title check after testing
 
+detox_title() {
+	local raw="$1"
+	local cleaned
+
+	# ========================================================
+	# PHASE 1–4: CLEAN + SANITIZE
+	# ========================================================
+	# DIRECT DETOX RULE:
+	# - Preserve existing capitalization
+	# - Preserve existing underscores
+	# - Convert whitespace to underscores
+	# - Replace unsafe characters only
+	#
+	if have_cmd iconv; then
+		cleaned=$(printf '%s\n' "$raw" \
+			| sed 's/[[:space:]]\+/_/g' \
+			| sed 's/&/And/g' \
+			| iconv -f utf8 -t ascii//TRANSLIT 2>/dev/null \
+			| sed 's/[^A-Za-z0-9_]/_/g' \
+			| sed 's/__\+/_/g' \
+			| sed 's/^_//; s/_$//')
+	else
+		cleaned=$(printf '%s\n' "$raw" \
+			| sed 's/[[:space:]]\+/_/g' \
+			| sed 's/&/And/g' \
+			| sed 's/[^A-Za-z0-9_]/_/g' \
+			| sed 's/__\+/_/g' \
+			| sed 's/^_//; s/_$//')
+	fi
+
+	printf '%s\n' "$cleaned"
+}
+
+# start of recovery mode for filename mutilated, need filenames rebuilt proper============================================
+# rename by good episodes.csv and/or rebuild episodes.csv from good filenames in working dir
+
+match_normalize_title() {
+	local raw="$1"
+	local cleaned
+
+	if have_cmd iconv; then
+		cleaned=$(printf '%s\n' "$raw" \
+			| iconv -f utf8 -t ascii//TRANSLIT 2>/dev/null \
+			| tr '[:upper:]' '[:lower:]' \
+			| sed 's/[^a-z0-9]/_/g' \
+			| sed 's/__\+/_/g' \
+			| sed 's/^_//; s/_$//')
+	else
+		cleaned=$(printf '%s\n' "$raw" \
+			| tr '[:upper:]' '[:lower:]' \
+			| sed 's/[^a-z0-9]/_/g' \
+			| sed 's/__\+/_/g' \
+			| sed 's/^_//; s/_$//')
+	fi
+
+	printf '%s\n' "$cleaned"
+}
+
+
+# =========================
+# #MARKER: GENERIC RECOVERY PLAN PREVIEW + APPLY
+# =========================
+# PURPOSE:
+# - Read old|new plan rows from any recovery planner
+# - Preview
+# - Confirm
+# - Apply renames safely
+#
+# INPUT:
+# - old_filename|new_filename
+#
+# OUTPUT:
+# - Return 0 on success / clean cancel
+# - Return 1 on malformed or runtime failure
+# =========================
+preview_and_apply_plan_rows() {
+
+	local -a plan_rows=("$@")
+	local plan_line
+	local old_name new_name
+	local applied=0
+	local failed=0
+	local already_ok=0
+
+	if (( ${#plan_rows[@]} == 0 )); then
+		echo -e "${REB} = = > [NO RENAME PLAN FOUND]${NC}"
+		return 1
+	fi
+
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}           RECOVERY RENAME PREVIEW              ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+
+	for plan_line in "${plan_rows[@]}"; do
+		if [[ "$plan_line" != *"|"* ]]; then
+			echo -e "${REB} = = > [MALFORMED PLAN ROW]${NC} $plan_line"
+			return 1
+		fi
+
+		old_name="${plan_line%%|*}"
+		new_name="${plan_line#*|}"
+
+		if [[ -z "$old_name" || -z "$new_name" ]]; then
+			echo -e "${REB} = = > [MALFORMED PLAN ROW]${NC} $plan_line"
+			return 1
+		fi
+
+		if [[ "$old_name" == "$new_name" ]]; then
+			echo -e "  ${CYAN}${old_name}${NC} ${YELLOW}-->${NC} ${CYAN}${new_name}${NC} ${GREEN}[ALREADY CORRECT]${NC}"
+			continue
+		fi
+
+		echo -e "  ${GREEN}${old_name}${NC} ${YELLOW}-->${NC} ${GREEN}${new_name}${NC}"
+	done
+	echo
+
+	if ! ask_yes_no " = = > Apply Recovery Renames Now? (y/n or 1/2): "; then
+		echo -e "${YELLOW} = = > Recovery Rename Apply Cancelled.${NC}"
+		echo
+		return 0
+	fi
+
+	for plan_line in "${plan_rows[@]}"; do
+		old_name="${plan_line%%|*}"
+		new_name="${plan_line#*|}"
+
+		if [[ "$old_name" == "$new_name" ]]; then
+			echo -e "${GREEN} = = > [ALREADY CORRECT]${NC} $old_name"
+			((already_ok+=1)) || :
+			continue
+		fi
+
+		if [[ ! -f "$old_name" ]]; then
+			echo -e "${REB} = = > [SOURCE MISSING]${NC} $old_name"
+			((failed+=1)) || :
+			break
+		fi
+
+		if [[ -e "$new_name" && "$new_name" != "$old_name" ]]; then
+			echo -e "${REB} = = > [TARGET EXISTS AT APPLY TIME]${NC} $new_name"
+			((failed+=1)) || :
+			break
+		fi
+
+		if mv -- "$old_name" "$new_name"; then
+			echo -e "${GREEN} = = > [RENAMED]${NC} $old_name ${YELLOW}-->${NC} $new_name"
+			((applied+=1)) || :
+		else
+			echo -e "${REB} = = > [RENAME FAILED]${NC} $old_name"
+			((failed+=1)) || :
+			break
+		fi
+	done
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}             RECOVERY APPLY SUMMARY             ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > Renames Applied:${NC} $applied"
+	echo -e "${CYAN} = = > Already Correct:${NC} $already_ok"
+	echo -e "${CYAN} = = > Failures       :${NC} $failed"
+	echo
+
+	(( failed == 0 ))
+}
+
+
+# =========================
+# #MARKER: RECOVERY MODE FILE COLLECTION (FRONT NUMBER TAG)
+# =========================
+# PURPOSE:
+# - Identify files prepared for Recovery Mode
+# - Extract leading numeric token ONLY
+# - Validate strict format
+# - Return clean, ordered list for pairing with episodes.csv
+#
+# OUTPUT:
+# - Prints: number|filename
+# - Sorted numerically
+# - Return 0 on success
+# - Return 1 on ANY validation failure
+# =========================
+collect_front_number_tagged_files() {
+
+	local -a vids=()
+	local -a parsed_lines=()
+	local -A seen_numbers=()
+
+	local f number raw_number
+	local min_num="" max_num=""
+	local expected current
+
+	# --------------------------------------------------------
+	# COLLECT VIDEO FILES (REUSE FACTORY PATTERN)
+	# --------------------------------------------------------
+	shopt -s nullglob nocaseglob
+	vids=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
+	shopt -u nullglob nocaseglob
+
+	# --------------------------------------------------------
+	# FILTER + PARSE
+	# --------------------------------------------------------
+	for f in "${vids[@]}"; do
+		[[ -f "$f" ]] || continue
+
+		# Skip factory-generated files
+		case "${f^^}" in
+			REKEY_*|SUTURED_*|PILOT_SUTURED_*|BARFIX_*|SUBPACKED_*|OEM_*)
+				continue
+				;;
+		esac
+
+		# ----------------------------------------------------
+		# STRICT PREFIX MATCH: ^[0-9]+[_-]
+		# ----------------------------------------------------
+		if [[ "$f" =~ ^([0-9]+)[_-] ]]; then
+			raw_number="${BASH_REMATCH[1]}"
+
+			# Strip leading zeros safely
+			number="$((10#$raw_number))"
+
+			# Duplicate detection
+			if [[ -n "${seen_numbers[$number]:-}" ]]; then
+				echo -e "${REB} = = > [DUPLICATE INDEX]${NC} $raw_number (${seen_numbers[$number]} and $f)"
+				return 1
+			fi
+
+			seen_numbers[$number]="$f"
+
+			parsed_lines+=("${number}|${f}")
+
+		else
+			echo -e "${REB} = = > [INVALID PREFIX]${NC} $f"
+			return 1
+		fi
+	done
+
+	# --------------------------------------------------------
+	# NO VALID FILES
+	# --------------------------------------------------------
+	if (( ${#parsed_lines[@]} == 0 )); then
+		echo -e "${REB} = = > No Recovery-Tagged Files Detected.${NC}"
+		return 1
+	fi
+
+	# --------------------------------------------------------
+	# SORT NUMERICALLY
+	# --------------------------------------------------------
+	mapfile -t parsed_lines < <(
+		printf '%s\n' "${parsed_lines[@]}" | sort -t'|' -k1,1n
+	)
+
+	# --------------------------------------------------------
+	# GAP CHECK
+	# --------------------------------------------------------
+	min_num="$(printf '%s\n' "${parsed_lines[0]}" | cut -d'|' -f1)"
+	max_num="$(printf '%s\n' "${parsed_lines[-1]}" | cut -d'|' -f1)"
+
+	expected="$min_num"
+
+	for current_line in "${parsed_lines[@]}"; do
+		current="$(printf '%s\n' "$current_line" | cut -d'|' -f1)"
+
+		if (( current != expected )); then
+			printf -v missing "%03d" "$expected"
+			echo -e "${REB} = = > [MISSING INDEX]${NC} $missing"
+			return 1
+		fi
+
+		((expected+=1))
+	done
+
+	# --------------------------------------------------------
+	# SUMMARY OUTPUT
+	# --------------------------------------------------------
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}      RECOVERY MODE FILE DETECTION SUMMARY      ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > Valid Tagged Files:${NC} ${#parsed_lines[@]}"
+	printf -v min_fmt "%03d" "$min_num"
+	printf -v max_fmt "%03d" "$max_num"
+	echo -e "${CYAN} = = > Index Range:${NC} $min_fmt → $max_fmt"
+	echo
+
+	# Optional preview
+	for line in "${parsed_lines[@]}"; do
+		echo -e "  ${GREEN}- ${NC}${line#*|}"
+	done
+	echo
+
+	# --------------------------------------------------------
+	# FINAL OUTPUT CONTRACT
+	# --------------------------------------------------------
+	printf '%s\n' "${parsed_lines[@]}"
+
+	return 0
+}
+
+# =========================
+# #MARKER: RECOVERY MODE CSV READER (EPISODES.CSV)
+# =========================
+# PURPOSE:
+# - Read episodes.csv
+# - Validate row structure for Recovery Mode
+# - Preserve CSV row order as the pairing authority
+#
+# ACCEPTED ROW SHAPE:
+# - S01E01,The_Bonding
+# - S01E02,Another_Title
+#
+# OPTIONAL HEADER:
+# - episode_code,title
+#
+# OUTPUT:
+# - Prints: row_number|episode_code|title
+# - Return 0 on success
+# - Return 1 on ANY validation failure
+# =========================
+read_episodes_csv_rows() {
+
+	local file="episodes.csv"
+	local -a parsed_rows=()
+	local -A seen_codes=()
+
+	local line row_num=0
+	local ep_code title
+	local first_code="" last_code=""
+	local header_skipped=0
+
+	# --------------------------------------------------------
+	# BASIC FILE CHECK
+	# --------------------------------------------------------
+	if [[ ! -f "$file" ]]; then
+		echo -e "${REB} = = > [MISSING EPISODES.CSV]${NC}" >&2
+		return 1
+	fi
+
+	# --------------------------------------------------------
+	# READ FILE IN ORDER
+	# --------------------------------------------------------
+	while IFS= read -r line || [[ -n "$line" ]]; do
+
+		# Strip possible CR from Windows-edited CSV
+		line="${line%$'\r'}"
+
+		# Skip blank lines quietly
+		[[ -z "${line//[[:space:]]/}" ]] && continue
+
+		# ----------------------------------------------------
+		# OPTIONAL HEADER SKIP (FIRST USABLE LINE ONLY)
+		# ----------------------------------------------------
+		if (( header_skipped == 0 )); then
+			if [[ "${line,,}" == "episode_code,title" ]]; then
+				header_skipped=1
+				continue
+			fi
+			header_skipped=1
+		fi
+
+		# ----------------------------------------------------
+		# SPLIT FIRST COMMA ONLY
+		# ----------------------------------------------------
+		ep_code="${line%%,*}"
+		title="${line#*,}"
+
+		# Trim surrounding whitespace
+		ep_code="$(printf '%s' "$ep_code" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+		title="$(printf '%s' "$title" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+
+		# ----------------------------------------------------
+		# VALIDATE EPISODE CODE
+		# ----------------------------------------------------
+		if [[ ! "$ep_code" =~ ^S[0-9]{2}E[0-9]{2}$ ]]; then
+			echo -e "${REB} = = > [INVALID EPISODE CODE]${NC} $ep_code" >&2
+			return 1
+		fi
+
+		# ----------------------------------------------------
+		# VALIDATE TITLE
+		# ----------------------------------------------------
+		if [[ -z "${title//[[:space:]]/}" ]]; then
+			echo -e "${REB} = = > [BLANK TITLE]${NC} $ep_code" >&2
+			return 1
+		fi
+
+		# ----------------------------------------------------
+		# DUPLICATE EPISODE CODE CHECK
+		# ----------------------------------------------------
+		if [[ -n "${seen_codes[$ep_code]:-}" ]]; then
+			echo -e "${REB} = = > [DUPLICATE EPISODE CODE]${NC} $ep_code" >&2
+			return 1
+		fi
+		seen_codes[$ep_code]=1
+
+		((row_num+=1)) || :
+
+		[[ -z "$first_code" ]] && first_code="$ep_code"
+		last_code="$ep_code"
+
+		parsed_rows+=("${row_num}|${ep_code}|${title}")
+
+	done < "$file"
+
+	# --------------------------------------------------------
+	# NO VALID ROWS
+	# --------------------------------------------------------
+	if (( ${#parsed_rows[@]} == 0 )); then
+		echo -e "${REB} = = > [NO EPISODE CSV ROWS AVAILABLE]${NC}" >&2
+		return 1
+	fi
+
+	# --------------------------------------------------------
+	# SUMMARY OUTPUT (STDERR ONLY)
+	# --------------------------------------------------------
+	echo -e "${CYAN}================================================${NC}" >&2
+	echo -e "${CYAN}        RECOVERY MODE CSV READER SUMMARY        ${NC}" >&2
+	echo -e "${CYAN}================================================${NC}" >&2
+	echo -e "${CYAN} = = > Episode Rows Loaded:${NC} ${#parsed_rows[@]}" >&2
+	echo -e "${CYAN} = = > First Episode Code:${NC} $first_code" >&2
+	echo -e "${CYAN} = = > Last Episode Code:${NC} $last_code" >&2
+	echo >&2
+
+	# Optional preview (STDERR ONLY)
+	for line in "${parsed_rows[@]}"; do
+		echo -e "  ${GREEN}-${NC} ${line#*|}" >&2
+	done
+	echo >&2
+
+	# --------------------------------------------------------
+	# FINAL OUTPUT CONTRACT (STDOUT ONLY)
+	# --------------------------------------------------------
+	printf '%s\n' "${parsed_rows[@]}"
+
+	return 0
+}
+
+# =========================
+# #MARKER: RECOVERY MODE RENAME PLAN BUILDER
+# =========================
+# PURPOSE:
+# - Join Recovery-Tagged Files With episodes.csv Rows
+# - Build Safe Old|New Rename Plan
+# - Reuse Existing detox_title() For Final Filename Safety
+#
+# INPUT:
+# - collect_front_number_tagged_files() output:
+#     row_number|old_filename
+# - read_episodes_csv_rows() output:
+#     row_number|episode_code|title
+#
+# OUTPUT:
+# - Prints: old_filename|new_filename
+# - Return 0 on success
+# - Return 1 on ANY validation failure
+# =========================
+build_recovery_rename_plan() {
+
+	local -a file_rows=()
+	local -a csv_rows=()
+	local -a plan_rows=()
+	local -A planned_targets=()
+
+	local file_line csv_line
+	local file_row old_name
+	local csv_row ep_code raw_title
+	local detoxed_title ext new_name
+
+	local idx
+	local file_count csv_count
+	local old_base old_ext
+
+	# --------------------------------------------------------
+	# COLLECT BOTH ORDERED STREAMS
+	# --------------------------------------------------------
+	mapfile -t file_rows < <(collect_front_number_tagged_files)
+	if (( ${#file_rows[@]} == 0 )); then
+		echo -e "${REB} = = > [NO TAGGED FILE ROWS AVAILABLE]${NC}"
+		return 1
+	fi
+
+	mapfile -t csv_rows < <(read_episodes_csv_rows)
+	if (( ${#csv_rows[@]} == 0 )); then
+		echo -e "${REB} = = > [NO EPISODE CSV ROWS AVAILABLE]${NC}"
+		return 1
+	fi
+
+	file_count="${#file_rows[@]}"
+	csv_count="${#csv_rows[@]}"
+
+	# --------------------------------------------------------
+	# COUNT MATCH CHECK
+	# --------------------------------------------------------
+	if (( file_count != csv_count )); then
+		echo -e "${REB} = = > [COUNT MISMATCH]${NC} files=$file_count csv_rows=$csv_count"
+		return 1
+	fi
+
+	# --------------------------------------------------------
+	# JOIN ROW-BY-ROW
+	# --------------------------------------------------------
+	for ((idx=0; idx<file_count; idx++)); do
+		file_line="${file_rows[$idx]}"
+		csv_line="${csv_rows[$idx]}"
+
+		file_row="${file_line%%|*}"
+		old_name="${file_line#*|}"
+
+		csv_row="${csv_line%%|*}"
+		ep_code="${csv_line#*|}"
+		ep_code="${ep_code%%|*}"
+		raw_title="${csv_line#*|*|}"
+
+		# ----------------------------------------------------
+		# ROW ALIGNMENT CHECK
+		# ----------------------------------------------------
+		if [[ "$file_row" != "$csv_row" ]]; then
+			echo -e "${REB} = = > [ROW ALIGNMENT ERROR]${NC} file_row=$file_row csv_row=$csv_row"
+			return 1
+		fi
+
+		# ----------------------------------------------------
+		# PRESERVE ORIGINAL EXTENSION
+		# ----------------------------------------------------
+		old_ext="${old_name##*.}"
+		if [[ "$old_ext" == "$old_name" ]]; then
+			echo -e "${REB} = = > [MISSING EXTENSION]${NC} $old_name"
+			return 1
+		fi
+
+		# ----------------------------------------------------
+		# DETOX TITLE THROUGH EXISTING SHARED HELPER
+		# ----------------------------------------------------
+		detoxed_title="$(detox_title "$raw_title")"
+
+		if [[ -z "${detoxed_title//[[:space:]]/}" ]]; then
+			echo -e "${REB} = = > [INVALID TARGET NAME]${NC} $old_name"
+			return 1
+		fi
+
+		new_name="${ep_code}_${detoxed_title}.${old_ext}"
+
+		# ----------------------------------------------------
+		# BASIC TARGET SANITY
+		# ----------------------------------------------------
+		if [[ -z "${new_name//[[:space:]]/}" ]]; then
+			echo -e "${REB} = = > [INVALID TARGET NAME]${NC} $old_name"
+			return 1
+		fi
+
+		# ----------------------------------------------------
+		# DUPLICATE TARGET INSIDE PLAN
+		# ----------------------------------------------------
+		if [[ -n "${planned_targets[$new_name]:-}" ]]; then
+			echo -e "${REB} = = > [DUPLICATE TARGET]${NC} $new_name"
+			return 1
+		fi
+		planned_targets[$new_name]=1
+
+		# ----------------------------------------------------
+		# EXISTING TARGET COLLISION
+		# ----------------------------------------------------
+		if [[ -e "$new_name" && "$new_name" != "$old_name" ]]; then
+			echo -e "${REB} = = > [TARGET EXISTS]${NC} $new_name"
+			return 1
+		fi
+
+		plan_rows+=("${old_name}|${new_name}")
+	done
+
+	# --------------------------------------------------------
+	# SUMMARY OUTPUT
+	# --------------------------------------------------------
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}       RECOVERY MODE RENAME PLAN SUMMARY        ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > Tagged Files Loaded :${NC} $file_count"
+	echo -e "${CYAN} = = > Episode Rows Loaded :${NC} $csv_count"
+	echo -e "${CYAN} = = > Planned Renames     :${NC} ${#plan_rows[@]}"
+	echo
+
+	for file_line in "${plan_rows[@]}"; do
+		old_name="${file_line%%|*}"
+		new_name="${file_line#*|}"
+		echo -e "  ${GREEN}${old_name}${NC} ${YELLOW}-->${NC} ${GREEN}${new_name}${NC}"
+	done
+	echo
+
+	# --------------------------------------------------------
+	# FINAL OUTPUT CONTRACT
+	# --------------------------------------------------------
+	printf '%s\n' "${plan_rows[@]}"
+
+	return 0
+}
+
+# =========================
+# #MARKER: RECOVERY MODE PREVIEW + APPLY RENAME PLAN
+# =========================
+# PURPOSE:
+# - Read old|new rename plan from build_recovery_rename_plan()
+# - Show a clear preview
+# - Ask for confirmation
+# - Apply renames safely
+#
+# INPUT:
+# - build_recovery_rename_plan() output:
+#     old_filename|new_filename
+#
+# OUTPUT:
+# - Applies mv only after confirmation
+# - Return 0 on success / clean cancel
+# - Return 1 on malformed or runtime failure
+# =========================
+preview_and_apply_recovery_rename_plan() {
+
+	local -a plan_rows=()
+	local plan_line
+	local old_name new_name
+
+	local applied=0
+	local failed=0
+
+	# --------------------------------------------------------
+	# BUILD / CAPTURE PLAN
+	# --------------------------------------------------------
+	mapfile -t plan_rows < <(build_recovery_rename_plan)
+
+	if (( ${#plan_rows[@]} == 0 )); then
+		echo -e "${REB} = = > [NO RENAME PLAN FOUND]${NC}"
+		return 1
+	fi
+
+	# --------------------------------------------------------
+	# PREVIEW
+	# --------------------------------------------------------
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}        RECOVERY MODE RENAME PREVIEW            ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+
+	for plan_line in "${plan_rows[@]}"; do
+		if [[ "$plan_line" != *"|"* ]]; then
+			echo -e "${REB} = = > [MALFORMED PLAN ROW]${NC} $plan_line"
+			return 1
+		fi
+
+		old_name="${plan_line%%|*}"
+		new_name="${plan_line#*|}"
+
+		if [[ -z "$old_name" || -z "$new_name" || "$old_name" == "$new_name" && ! -e "$old_name" ]]; then
+			echo -e "${REB} = = > [MALFORMED PLAN ROW]${NC} $plan_line"
+			return 1
+		fi
+
+		echo -e "  ${GREEN}${old_name}${NC} ${YELLOW}-->${NC} ${GREEN}${new_name}${NC}"
+	done
+	echo
+
+	# --------------------------------------------------------
+	# CONFIRM
+	# --------------------------------------------------------
+	if ! ask_yes_no " = = > Apply Recovery Renames Now? (y/n or 1/2): "; then
+		echo -e "${YELLOW} = = > Recovery Rename Apply Cancelled.${NC}"
+		echo
+		return 0
+	fi
+
+	# --------------------------------------------------------
+	# APPLY
+	# --------------------------------------------------------
+	for plan_line in "${plan_rows[@]}"; do
+		old_name="${plan_line%%|*}"
+		new_name="${plan_line#*|}"
+
+		# Source must still exist right now
+		if [[ ! -f "$old_name" ]]; then
+			echo -e "${REB} = = > [SOURCE MISSING]${NC} $old_name"
+			((failed+=1)) || :
+			break
+		fi
+
+		# Target must not now exist unless it is the same path
+		if [[ -e "$new_name" && "$new_name" != "$old_name" ]]; then
+			echo -e "${REB} = = > [TARGET EXISTS AT APPLY TIME]${NC} $new_name"
+			((failed+=1)) || :
+			break
+		fi
+
+		if mv -- "$old_name" "$new_name"; then
+			echo -e "${GREEN} = = > [RENAMED]${NC} $old_name ${YELLOW}-->${NC} $new_name"
+			((applied+=1)) || :
+		else
+			echo -e "${REB} = = > [RENAME FAILED]${NC} $old_name"
+			((failed+=1)) || :
+			break
+		fi
+	done
+
+	# --------------------------------------------------------
+	# APPLY SUMMARY
+	# --------------------------------------------------------
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}         RECOVERY MODE APPLY SUMMARY            ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > Renames Applied:${NC} $applied"
+	echo -e "${CYAN} = = > Failures       :${NC} $failed"
+	echo
+
+	(( failed == 0 ))
+}
+
+# =========================
+# #MARKER: RECOVERY TAIL-MATCH RENAME PLAN BUILDER
+# =========================
+# PURPOSE:
+# - Recover Filenames By Matching Surviving Filename Tail
+#   Against episodes.csv Titles
+# - Build Safe old|new Rename Plan
+# - Do NOT Rename Yet
+#
+# INPUT:
+# - Video filenames passed in as args
+# - episodes.csv present in working dir
+#
+# MATCH RULE:
+# - Normalize filename stem with detox_title()
+# - Normalize CSV title with detox_title()
+# - Accept ONLY unique suffix-style matches
+#
+# OUTPUT:
+# - Prints: old_filename|new_filename
+# - Return 0 on success
+# - Return 1 on any validation failure
+# =========================
+build_recovery_tail_match_plan() {
+	local -a vids=("$@")
+	local -a filtered=()
+	local -a csv_rows=()
+	local -a plan_rows=()
+	local -A planned_targets=()
+	local full_cmp tail_cmp candidate_cmp csv_cmp
+	local f stem ext
+	local tail_candidate tail_key full_key
+	local line ep_code raw_title csv_key csv_out_key new_name
+	local match_count matched_code matched_key
+	local old_name
+	local best_suffix suffix candidate_suffix found_unique
+	local max_parts
+
+	if [[ ${#vids[@]} -eq 0 ]]; then
+		echo -e "${REB} = = > [NO VIDEO TARGETS PASSED IN]${NC}" >&2
+		return 1
+	fi
+
+	for f in "${vids[@]}"; do
+		[[ -f "$f" ]] || continue
+		[[ "$f" =~ ^(SUTURED_|SUBPACKED_) ]] && continue
+		filtered+=("$f")
+	done
+
+	if (( ${#filtered[@]} == 0 )); then
+		echo -e "${REB} = = > [NO ELIGIBLE FILES FOR TAIL MATCH]${NC}" >&2
+		return 1
+	fi
+
+	mapfile -t csv_rows < <(read_episodes_csv_rows)
+	if (( ${#csv_rows[@]} == 0 )); then
+		echo -e "${REB} = = > [NO EPISODE CSV ROWS AVAILABLE]${NC}" >&2
+		return 1
+	fi
+
+	# --------------------------------------------------------
+	# HELPER: COUNT UNDERSCORE SEGMENTS
+	# --------------------------------------------------------
+	count_segments() {
+		local text="$1"
+		local IFS='_'
+		local -a parts=()
+		read -r -a parts <<< "$text"
+		printf '%s\n' "${#parts[@]}"
+	}
+
+	# --------------------------------------------------------
+	# HELPER: RETURN LAST N UNDERSCORE SEGMENTS
+	# --------------------------------------------------------
+	last_n_segments() {
+		local text="$1"
+		local n="$2"
+		local IFS='_'
+		local -a parts=()
+		local start i out=""
+
+		read -r -a parts <<< "$text"
+
+		(( ${#parts[@]} == 0 )) && { printf '%s\n' ""; return 0; }
+
+		if (( n >= ${#parts[@]} )); then
+			printf '%s\n' "$text"
+			return 0
+		fi
+
+		start=$(( ${#parts[@]} - n ))
+
+		for (( i=start; i<${#parts[@]}; i++ )); do
+			if [[ -z "$out" ]]; then
+				out="${parts[$i]}"
+			else
+				out="${out}_${parts[$i]}"
+			fi
+		done
+
+		printf '%s\n' "$out"
+	}
+
+	for f in "${filtered[@]}"; do
+		ext="${f##*.}"
+		stem="${f%.*}"
+
+		full_key="$(match_normalize_title "$stem")"
+		full_cmp="${full_key,,}"
+
+		tail_candidate="$stem"
+
+		# strip obvious archive / level prefix chunks
+		tail_candidate="$(printf '%s\n' "$tail_candidate" | sed -E 's/^[Aa][Rr][Cc][Hh][Ii][Vv][Ee](_|-)?//')"
+		tail_candidate="$(printf '%s\n' "$tail_candidate" | sed -E 's/^[Ll][0-9]+(_|-)?//')"
+
+		# strip leading numeric chunks repeatedly
+		while [[ "$tail_candidate" =~ ^[0-9]+[_-](.+)$ ]]; do
+			tail_candidate="${BASH_REMATCH[1]}"
+		done
+
+		# strip leftover leading separators
+		tail_candidate="$(printf '%s\n' "$tail_candidate" | sed -E 's/^[_-]+//')"
+
+		tail_key="$(match_normalize_title "$tail_candidate")"
+		tail_cmp="${tail_key,,}"
+
+		match_count=0
+		matched_code=""
+		matched_key=""
+		best_suffix=""
+		found_unique=0
+
+		# ----------------------------------------------------
+		# PASS 1: FULL / SIMPLE SUFFIX MATCHES
+		# ----------------------------------------------------
+		for line in "${csv_rows[@]}"; do
+			ep_code="${line#*|}"
+			ep_code="${ep_code%%|*}"
+			raw_title="${line#*|*|}"
+			csv_out_key="$(detox_title "$raw_title")"
+			csv_key="$(match_normalize_title "$raw_title")"
+			csv_cmp="${csv_key,,}"
+
+			if [[ \
+				"$full_cmp" == "$csv_cmp" || \
+				"$tail_cmp" == "$csv_cmp" \
+			 ]]; then
+				((match_count+=1)) || :
+				matched_code="$ep_code"
+				matched_key="$csv_out_key"
+			fi
+		done
+
+		if (( match_count == 1 )); then
+			new_name="${matched_code}_${matched_key}.${ext}"
+
+			if [[ -z "${new_name//[[:space:]]/}" ]]; then
+				echo -e "${REB} = = > [INVALID TARGET NAME]${NC} $f" >&2
+				return 1
+			fi
+
+			if [[ -n "${planned_targets[$new_name]:-}" ]]; then
+				echo -e "${REB} = = > [DUPLICATE TARGET]${NC} $new_name" >&2
+				return 1
+			fi
+			planned_targets[$new_name]=1
+
+			if [[ -e "$new_name" && "$new_name" != "$f" ]]; then
+				echo -e "${REB} = = > [TARGET EXISTS]${NC} $new_name" >&2
+				return 1
+			fi
+
+			plan_rows+=("${f}|${new_name}")
+			continue
+		fi
+
+		if (( match_count > 1 )); then
+			echo -e "${REB} = = > [AMBIGUOUS FULL/TAIL MATCH]${NC} $f" >&2
+			echo -e "${YE} = = > Full Key:${NC} $full_key" >&2
+			echo -e "${YE} = = > Tail Key:${NC} $tail_key" >&2
+			return 1
+		fi
+
+		# ----------------------------------------------------
+		# PASS 2: LONGEST UNIQUE RIGHT-SIDE SUFFIX
+		# ----------------------------------------------------
+		max_parts="$(count_segments "$tail_key")"
+
+		for (( suffix=max_parts; suffix>=1; suffix-- )); do
+			candidate_suffix="$(last_n_segments "$tail_key" "$suffix")"
+			candidate_cmp="${candidate_suffix,,}"
+			match_count=0
+			matched_code=""
+			matched_key=""
+
+			for line in "${csv_rows[@]}"; do
+				ep_code="${line#*|}"
+				ep_code="${ep_code%%|*}"
+				raw_title="${line#*|*|}"
+				csv_key="$(detox_title "$raw_title")"
+				csv_cmp="${csv_key,,}"
+
+				if [[ "$csv_cmp" == "$candidate_cmp" || "$csv_cmp" == *"$candidate_cmp" ]]; then
+					((match_count+=1)) || :
+					matched_code="$ep_code"
+					matched_key="$csv_key"
+				fi
+			done
+
+			if (( match_count == 1 )); then
+				best_suffix="$candidate_suffix"
+				found_unique=1
+				break
+			fi
+		done
+
+		if (( found_unique == 0 )); then
+			echo -e "${REB} = = > [NO TAIL MATCH]${NC} $f" >&2
+			echo -e "${YE} = = > Full Key:${NC} $full_key" >&2
+			echo -e "${YE} = = > Tail Key:${NC} $tail_key" >&2
+						echo -e "${YE} = = > Candidate Suffixes Tried:${NC}" >&2
+			for (( suffix=max_parts; suffix>=1; suffix-- )); do
+				candidate_suffix="$(last_n_segments "$tail_key" "$suffix")"
+				echo -e "  ${YE}-${NC} $candidate_suffix" >&2
+			done
+			echo >&2
+
+			echo -e "${YE} = = > CSV Keys Containing 'command':${NC}" >&2
+			for line in "${csv_rows[@]}"; do
+				raw_title="${line#*|*|}"
+				csv_key="$(match_normalize_title "$raw_title")"
+				if [[ "$csv_key" == *"command"* ]]; then
+					echo -e "  ${YE}-${NC} $csv_key" >&2
+				fi
+			done
+			return 1
+		fi
+
+		new_name="${matched_code}_${matched_key}.${ext}"
+
+		if [[ -z "${new_name//[[:space:]]/}" ]]; then
+			echo -e "${REB} = = > [INVALID TARGET NAME]${NC} $f" >&2
+			return 1
+		fi
+
+		if [[ -n "${planned_targets[$new_name]:-}" ]]; then
+			echo -e "${REB} = = > [DUPLICATE TARGET]${NC} $new_name" >&2
+			return 1
+		fi
+		planned_targets[$new_name]=1
+
+		if [[ -e "$new_name" && "$new_name" != "$f" ]]; then
+			echo -e "${REB} = = > [TARGET EXISTS]${NC} $new_name" >&2
+			return 1
+		fi
+
+		plan_rows+=("${f}|${new_name}")
+	done
+
+	echo -e "${CYAN}================================================${NC}" >&2
+	echo -e "${CYAN}     RECOVERY TAIL-MATCH RENAME PLAN SUMMARY    ${NC}" >&2
+	echo -e "${CYAN}================================================${NC}" >&2
+	echo -e "${CYAN} = = > Eligible Files:${NC} ${#filtered[@]}" >&2
+	echo -e "${CYAN} = = > CSV Rows Loaded:${NC} ${#csv_rows[@]}" >&2
+	echo -e "${CYAN} = = > Planned Renames:${NC} ${#plan_rows[@]}" >&2
+	echo >&2
+
+	for line in "${plan_rows[@]}"; do
+		old_name="${line%%|*}"
+		new_name="${line#*|}"
+		echo -e "  ${GREEN}${old_name}${NC} ${YELLOW}-->${NC} ${GREEN}${new_name}${NC}" >&2
+	done
+	echo >&2
+
+	printf '%s\n' "${plan_rows[@]}"
+	return 0
+}
 
 # =========================================================
 # MARKER: OEM FINALIZE CHOICE STATE
@@ -2981,9 +4082,9 @@ run_barfix() {
     echo "     1) Title Metadata Only        (fast path)"
     echo "     2) Playback Defaults Only     (safe remux)"
     echo "     3) Title + Playback Defaults  (safe remux)"
-    echo "     q) Cancel"
     echo
 
+    echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
     read -r -p "     Select BARFIX mode [1/2/3/q]: " BARFIX_MODE
     echo -e "${YELLOW}"
     if is_factory_exit_token "$BARFIX_MODE"; then
@@ -3221,10 +4322,6 @@ run_subtox() {
     local vid base i SUB_NAME
     local -a cmd
 
-
-
-
-
     clear
 
     echo -e "${CYAN}=======================================================================${NC}"
@@ -3237,7 +4334,7 @@ run_subtox() {
     echo -e "${RED}WARNING: Be Shifted, Structurally Wrong, Or Completely Unusable.= = = = ${NC}"
     echo -e "${RED}WARNING: This Is Especially True After PRE-TRIM+INTRO-CUT+POST-TRIM.= = ${NC}"
     echo -e "${CYAN}-----------------------------------------------------------------------${NC}"
-    echo -e "  ${YELLOW}1)= = = = = = > Rename & Detox Video File Names < = = = = = = = = = = ${NC}"
+    echo -e "  ${YELLOW}1)= = = = = = > Rename & Detox Video File Names < = = = = = = = = = = ${NC}"  # i know this is the one but it calls the thing i moved in here
     echo -e "${CYAN}-----------------------------------------------------------------------${NC}"
     echo -e "  ${YELLOW}2)= = = = = = > Bulk Pack External .srt Into MKVs < = = = = = = = = = ${NC}"
     echo -e "${CYAN}-----------------------------------------------------------------------${NC}"
@@ -3248,6 +4345,7 @@ run_subtox() {
 
     echo -e "${YELLOW} = = > Select Mission [1/2/3/4] or [q] to cancel: ${NC}"
     read -r choice
+
     if is_factory_exit_token "$choice"; then
         return 0
     fi
@@ -3261,69 +4359,17 @@ run_subtox() {
         pause
         return 1
     }
+    
+    # ------------------------------------------------------------------------------
+	# 1 RENAME & DETOX / RECOVERY RENAME MENU
+	# ------------------------------------------------------------------------------
+	if [[ "$choice" == "1" ]]; then
+		run_subtox_rename_menu "${vids[@]}"
+		return 0
+	fi
+    
+#===========/\================temp marker=====================/\===========================================
 
-# ------------------------------------------------------------------------------
-# 1 RENAME & DETOX (TITOX LOGIC)
-# ------------------------------------------------------------------------------
-
-    if [[ "$choice" == "1" ]]; then
-
-        filtered=()
-        for f in "${vids[@]}"; do
-            [[ "$f" =~ ^(SUTURED_|SUBPACKED_) ]] || filtered+=("$f")
-        done
-        vids=("${filtered[@]}")
-
-        total=${#vids[@]}
-        [[ $total -eq 0 ]] && {
-            echo -e "${RE}>->->->->->No Targets Found<-<-<-<-<-<${NC}"
-            pause
-            return 1
-        }
-
-        for (( i=0; i<$total; i++ )); do
-            file="${vids[$i]}"
-            echo -e "\n${CYAN}[$((i+1)) / $total] TARGET: ${GREEN}$file${NC}"
-
-            EP_CODE=$(echo "$file" | grep -oiP 'S\d{2}E\d{2}' | tr '[:lower:]' '[:upper:]' || true)
-
-            if [[ -n "${EP_CODE:-}" ]]; then
-
-                EP_TITLE=""
-                if [[ -f "episodes.csv" ]]; then
-                    EP_TITLE=$(grep -i "^$EP_CODE," "episodes.csv" 2>/dev/null | cut -d',' -f2- | tr -d '\r' || true)
-                fi
-
-                EXT="${file##*.}"
-
-                if [[ -n "$EP_TITLE" ]]; then
-                    RAW_FOR_DETOX="$EP_TITLE"
-                    BASE_NAME="$EP_CODE"
-                else
-                    RAW_FOR_DETOX="${file%.*}"
-                    BASE_NAME=""
-                fi
-
-                CLEAN_TITLE=$(echo "$RAW_FOR_DETOX" | \
-                    sed "s/&/and/g; s/é/e/g; s/à/a/g; s/ñ/n/g; s/ç/c/g" | \
-                    tr ' ' '_' | tr -dc '[:alnum:]_')
-
-                if [[ -n "$BASE_NAME" ]]; then
-                    NEW_NAME="${BASE_NAME}_${CLEAN_TITLE}.${EXT}"
-                else
-                    NEW_NAME="${CLEAN_TITLE}.${EXT}"
-                fi
-
-                if [[ "$file" != "$NEW_NAME" ]]; then
-                    echo "Renaming: $file -> $NEW_NAME"
-                    mv "$file" "$NEW_NAME"
-                fi
-            fi
-        done
-
-        pause
-        return 0
-    fi
 
 # ------------------------------------------------------------------------------
 # 2 BULK PACK EXTERNAL SRT INTO MKV (EXTSUB LOGIC)
@@ -3417,6 +4463,542 @@ run_subtox() {
 }
 # ---End Of FUNCTION X: SUBTOX (UNIFIED SUBTITLE + RENAME ENGINE) ---
 
+#============\/===============temp marker==========\/======================================================
+
+# =========================
+# #MARKER: SUBTOX STANDARD RENAME WRAPPER
+# =========================
+# PURPOSE:
+# - Hold The Existing Mission 1 Rename / Detox Logic
+# - This Wrapper Lets SUBTOX Mission 1 Split Cleanly Into:
+#     1) Standard Rename / Detox
+#     2) Recovery Rename From episodes.csv + Front Number Tags
+#
+# IMPORTANT:
+# - For The First Paste, MOVE The CURRENT INLINE Mission 1 BLOCK
+#   From run_subtox() Into This Function BODY.
+# - Do NOT Rewrite That Logic Yet.
+# - Just Relocate It Here So The New Menu Can Dispatch Cleanly.
+# =========================
+run_subtox_standard_rename() {
+	local -a vids=("$@")
+	local -a filtered=()
+	local total i
+	local f file
+	local EP_CODE EP_TITLE EXT RAW_FOR_DETOX BASE_NAME CLEAN_TITLE NEW_NAME
+
+	# ------------------------------------------------------------------------------
+	# 1 RENAME & DETOX (TITOX LOGIC)
+	# ------------------------------------------------------------------------------
+
+	for f in "${vids[@]}"; do
+		[[ "$f" =~ ^(SUTURED_|SUBPACKED_) ]] || filtered+=("$f")
+	done
+	vids=("${filtered[@]}")
+
+	total=${#vids[@]}
+	[[ $total -eq 0 ]] && {
+		echo -e "${RE}>->->->->->No Targets Found<-<-<-<-<-<${NC}"
+		pause
+		return 0
+	}
+
+	for (( i=0; i<total; i++ )); do
+		file="${vids[$i]}"
+		echo -e "\n${CYAN}[$((i+1)) / $total] TARGET: ${GREEN}$file${NC}"
+
+		EP_CODE=$(echo "$file" | grep -oiP 'S\d{2}E\d{2}' | tr '[:lower:]' '[:upper:]' || true)
+
+		if [[ -n "${EP_CODE:-}" ]]; then
+
+			EP_TITLE=""
+			if [[ -f "episodes.csv" ]]; then
+				EP_TITLE=$(grep -i "^$EP_CODE," "episodes.csv" 2>/dev/null | cut -d',' -f2- | tr -d '\r' || true)
+			fi
+
+			EXT="${file##*.}"
+
+			if [[ -n "$EP_TITLE" ]]; then
+				RAW_FOR_DETOX="$EP_TITLE"
+				BASE_NAME="$EP_CODE"
+			else
+				RAW_FOR_DETOX="${file%.*}"
+				BASE_NAME=""
+			fi
+
+			CLEAN_TITLE="$(detox_title "$RAW_FOR_DETOX")"
+
+			if [[ -n "$BASE_NAME" ]]; then
+				NEW_NAME="${BASE_NAME}_${CLEAN_TITLE}.${EXT}"
+			else
+				NEW_NAME="${CLEAN_TITLE}.${EXT}"
+			fi
+
+			if [[ "$file" != "$NEW_NAME" ]]; then
+				echo -e "${GREEN} = = > [RENAMING]${NC} $file ${YELLOW}-->${NC} $NEW_NAME"
+				mv -- "$file" "$NEW_NAME"
+			else
+				echo -e "${CYAN} = = > [ALREADY CORRECT]${NC} $file"
+			fi
+		else
+			echo -e "${YELLOW} = = > [SKIP NO SxxExx]${NC} $file"
+		fi
+	done
+
+	pause
+	return 0
+}
+
+run_subtox_direct_detox() {
+
+	local -a vids=("$@")
+	local choice file new_name stem ext
+	local -a targets=()
+
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}        DIRECT FILENAME DETOX TOOL              ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+
+	echo -e "  ${YELLOW}1)= = > Detox One Selected File${NC}"
+	echo -e "  ${YELLOW}2)= = > Detox ALL Eligible Files${NC}"
+	echo -e "  ${YELLOW}0)= = > Return${NC}"
+	echo
+	echo -e "${YELLOW} = = > Select Option: ${NC}"
+	read -r choice
+
+	if is_factory_exit_token "$choice"; then
+		return 0
+	fi
+
+	# --------------------------------------------------------
+	# BUILD TARGET LIST
+	# --------------------------------------------------------
+	case "$choice" in
+		1)
+			echo -e "${YELLOW} = = > Select File Index:${NC}"
+			for i in "${!vids[@]}"; do
+				echo -e "  ${CYAN}$((i+1)))${NC} ${vids[$i]}"
+			done
+			read -r idx
+
+			if ! [[ "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#vids[@]} )); then
+				echo -e "${REB} = = > Invalid Selection${NC}"
+				pause
+				return 1
+			fi
+
+			targets=("${vids[$((idx-1))]}")
+			;;
+		2)
+			targets=("${vids[@]}")
+			;;
+		*)
+			return 0
+			;;
+	esac
+
+	# --------------------------------------------------------
+	# PREVIEW
+	# --------------------------------------------------------
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}           DETOX PREVIEW                        ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+
+	local -a plan=()
+
+	for file in "${targets[@]}"; do
+
+		# Skip factory outputs
+		[[ "$file" =~ ^(SUTURED_|SUBPACKED_) ]] && continue
+
+		ext="${file##*.}"
+		stem="${file%.*}"
+
+		new_name="$(detox_title "$stem").${ext}"
+
+		if [[ "$file" == "$new_name" ]]; then
+			echo -e "  ${CYAN}${file}${NC} ${GREEN}[ALREADY CLEAN]${NC}"
+			continue
+		fi
+
+		echo -e "  ${GREEN}${file}${NC} ${YELLOW}-->${NC} ${GREEN}${new_name}${NC}"
+		plan+=("${file}|${new_name}")
+	done
+
+	echo
+
+	if (( ${#plan[@]} == 0 )); then
+		echo -e "${GREEN} = = > Nothing To Change.${NC}"
+		pause
+		return 0
+	fi
+
+	if ! ask_yes_no " = = > Apply Detox Renames? (y/n or 1/2): "; then
+		echo -e "${YELLOW} = = > Detox Cancelled.${NC}"
+		pause
+		return 0
+	fi
+
+	# --------------------------------------------------------
+	# APPLY
+	# --------------------------------------------------------
+	local applied=0
+	local failed=0
+
+	for row in "${plan[@]}"; do
+		old="${row%%|*}"
+		new="${row#*|}"
+
+		if [[ -e "$new" && "$new" != "$old" ]]; then
+			echo -e "${REB} = = > [TARGET EXISTS]${NC} $new"
+			((failed+=1))
+			continue
+		fi
+
+		if mv -- "$old" "$new"; then
+			echo -e "${GREEN} = = > [RENAMED]${NC} $old ${YELLOW}-->${NC} $new"
+			((applied+=1))
+		else
+			echo -e "${REB} = = > [FAILED]${NC} $old"
+			((failed+=1))
+		fi
+	done
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}               DETOX SUMMARY                    ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > Renamed:${NC} $applied"
+	echo -e "${CYAN} = = > Failed :${NC} $failed"
+	echo
+	if (( applied > 0 && failed == 0 )); then
+	echo -e "${GR} = = > Direct Detox Completed Successfully.${NC}"
+	fi
+
+	pause
+}
+
+# =========================
+# #MARKER: SUBTOX RECOVERY RENAME WRAPPER
+# =========================
+# PURPOSE:
+# - Explain Recovery Mode Clearly
+# - Require Front-Number-Tagged Files
+# - Hand Off To The Recovery Rename Pipeline
+# =========================
+run_subtox_recovery_rename() {
+	local -a vids=("$@")
+	local recovery_choice
+
+	while true; do
+		clear
+		echo -e "${CYAN}================================================${NC}"
+		echo -e "${CYAN}              RECOVERY RENAME MENU              ${NC}"
+		echo -e "${CYAN}================================================${NC}"
+		echo
+		echo -e "${YELLOW} = = > Choose Recovery Method:${NC}"
+		echo
+		echo -e "${YELLOW}     1) Recover By Matching Surviving Filename Tail To episodes.csv${NC}"
+		echo -e "${YELLOW}     2) Recover By Front Number Tags${NC}"
+		echo
+		echo -e "${YELLOW}     0) Return${NC}"
+		echo
+		echo -e "${YELLOW}"
+		read -r -p " = = > Select option [1-2 | 0=return]: " recovery_choice
+		echo -e "${NC}"
+
+		recovery_choice="${recovery_choice//[[:space:]]/}"
+
+		if is_factory_exit_token "$recovery_choice"; then
+			return 0
+		fi
+
+		case "$recovery_choice" in
+			1)
+				run_subtox_recovery_tail_match "${vids[@]}"
+				;;
+			2)
+				run_subtox_recovery_number_tag "${vids[@]}"
+				;;
+			*)
+				echo -e "${REB} = = > Invalid Selection.${NC}"
+				pause
+				;;
+		esac
+	done
+}
+
+run_subtox_recovery_tail_match() {
+	local -a vids=("$@")
+	local -a plan_rows=()
+
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}         RECOVERY BY SURVIVING TAIL MATCH       ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${CYAN} = = > This Path Uses episodes.csv Already On Board.${NC}"
+	echo -e "${CYAN} = = > Factory Will Try To Match The Surviving Filename Tail${NC}"
+	echo -e "${CYAN}      Against Detoxed Titles In episodes.csv.${NC}"
+	echo
+	echo -e "${YELLOW} = = > This Is STRICT Recovery.${NC}"
+	echo -e "${YELLOW} = = > Any Missing Or Ambiguous Match Will Abort The Plan.${NC}"
+	echo
+
+	if ! ask_yes_no " = = > Build Tail-Match Recovery Plan Now? (y/n or 1/2): "; then
+		echo -e "${YELLOW} = = > Tail-Match Recovery Cancelled.${NC}"
+		echo
+		return 0
+	fi
+
+	mapfile -t plan_rows < <(build_recovery_tail_match_plan "${vids[@]}")
+	if (( ${#plan_rows[@]} == 0 )); then
+		echo -e "${REB} = = > Tail-Match Recovery Plan Could Not Be Built.${NC}"
+		echo
+		pause
+		return 0
+	fi
+
+	if preview_and_apply_plan_rows "${plan_rows[@]}"; then
+		echo -e "${GREEN} = = > Tail-Match Recovery Complete.${NC}"
+	else
+		echo -e "${REB} = = > Tail-Match Recovery Ended With An Error.${NC}"
+	fi
+	echo
+	pause
+	return 0
+}
+
+run_subtox_recovery_number_tag() {
+	local -a vids=("$@")
+	local -a plan_rows=()
+
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}          RECOVERY RENAME FROM EPISODES.CSV     ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW} = = > This Mode Is For Broken Filenames That Lost SxxExx.${NC}"
+	echo -e "${CYAN} = = > Files Must Start With A Numeric Tag At The VERY Front.${NC}"
+	echo -e "${CYAN} = = > Accepted Examples:${NC}"
+	echo -e "${GREEN}      001_File.mkv${NC}"
+	echo -e "${GREEN}      002-Whatever.mp4${NC}"
+	echo
+	echo -e "${CYAN} = = > Recovery Pairing Rule:${NC}"
+	echo -e "${CYAN}      File Tag Order 001 / 002 / 003 ...${NC}"
+	echo -e "${CYAN}      matches episodes.csv Row Order 1 / 2 / 3 ...${NC}"
+	echo
+	echo -e "${YELLOW} = = > Factory Will Preview Every Rename Before Applying Anything.${NC}"
+	echo
+
+	if ! ask_yes_no " = = > Continue Into Recovery Rename Mode? (y/n or 1/2): "; then
+		echo -e "${YELLOW} = = > Recovery Rename Cancelled.${NC}"
+		echo
+		return 0
+	fi
+
+	mapfile -t plan_rows < <(build_recovery_rename_plan)
+	if (( ${#plan_rows[@]} == 0 )); then
+		echo -e "${REB} = = > Recovery Rename Plan Could Not Be Built.${NC}"
+		echo
+		pause
+		return 0
+	fi
+
+	if preview_and_apply_plan_rows "${plan_rows[@]}"; then
+		echo -e "${GREEN} = = > Recovery Rename Complete.${NC}"
+	else
+		echo -e "${REB} = = > Recovery Rename Ended With An Error.${NC}"
+	fi
+	echo
+	pause
+	return 0
+}
+
+# =========================
+# #MARKER: SUBTOX RENAME MENU
+# =========================
+# PURPOSE:
+# - Split Rename Mission Into Standard And Recovery Paths
+# - Keep Old Behavior Available
+# - Make Recovery Explicit Instead Of Hidden
+# =========================
+# =========================
+# #MARKER: SUBTOX RENAME MENU
+# =========================
+# PURPOSE:
+# - Split Rename Mission Into Standard And Recovery Paths
+# - Keep Detox Operations Together
+# - Give CSV / Naming Authority Work Its Own Honest Home
+#
+# IMPORTANT:
+# - episodes.csv work belongs here now, not under Intro Detection
+# - Reverse CSV rebuild gets a real menu slot even if still stubbed
+# =========================
+run_subtox_rename_menu() {
+	local -a vids=("$@")
+	local rename_choice
+
+	while true; do
+		clear
+		echo -e "${CYAN}================================================${NC}"
+		echo -e "${CYAN}              SUBTOX RENAME MENU                ${NC}"
+		echo -e "${CYAN}================================================${NC}"
+		echo
+		echo -e "${YELLOW}     1) Rename Using Existing SxxExx In Filenames${NC}"
+		echo -e "${YELLOW}     2) Recovery / Rebuild File Names${NC}"
+		echo -e "${YELLOW}     3) Detox Existing File Names${NC}"
+		echo -e "${YELLOW}     4) CSV / Naming Authority Tools${NC}"
+		echo
+		echo -e "${YELLOW}     0) Return${NC}"
+		echo
+		echo -e "${YELLOW} = = > Select Option [1-4 | 0=return]: ${NC}"
+		read -r rename_choice
+
+		rename_choice="${rename_choice//[[:space:]]/}"
+
+		if is_factory_exit_token "$rename_choice"; then
+			return 0
+		fi
+
+		case "$rename_choice" in
+			1)
+				run_subtox_standard_rename "${vids[@]}"
+				;;
+			2)
+				run_subtox_recovery_rename "${vids[@]}"
+				;;
+			3)
+				run_subtox_direct_detox "${vids[@]}"
+				;;
+			4)
+				run_subtox_csv_menu
+				;;
+			*)
+				echo
+				echo -e "${REB} = = > Invalid Selection.${NC}"
+				pause
+				;;
+		esac
+	done
+}
+
+# =========================
+# #MARKER: TITLE / PLAYBACK RENAME WRAPPER UPGRADE
+# =========================
+# PURPOSE:
+# - Replace The Old "Open SUBTOX" Banner For Rename
+# - Route Directly Into The New Rename Split Menu
+# - Tell The Truth About CSV / Naming Authority Living Here Too
+# =========================
+run_subtox_rename() {
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}             RENAME / DETOX FILE TOOLS          ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${CYAN} = = > Standard Rename, Recovery Rename, Direct Detox,${NC}"
+	echo -e "${CYAN} = = > And CSV / Naming Authority Tools Live Here Now.${NC}"
+	echo
+
+	if ask_yes_no " = = > Open Rename Menu Now? (y/n or 1/2): "; then
+		run_subtox_rename_menu
+	fi
+}
+
+# =========================
+# #MARKER: SUBTOX CSV / NAMING AUTHORITY MENU
+# =========================
+# PURPOSE:
+# - Keep episodes.csv authority tools near Rename / Detox workflows
+# - Separate naming authority work from Intro Detection work
+# - Provide one place for both:
+#     1) manual append builder
+#     2) future reverse rebuild from known-good filenames
+#
+# IMPORTANT:
+# - Manual append builder exists now
+# - Reverse rebuild writer is intentionally stubbed until implemented
+# =========================
+run_subtox_csv_menu() {
+	local csv_choice
+
+	while true; do
+		clear
+		echo -e "${CYAN}================================================${NC}"
+		echo -e "${CYAN}          CSV / NAMING AUTHORITY TOOLS          ${NC}"
+		echo -e "${CYAN}================================================${NC}"
+		echo
+		echo -e "${YELLOW}     1) Build / Append episodes.csv Manually${NC}"
+		echo -e "${YELLOW}     2) Rebuild episodes.csv From Known Good Filenames${NC}"
+		echo
+		echo -e "${YELLOW}     0) Return${NC}"
+		echo
+		echo -e "${YELLOW} = = > Select Option [1-2 | 0=return]: ${NC}"
+		read -r csv_choice
+
+		csv_choice="${csv_choice//[[:space:]]/}"
+
+		if is_factory_exit_token "$csv_choice"; then
+			return 0
+		fi
+
+		case "$csv_choice" in
+			1)
+				run_build_episodes
+				;;
+			2)
+				run_build_episodes_from_good_filenames
+				;;
+			*)
+				echo
+				echo -e "${REB} = = > Invalid Selection.${NC}"
+				pause
+				;;
+		esac
+	done
+}
+
+
+# =========================
+# #MARKER: REBUILD EPISODES.CSV FROM KNOWN GOOD FILENAMES
+# =========================
+# PURPOSE:
+# - Future reverse builder:
+#   scan already-correct filenames in current folder
+#   extract SxxExx + title portion
+#   write / rebuild episodes.csv authority rows
+#
+# CURRENT STATUS:
+# - Menu plumbing exists now
+# - Writer / parser logic not implemented yet
+#
+# WHY THIS STUB EXISTS:
+# - So the menu structure reflects the intended workflow honestly
+# - So future-me has a clear landing zone for the real builder
+# =========================
+run_build_episodes_from_good_filenames() {
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}   REBUILD EPISODES.CSV FROM GOOD FILENAMES     ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW} = = > This Is The Planned Reverse Builder.${NC}"
+	echo -e "${CYAN} = = > Goal: Scan Known Good Filenames In This Folder${NC}"
+	echo -e "${CYAN} = = > And Rebuild / Refresh episodes.csv From Them.${NC}"
+	echo
+	echo -e "${YELLOW} = = > Writer Logic Not Implemented Yet.${NC}"
+	echo -e "${CYAN} = = > Manual Build / Append Mode Is Ready Now.${NC}"
+	echo
+	pause
+	return 0
+}
+
+
 # ==============================================================================
 # --- FUNCTION: BUILD_EPISODES_CSV (INTERACTIVE TITLE BUILDER) ---
 # ==============================================================================
@@ -3430,108 +5012,9 @@ run_build_episodes() {
     local FILE="episodes.csv"
 
     # ------------------------------------------------------------------
-    # DETOX FUNCTION SUB-SYSTEM CALL
+    # DETOX FUNCTION SUB-SYSTEM CALL used to be here we moved it higher up
     # ------------------------------------------------------------------
-# ============================================================
-# #MARKER: TITLE DETOX / NORMALIZATION ENGINE
-# ============================================================
-# PURPOSE:
-# - Convert messy/raw titles into clean, filesystem-safe, readable names.
-#
-# INPUT:
-# - Raw string (possibly containing spaces, symbols, unicode, etc.)
-#
-# OUTPUT:
-# - Underscore-separated, cleaned, title-cased string
-#
-# EXAMPLE:
-#   "My Show: Episode #1 (HD)" →
-#   "My_Show_Episode_1_Hd"
-#
-# ============================================================
-# DESIGN PHASES:
-#
-# 1) STRUCTURE CLEANUP:
-#    - Convert whitespace → underscores
-#    - Replace & with "And"
-#
-# 2) CHARACTER SANITIZATION:
-#    - Remove or normalize special characters
-#    - Keep only A-Z, a-z, 0-9, and underscores
-#
-# 3) OPTIONAL TRANSLITERATION (iconv):
-#    - Convert unicode → ASCII equivalents
-#    - Example: "é" → "e"
-#
-# 4) UNDERSCORE NORMALIZATION:
-#    - Collapse duplicate underscores
-#    - Trim leading/trailing underscores
-#
-# 5) TITLE CASING:
-#    - Capitalize first letter of each segment
-#    - Lowercase the rest
-#
-# ============================================================
-# WHY iconv IS OPTIONAL:
-# - Not all systems have iconv installed
-# - Script must still function without it
-# - Without iconv:
-#     * Unicode may be stripped instead of converted
-#     * Output still remains safe and usable
-#
-# DESIGN DECISION:
-# - Prefer "graceful degradation" over hard dependency
-#
-# ============================================================
-# IMPORTANT:
-# - This function must NEVER fail due to missing tools
-# - It must always return a usable filename-safe string
-# - Safe for use in batch processing pipelines
-#
-detox_title() {
-	local raw="$1"
-	local cleaned
 
-	# ========================================================
-	# PHASE 1–4: CLEAN + SANITIZE
-	# ========================================================
-	# If iconv exists → use transliteration
-	# If not → skip transliteration safely
-	#
-	if have_cmd iconv; then
-		# Full pipeline with unicode → ASCII conversion
-		cleaned=$(echo "$raw" \
-			| sed 's/[[:space:]]\+/_/g' \
-			| sed 's/&/And/g' \
-			| iconv -f utf8 -t ascii//TRANSLIT 2>/dev/null \
-			| sed 's/[^A-Za-z0-9_]/_/g' \
-			| sed 's/__\+/_/g' \
-			| sed 's/^_//; s/_$//')
-	else
-		# Fallback path (no iconv)
-		# Unicode may be stripped instead of converted
-		cleaned=$(echo "$raw" \
-			| sed 's/[[:space:]]\+/_/g' \
-			| sed 's/&/And/g' \
-			| sed 's/[^A-Za-z0-9_]/_/g' \
-			| sed 's/__\+/_/g' \
-			| sed 's/^_//; s/_$//')
-	fi
-
-	# ========================================================
-	# PHASE 5: TITLE CASE EACH SEGMENT
-	# ========================================================
-	# Split on underscores and capitalize each word
-	#
-	echo "$cleaned" | awk -F'_' '{
-		for (i=1; i<=NF; i++) {
-			# Uppercase first letter, lowercase rest
-			$i = toupper(substr($i,1,1)) tolower(substr($i,2))
-		}
-		OFS="_"
-		print
-	}'
-}
 
     # ------------------------------------------------------------------
     # SEASON INPUT
@@ -6067,8 +7550,8 @@ run_title_subtitle_menu() {
         echo -e "${CYAN}================================================${NC}"
         echo
         echo -e "${YELLOW}"
-        echo "     1) Subtitlez"
-        echo "     2) BAR / File Bar-Title / File-Name + Playback Tools"
+        echo "     1) Subtox, FileNames, Subtitlez"
+        echo "     2) BAR / Fix-Title-Bar-Display / File-Name + Playback Tools"
         echo
         echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
         echo
@@ -8376,11 +9859,16 @@ restore_OEM_prefix() {
 
 run_batch_normalizer() {
 
-	local load_mode max_jobs custom_jobs
+	local load_mode max_jobs custom_jobs load_choice
 	local -a norm_sources
-    local total idx f active_jobs success_count fail_count skip_count
-    local batch_rekey_crf first_file first_out
-    local first_orig_size first_new_size first_delta_percent first_bucket
+	local total idx f
+	local success_count=0
+	local fail_count=0
+	local skip_count=0
+	local rolling_crf
+	local result
+	local chosen_crf chosen_out chosen_bucket chosen_delta
+	local chosen_orig_size chosen_new_size
 
 	clear
 	echo -e "${CYAN}==========================================================${NC}"
@@ -8538,207 +10026,27 @@ run_batch_normalizer() {
 	batch_rekey_crf="$REKEY_CRF"
 
 	# ========================================================
-	# #MARKER: FIRST-FILE CALIBRATION PASS
+	# #MARKER: ROLLING PER-FILE REKEY CALIBRATION
 	# ========================================================
-	# WHY:
-	# - Batch Normalize Normally Fans Out Into Concurrent Background Jobs.
-	# - If We Want One Human-Eyes Sanity Check, It Must Happen BEFORE
-	#   The Concurrency Loop Starts.
+	# PURPOSE:
+	# - Replace First-File Calibration + Fixed Batch CRF
+	#   With Sequential Rolling Per-File CRF
 	#
-	# DESIGN:
-	# - First eligible file runs alone
-	# - Compare original size vs REKEY size
-	# - If outside sanity band, auto-try one logical CRF step first
-	# - Then fall back to manual retry if still needed
-	# - Optional use of that CRF for the rest of THIS batch only
+	# IMPORTANT:
+	# - Source Scan / Target Discovery / Load Menu Above Stay Intact
+	# - This replacement begins at the old execution engine
+	# - Rolling CRF requires ordered sequential processing
 	# ========================================================
-	first_file=""
 
-	for ((idx=0; idx<total; idx++)); do
-		f="${norm_sources[$idx]}"
-
-		if [[ -f "REKEY_$(basename "${f%.*}").mkv" ]]; then
-			echo -e "${GREEN} = = > [SKIP $((idx+1)) / $total] Matching REKEY Exists For:${NC} ${GREEN}$f${NC}"
-			((skip_count+=1)) || :
-			continue
-		fi
-
-		first_file="$f"
-		break
-	done
-
-	if [[ -n "${first_file:-}" ]]; then
-		echo
-		echo -e "${CYAN}==========================================================${NC}"
-		echo -e "${CYAN}        BATCH NORMALIZER :: FIRST-FILE CALIBRATION        ${NC}"
-		echo -e "${CYAN}==========================================================${NC}"
-		echo -e "${CYAN} = = > First Calibration File:${NC} ${GREEN}$first_file${NC}"
-		echo -e "${CYAN} = = > Starting Batch REKEY CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
-		echo
-
-		if normalize_cut_friendly_file "$first_file" "$batch_rekey_crf"; then
-			first_out="REKEY_$(basename "${first_file%.*}").mkv"
-
-			if [[ -f "$first_out" ]]; then
-				first_orig_size=$(stat -c%s "$first_file")
-				first_new_size=$(stat -c%s "$first_out")
-				first_delta_percent=$(rekey_percent_change "$first_orig_size" "$first_new_size")
-				first_bucket="$(rekey_size_sanity_bucket "$first_delta_percent")"
-
-				rekey_print_size_sanity_report \
-					"$first_file" "$first_out" \
-					"$first_orig_size" "$first_new_size" \
-					"$first_delta_percent" "$first_bucket"
-
-				if [[ "$first_bucket" != "OK" ]]; then
-					local auto_try_crf auto_bucket
-
-					echo -e "${YELLOW} = = > First File Landed Outside The REKEY Sanity Band.${NC}"
-
-					# ========================================================
-					# AUTO-TRY THE NEXT LOGICAL CRF STEP FIRST
-					# ========================================================
-					# WHY:
-					# - We Already Know Which Direction The Size Drift Went
-					# - So We Can Try One Small Corrective Step Before Prompting
-					#
-					# RULE:
-					# - GROWTH_WARN -> CRF + 1
-					# - SHRINK_WARN -> CRF - 1
-					# ========================================================
-					auto_try_crf="$(rekey_auto_step_crf "$batch_rekey_crf" "$first_bucket")"
-
-					if [[ "$auto_try_crf" != "$batch_rekey_crf" ]]; then
-						echo -e "${CYAN} = = > Auto-Trying Next CRF Step:${NC} ${YELLOW}$batch_rekey_crf -> $auto_try_crf${NC}"
-						echo -e "${YELLOW} = = > Removing First REKEY So It Can Be Rebuilt At Auto-Try CRF...${NC}"
-						rm -f -- "$first_out"
-
-						if normalize_cut_friendly_file "$first_file" "$auto_try_crf"; then
-							first_out="REKEY_$(basename "${first_file%.*}").mkv"
-
-							if [[ -f "$first_out" ]]; then
-								first_new_size=$(stat -c%s "$first_out")
-								first_delta_percent=$(rekey_percent_change "$first_orig_size" "$first_new_size")
-								first_bucket="$(rekey_size_sanity_bucket "$first_delta_percent")"
-
-								rekey_print_size_sanity_report \
-									"$first_file" "$first_out" \
-									"$first_orig_size" "$first_new_size" \
-									"$first_delta_percent" "$first_bucket"
-
-								auto_bucket="$(rekey_size_sanity_bucket \
-									"$first_delta_percent" \
-									"$TARGET_MAX_GROWTH" \
-									"$TARGET_MAX_SHRINK")"
-
-								if [[ "$auto_bucket" == "OK" ]]; then
-									if ask_yes_no " = = > Auto-Try Landed Inside The Tight Target Band. Use This CRF For The Rest Of This Batch? (y/n or 1/2): "; then
-										batch_rekey_crf="$auto_try_crf"
-										echo -e "${GREEN} = = > Batch REKEY CRF Updated For This Batch Only:${NC} ${YELLOW}$batch_rekey_crf${NC}"
-									else
-										echo -e "${YELLOW} = = > Rest Of Batch Will Continue Using Starting CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
-									fi
-								else
-									if ask_yes_no " = = > Auto-Try Still Landed Outside The Tight Target Band. Retry It At A Different CRF? (y/n or 1/2): "; then
-										local new_batch_crf
-										new_batch_crf="$(rekey_prompt_for_new_batch_crf "$auto_try_crf")"
-
-										if [[ "$new_batch_crf" != "$auto_try_crf" ]]; then
-											echo -e "${YELLOW} = = > Removing First REKEY So It Can Be Rebuilt At New CRF...${NC}"
-											rm -f -- "$first_out"
-
-											if normalize_cut_friendly_file "$first_file" "$new_batch_crf"; then
-												first_out="REKEY_$(basename "${first_file%.*}").mkv"
-
-												if [[ -f "$first_out" ]]; then
-													first_new_size=$(stat -c%s "$first_out")
-													first_delta_percent=$(rekey_percent_change "$first_orig_size" "$first_new_size")
-													first_bucket="$(rekey_size_sanity_bucket "$first_delta_percent")"
-
-													rekey_print_size_sanity_report \
-														"$first_file" "$first_out" \
-														"$first_orig_size" "$first_new_size" \
-														"$first_delta_percent" "$first_bucket"
-
-													if ask_yes_no " = = > Use This New CRF For The Rest Of This Batch? (y/n or 1/2): "; then
-														batch_rekey_crf="$new_batch_crf"
-														echo -e "${GREEN} = = > Batch REKEY CRF Updated For This Batch Only:${NC} ${YELLOW}$batch_rekey_crf${NC}"
-													else
-														echo -e "${YELLOW} = = > Rest Of Batch Will Continue Using Starting CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
-													fi
-												fi
-											else
-												echo -e "${REB} = = > Retry Failed. Rest Of Batch Will Continue With Existing CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
-											fi
-										else
-											echo -e "${YELLOW} = = > Batch REKEY CRF Left Unchanged.${NC}"
-										fi
-									fi
-								fi
-							fi
-						else
-							echo -e "${REB} = = > Auto-Try Failed. Falling Back To Manual Choice.${NC}"
-
-							if ask_yes_no " = = > Retry It At A Different CRF? (y/n or 1/2): "; then
-								local new_batch_crf
-								new_batch_crf="$(rekey_prompt_for_new_batch_crf "$batch_rekey_crf")"
-
-								if [[ "$new_batch_crf" != "$batch_rekey_crf" ]]; then
-									echo -e "${YELLOW} = = > Removing First REKEY So It Can Be Rebuilt At New CRF...${NC}"
-									rm -f -- "$first_out"
-
-									if normalize_cut_friendly_file "$first_file" "$new_batch_crf"; then
-										first_out="REKEY_$(basename "${first_file%.*}").mkv"
-
-										if [[ -f "$first_out" ]]; then
-											first_new_size=$(stat -c%s "$first_out")
-											first_delta_percent=$(rekey_percent_change "$first_orig_size" "$first_new_size")
-											first_bucket="$(rekey_size_sanity_bucket "$first_delta_percent")"
-
-											rekey_print_size_sanity_report \
-												"$first_file" "$first_out" \
-												"$first_orig_size" "$first_new_size" \
-												"$first_delta_percent" "$first_bucket"
-
-											if ask_yes_no " = = > Use This New CRF For The Rest Of This Batch? (y/n or 1/2): "; then
-												batch_rekey_crf="$new_batch_crf"
-												echo -e "${GREEN} = = > Batch REKEY CRF Updated For This Batch Only:${NC} ${YELLOW}$batch_rekey_crf${NC}"
-											else
-												echo -e "${YELLOW} = = > Rest Of Batch Will Continue Using Starting CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
-											fi
-										fi
-									else
-										echo -e "${REB} = = > Retry Failed. Rest Of Batch Will Continue With Existing CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
-									fi
-								else
-									echo -e "${YELLOW} = = > Batch REKEY CRF Left Unchanged.${NC}"
-								fi
-							fi
-						fi
-					fi
-				fi
-			fi
-
-			((success_count+=1)) || :
-		else
-			echo -e "${REB} = = > First Calibration File Failed:${NC} ${GREEN}$first_file${NC}"
-			((fail_count+=1)) || :
-		fi
-	fi
+	rolling_crf="$REKEY_CRF"
 
 	echo
-	echo -e "${CYAN} = = > Starting Batch Normalization With Batch REKEY CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
+	echo -e "${CYAN} = = > Starting Batch Normalization With Rolling CRF:${NC} ${YELLOW}$rolling_crf${NC}"
+	echo -e "${YE} = = > Load Menu Above Is Informational Only In This Mode.${NC}"
+	echo
 
-	# =========================
-	# #MARKER: BATCH NORMALIZER CONCURRENCY LOOP
-	# =========================
-	# Jobs Are Launched In The Background Up To The Selected Cap.
-	# First calibration file was already handled above, so skip it here.
-	#
 	for ((idx=0; idx<total; idx++)); do
 		f="${norm_sources[$idx]}"
-
-		[[ -n "${first_file:-}" && "$f" == "$first_file" ]] && continue
 
 		if [[ -f "REKEY_$(basename "${f%.*}").mkv" ]]; then
 			echo -e "${GREEN} = = > [SKIP $((idx+1)) / $total] Matching REKEY Exists For:${NC} ${GREEN}$f${NC}"
@@ -8746,34 +10054,45 @@ run_batch_normalizer() {
 			continue
 		fi
 
-		echo -e "${MAGENTA} = = > [$((idx+1)) / $total] Queueing:${NC} ${GREEN}$f${NC}"
+		echo -e "${MAGENTA} = = > [$((idx+1)) / $total] Processing:${NC} ${GREEN}$f${NC}"
+		echo -e "${CYAN} = = > Starting CRF For This File:${NC} ${YELLOW}$rolling_crf${NC}"
 
-		(
-			if normalize_cut_friendly_file "$f" "$batch_rekey_crf"; then
-				exit 0
-			else
-				exit 1
-			fi
-		) &
+		if result="$(rekey_process_with_rolling_crf "$f" "$rolling_crf")"; then
+			chosen_crf="${result%%|*}"
+			result="${result#*|}"
 
-		# =========================
-		# #MARKER: BATCH NORMALIZER ACTIVE JOB INDICATOR
-		# =========================
-		active_jobs=$(jobs -rp | wc -l)
-		echo -e "${CYAN} = = > Active Normalize Jobs:${NC} ${GREEN}$active_jobs${NC} ${CYAN}/${NC} ${YELLOW}$max_jobs${NC}"
+			chosen_out="${result%%|*}"
+			result="${result#*|}"
 
-		while true; do
-			active_jobs=$(jobs -rp | wc -l)
-			[[ "$active_jobs" -lt "$max_jobs" ]] && break
-			sleep 1
-		done
-	done
+			chosen_bucket="${result%%|*}"
+			result="${result#*|}"
 
-	# Wait for all background jobs and count outcomes
-	for job_pid in $(jobs -p); do
-		if wait "$job_pid"; then
+			chosen_delta="${result%%|*}"
+			result="${result#*|}"
+
+			chosen_orig_size="${result%%|*}"
+			chosen_new_size="${result##*|}"
+
+			rekey_print_size_sanity_report \
+				"$f" \
+				"$chosen_out" \
+				"$chosen_orig_size" \
+				"$chosen_new_size" \
+				"$chosen_delta" \
+				"$chosen_bucket"
+
+			echo -e "${GREEN} = = > Created:${NC} ${CYAN}$chosen_out${NC}"
+			echo -e "${CYAN} = = > Winning CRF:${NC} ${YELLOW}$chosen_crf${NC}"
+
+			rolling_crf="$chosen_crf"
+			echo -e "${CYAN} = = > Rolling CRF Updated To:${NC} ${YELLOW}$rolling_crf${NC}"
+			echo
+
 			((success_count+=1)) || :
 		else
+			echo -e "${REB} = = > Failed:${NC} ${GREEN}$f${NC}"
+			echo -e "${YELLOW} = = > Rolling CRF Unchanged:${NC} ${YELLOW}$rolling_crf${NC}"
+			echo
 			((fail_count+=1)) || :
 		fi
 	done
@@ -8786,7 +10105,7 @@ run_batch_normalizer() {
 	echo -e "${CYAN} = = > Failed Normalizations:${NC} $fail_count"
 	echo -e "${CYAN} = = > Outputs:${NC} REKEY_*.mkv"
 	echo -e "${CYAN}==========================================================${NC}"
-register_new_rekeys_after_batch_normalizer
+    register_new_rekeys_after_batch_normalizer
 	pause
 	return 0
 }
@@ -9730,9 +11049,9 @@ run_intro_detection_menu() {
         echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
         echo
 
-        read -r -p "     Choice: " det_choice
-        echo -e "${NC}"
-        det_choice="${det_choice//[[:space:]]/}"
+		echo -e "${YELLOW}     Choice: ${NC}"
+		read -r det_choice
+		det_choice="${det_choice//[[:space:]]/}"
 
         # ========================================================
         # TEN-KEY EXIT HOOK
