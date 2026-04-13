@@ -420,7 +420,7 @@ run_twisted_menu() {
 		read -r -p " = = > Select option [1-5 | 0=return]: " choice
         echo -e "${NC}"
 
-        if is_factory_exit_token "$choice"; then
+        if is_exit_token "$choice"; then
             return 0
         fi
 
@@ -597,9 +597,9 @@ canonical_factory_path() {
 # - "0." = cancel / back / exit
 # - also accepts q/Q for normal keyboard flow
 #
-is_factory_exit_token() {
-	local v="${1:-}"
-	[[ "$v" == "0." || "$v" == "q" || "$v" == "Q" ]]
+is_exit_token() {
+    local v="${1:-}"
+    [[ "$v" == "0" || "$v" == "0." || "$v" == "q" || "$v" == "Q" ]]
 }
 
 ask_yes_no() {
@@ -3920,7 +3920,7 @@ run_main_menu() {
     # - If We Only return 0 Here, Control Falls Through Into The
     #   Legacy IntroFind Processing Tail Below run_main_menu
     #
-    if is_factory_exit_token "$MAIN_CHOICE"; then
+    if is_exit_token "$MAIN_CHOICE"; then
     	echo -e "${YELLOW} = = > Exiting.${NC}"
     	exit 0
     fi
@@ -4087,7 +4087,7 @@ run_barfix() {
     echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
     read -r -p "     Select BARFIX mode [1/2/3/q]: " BARFIX_MODE
     echo -e "${YELLOW}"
-    if is_factory_exit_token "$BARFIX_MODE"; then
+    if is_exit_token "$BARFIX_MODE"; then
         return 0
     fi
 
@@ -4346,7 +4346,7 @@ run_subtox() {
     echo -e "${YELLOW} = = > Select Mission [1/2/3/4] or [q] to cancel: ${NC}"
     read -r choice
 
-    if is_factory_exit_token "$choice"; then
+    if is_exit_token "$choice"; then
         return 0
     fi
 
@@ -4568,7 +4568,7 @@ run_subtox_direct_detox() {
 	echo -e "${YELLOW} = = > Select Option: ${NC}"
 	read -r choice
 
-	if is_factory_exit_token "$choice"; then
+	if is_exit_token "$choice"; then
 		return 0
 	fi
 
@@ -4713,7 +4713,7 @@ run_subtox_recovery_rename() {
 
 		recovery_choice="${recovery_choice//[[:space:]]/}"
 
-		if is_factory_exit_token "$recovery_choice"; then
+		if is_exit_token "$recovery_choice"; then
 			return 0
 		fi
 
@@ -4861,7 +4861,7 @@ run_subtox_rename_menu() {
 
 		rename_choice="${rename_choice//[[:space:]]/}"
 
-		if is_factory_exit_token "$rename_choice"; then
+		if is_exit_token "$rename_choice"; then
 			return 0
 		fi
 
@@ -4943,7 +4943,7 @@ run_subtox_csv_menu() {
 
 		csv_choice="${csv_choice//[[:space:]]/}"
 
-		if is_factory_exit_token "$csv_choice"; then
+		if is_exit_token "$csv_choice"; then
 			return 0
 		fi
 
@@ -4981,19 +4981,139 @@ run_subtox_csv_menu() {
 # - So the menu structure reflects the intended workflow honestly
 # - So future-me has a clear landing zone for the real builder
 # =========================
+# =========================
+# #MARKER: REBUILD EPISODES.CSV FROM KNOWN GOOD FILENAMES
+# =========================
+# PURPOSE:
+# - Scan Current Folder For Known-Good Filenames
+# - Extract:
+#     SxxExx
+#     Show Prefix
+#     Detox Title
+#     Raw Title (Spaces Version)
+#     Full Filename (No Extension)
+# - Write Full-Authority episodes.csv
+#
+# OUTPUT FORMAT:
+# episode_code,show_prefix,raw_title,detox_title,full_filename_detox
+#
+# IMPORTANT:
+# - DOES NOT modify files
+# - ONLY builds CSV authority from already-correct filenames
+# - Uses The Full Factory Extension Set, Including LRV
+# =========================
 run_build_episodes_from_good_filenames() {
+	local outfile="episodes.csv"
+	local tmpfile="episodes.tmp"
+	local count=0
+
+	local f stem
+	local EP_CODE prefix rest detox_title raw_title full_name
+
+	# --------------------------------------------------
+	# Supported Video Extensions (Factory Standard)
+	# --------------------------------------------------
+	local -a exts=(LRV mkv mp4 avi mov mpg mpeg ts m4v ogv flv 3gp divx webm wmv xvid)
+
 	clear
 	echo -e "${CYAN}================================================${NC}"
 	echo -e "${CYAN}   REBUILD EPISODES.CSV FROM GOOD FILENAMES     ${NC}"
 	echo -e "${CYAN}================================================${NC}"
 	echo
-	echo -e "${YELLOW} = = > This Is The Planned Reverse Builder.${NC}"
-	echo -e "${CYAN} = = > Goal: Scan Known Good Filenames In This Folder${NC}"
-	echo -e "${CYAN} = = > And Rebuild / Refresh episodes.csv From Them.${NC}"
+
+	if ! ask_yes_no " = = > Scan Current Folder And Rebuild CSV? (y/n or 1/2): "; then
+		return 0
+	fi
+
 	echo
-	echo -e "${YELLOW} = = > Writer Logic Not Implemented Yet.${NC}"
-	echo -e "${CYAN} = = > Manual Build / Append Mode Is Ready Now.${NC}"
+	echo -e "${CYAN} = = > Scanning Files...${NC}"
+
+	: > "$tmpfile"
+
+	# ========================================================
+	# CASE-INSENSITIVE EXTENSION MATCH
+	# ========================================================
+	# WHY:
+	# - Factory sees mixed real-world extensions
+	# - LRV especially may appear uppercase
+	# - nocaseglob lets one list cover both .LRV and .lrv
+	# ========================================================
+	shopt -s nullglob nocaseglob
+
+	for ext in "${exts[@]}"; do
+		for f in *."$ext"; do
+			[[ -f "$f" ]] || continue
+
+			stem="${f%.*}"
+
+			# --------------------------------------------------
+			# Extract SxxExx
+			# --------------------------------------------------
+			EP_CODE="$(echo "$stem" | grep -oiP 'S\d{2}E\d{2}' | tr '[:lower:]' '[:upper:]' || true)"
+
+			if [[ -z "$EP_CODE" ]]; then
+				continue
+			fi
+
+			# --------------------------------------------------
+			# Split Around Episode Code
+			# --------------------------------------------------
+			prefix="${stem%%${EP_CODE}*}"
+			prefix="${prefix%_}"
+
+			rest="${stem#*${EP_CODE}_}"
+
+			# --------------------------------------------------
+			# Defensive Skip:
+			# If there is no title segment after SxxExx, do not
+			# write a broken authority row.
+			# --------------------------------------------------
+			[[ -n "$rest" ]] || continue
+
+			# --------------------------------------------------
+			# Title Parts
+			# --------------------------------------------------
+			detox_title="$rest"
+			raw_title="${detox_title//_/ }"
+
+			full_name="$stem"
+
+			# --------------------------------------------------
+			# Write Row
+			# --------------------------------------------------
+			printf '%s,%s,%s,%s,%s\n' \
+				"$EP_CODE" \
+				"$prefix" \
+				"$raw_title" \
+				"$detox_title" \
+				"$full_name" >> "$tmpfile"
+
+			((count+=1))
+		done
+	done
+
+	shopt -u nullglob nocaseglob
+
+	if [[ $count -eq 0 ]]; then
+		echo
+		echo -e "${REB} = = > No Valid SxxExx Files Found.${NC}"
+		rm -f -- "$tmpfile"
+		pause
+		return 0
+	fi
+
+	# --------------------------------------------------
+	# Sort And Deduplicate
+	# --------------------------------------------------
+	sort -u "$tmpfile" > "$outfile"
+	rm -f -- "$tmpfile"
+
 	echo
+	echo -e "${GR} = = > CSV Rebuild Complete.${NC}"
+	echo -e "${CYAN} = = > Rows Written: ${NC}$count"
+	echo -e "${CYAN} = = > Output File: ${NC}$outfile"
+	echo
+
 	pause
 	return 0
 }
@@ -5738,7 +5858,7 @@ cleanup_show_status() {
 			return 0
 		fi
 
-		if is_factory_exit_token "$(read -r reply; echo "$reply")"; then
+		if is_exit_token "$(read -r reply; echo "$reply")"; then
 			echo -e "${YELLOW} = = > Cancelled.${NC}"
 			echo
 			return 0
@@ -5869,7 +5989,7 @@ cleanup_detection_maps() {
 	read -r reply
 	reply="${reply//[[:space:]]/}"
 
-	if is_factory_exit_token "$reply"; then
+	if is_exit_token "$reply"; then
 		echo -e "${YELLOW} = = > Cancelled.${NC}"
 		echo
 		return 0
@@ -6266,7 +6386,7 @@ cleanup_handle_OEM_material() {
 	# ========================================================
 	# TEN-KEY EXIT HOOK
 	# ========================================================
-	if is_factory_exit_token "$reply"; then
+	if is_exit_token "$reply"; then
 		echo -e "${YELLOW} = = > OEM Finalize Choice Cancelled.${NC}"
 		echo
 		return 1
@@ -6466,7 +6586,7 @@ cleanup_finalize_sutured_replacements() {
 	# ========================================================
 	# TEN-KEY EXIT HOOK
 	# ========================================================
-	if is_factory_exit_token "$reply"; then
+	if is_exit_token "$reply"; then
 		return 0
 	fi
 
@@ -6583,7 +6703,7 @@ cleanup_finalize_sutured_replacements() {
         # ========================================================
         # TEN-KEY EXIT HOOK
         # ========================================================
-        if is_factory_exit_token "$cleanup_choice"; then
+        if is_exit_token "$cleanup_choice"; then
     	    return 0
         fi
 
@@ -7037,7 +7157,7 @@ inspect_run_keyframe_probe() {
 			# ========================================================
 			# TEN-KEY EXIT HOOK
 			# ========================================================
-			if is_factory_exit_token "$pick"; then
+			if is_exit_token "$pick"; then
 				return 0
 			fi
 
@@ -7099,7 +7219,7 @@ run_inspect() {
         # ========================================================
         # TEN-KEY EXIT HOOK
         # ========================================================
-        if is_factory_exit_token "$inspect_choice"; then
+        if is_exit_token "$inspect_choice"; then
     	    return 0
         fi
 
@@ -7370,7 +7490,7 @@ prepare_set_rekey_preference() {
     # ========================================================
     # TEN-KEY EXIT HOOK
     # ========================================================
-    if is_factory_exit_token "$pref_choice"; then
+    if is_exit_token "$pref_choice"; then
     	return 0
     fi
 
@@ -7500,7 +7620,7 @@ run_prepare_sources() {
         # ========================================================
         # TEN-KEY EXIT HOOK
         # ========================================================
-        if is_factory_exit_token "$prep_choice"; then
+        if is_exit_token "$prep_choice"; then
     	    return 0
         fi
 
@@ -7563,7 +7683,7 @@ run_title_subtitle_menu() {
         # ========================================================
         # TEN-KEY EXIT HOOK
         # ========================================================
-        if is_factory_exit_token "$ts_choice"; then
+        if is_exit_token "$ts_choice"; then
     	    return 0
         fi
 
@@ -7614,7 +7734,7 @@ run_subtitlez_menu() {
         # ========================================================
         # TEN-KEY EXIT HOOK
         # ========================================================
-        if is_factory_exit_token "$subtitle_choice"; then
+        if is_exit_token "$subtitle_choice"; then
     	    return 0
         fi
 
@@ -7668,7 +7788,7 @@ run_title_playback_menu() {
         # ========================================================
         # TEN-KEY EXIT HOOK
         # ========================================================
-        if is_factory_exit_token "$title_choice"; then
+        if is_exit_token "$title_choice"; then
     	    return 0
         fi
 
@@ -7780,7 +7900,7 @@ run_gapman_menu() {
         # ========================================================
         # TEN-KEY EXIT HOOK
         # ========================================================
-        if is_factory_exit_token "$gapman_choice"; then
+        if is_exit_token "$gapman_choice"; then
     	    return 0
         fi
 
@@ -8135,7 +8255,7 @@ run_one_file_normalize_to_mkv_tool() {
 			# ========================================================
 			# TEN-KEY EXIT HOOK
 			# ========================================================
-			if is_factory_exit_token "$pick"; then
+			if is_exit_token "$pick"; then
 				return 0
 			fi
 
@@ -8193,7 +8313,7 @@ run_clip_join_triage_menu() {
 		# ========================================================
 		# TEN-KEY EXIT HOOK
 		# ========================================================
-		if is_factory_exit_token "$triage_choice"; then
+		if is_exit_token "$triage_choice"; then
 			return 0
 		fi
 
@@ -8272,7 +8392,7 @@ run_utility_menu() {
 		read -r util_choice
 		util_choice="${util_choice//[[:space:]]/}"
 
-		if is_factory_exit_token "$util_choice"; then
+		if is_exit_token "$util_choice"; then
 			return 0
 		fi
 
@@ -8647,7 +8767,7 @@ run_keyframe_suitability_check() {
 	echo -e "${YELLOW} = = > Select File Number (or 0 to cancel): ${NC}"
 	read -r choice
 
-	if is_factory_exit_token "$choice"; then
+	if is_exit_token "$choice"; then
 		echo
 		return 0
 	fi
@@ -8908,7 +9028,7 @@ create_template() {
             # ========================================================
             # TEN-KEY EXIT HOOK
             # ========================================================
-            if is_factory_exit_token "$pick"; then
+            if is_exit_token "$pick"; then
             	return 0
             fi
 
@@ -9479,7 +9599,7 @@ run_custom_cut() {
             # ========================================================
             # TEN-KEY EXIT HOOK
             # ========================================================
-            if is_factory_exit_token "$pick"; then
+            if is_exit_token "$pick"; then
                 echo -e "${YELLOW} = = > Custom Cut Cancelled.${NC}"
                 pause
                 return 0
@@ -10322,27 +10442,27 @@ echo -e "${MAGENTA}   GAPMAN v2 :: Normalized Pipeline = = = =     ${NC}"
 echo -e "${MAGENTA}================================================${NC}"
 echo
 
-echo -e "${YELLOW} = = > Map CSV File? (Default: ${DEFAULT_MAP}): ${NC}"
+echo -ne "${YELLOW} = = > Map CSV File? (Default: ${DEFAULT_MAP}): ${NC}"
 read -r MAP_FILE
 MAP_FILE=${MAP_FILE:-$DEFAULT_MAP}
 
-echo -e "${YELLOW} = = > Global offset seconds to apply to intro START (+/-) (Default: ${DEFAULT_GLOBAL_OFFSET}): ${NC}"
+echo -ne "${YELLOW} = = > Global offset seconds to apply to intro START (+/-) (Default: ${DEFAULT_GLOBAL_OFFSET}): ${NC}"
 read -r GLOBAL_OFFSET
 GLOBAL_OFFSET=${GLOBAL_OFFSET:-$DEFAULT_GLOBAL_OFFSET}
 
-echo -e "${YELLOW} = = > Pad intro START seconds (+/-) After Map/Manual (Default: ${DEFAULT_PAD_START}): ${NC}"
+echo -ne "${YELLOW} = = > Pad intro START seconds (+/-) After Map/Manual (Default: ${DEFAULT_PAD_START}): ${NC}"
 read -r PAD_START
 PAD_START=${PAD_START:-$DEFAULT_PAD_START}
 
-echo -e "${YELLOW} = = > Pad intro END seconds (+/-) After Map/Manual (Default: ${DEFAULT_PAD_END}): ${NC}"
+echo -ne "${YELLOW} = = > Pad intro END seconds (+/-) After Map/Manual (Default: ${DEFAULT_PAD_END}): ${NC}"
 read -r PAD_END
 PAD_END=${PAD_END:-$DEFAULT_PAD_END}
 
-echo -e "${YELLOW} = = > Global PRE-trim seconds (Remove From Beginning) (Default: ${DEFAULT_PRE_TRIM}): ${NC}"
+echo -ne "${YELLOW} = = > Global PRE-trim seconds (Remove From Beginning) (Default: ${DEFAULT_PRE_TRIM}): ${NC}"
 read -r PRE_TRIM
 PRE_TRIM=${PRE_TRIM:-$DEFAULT_PRE_TRIM}
 
-echo -e "${YELLOW} = = > Global POST-trim seconds (Remove From End) (Default: ${DEFAULT_POST_TRIM}): ${NC}"
+echo -ne "${YELLOW} = = > Global POST-trim seconds (Remove From End) (Default: ${DEFAULT_POST_TRIM}): ${NC}"
 read -r POST_TRIM
 POST_TRIM=${POST_TRIM:-$DEFAULT_POST_TRIM}
 
@@ -10354,7 +10474,8 @@ POST_TRIM="$(num_norm "$POST_TRIM")"
 
 echo
 echo -e "${CYAN} = = > Title Bar Repair ---${NC}"
-echo -e "${YELLOW} = = > Start Title At Which Underscore Segment? (1-based, Default: ${DEFAULT_TITLE_SEGMENT}): ${NC}"
+
+echo -ne "${YELLOW} = = > Start Title At Which Underscore Segment? (1-based, Default: ${DEFAULT_TITLE_SEGMENT}): ${NC}"
 read -r TITLE_SEGMENT
 TITLE_SEGMENT=${TITLE_SEGMENT:-$DEFAULT_TITLE_SEGMENT}
 KF_CHECK=${KF_CHECK:-n}
@@ -11023,15 +11144,14 @@ cached_rekey_is_known_bad_for_raw() {
 # - Reuse Existing MODE-Based Detection/File-Processing Backend
 #
 # IMPORTANT:
-# - Modes 2 / 4 / 7 Still Run Through The Legacy Detection Engine Below.
-# - Therefore This Submenu Returns A Special Code (10) After Setting MODE And
-#   Gathering Any Required Prompts, So Main Menu Can Hand Off Cleanly.
+# - CSV naming authority work does NOT belong here anymore.
+# - episodes.csv building now lives under Rename / Detox / CSV Tools.
 #
 # NOTE:
 # - Manual Duration Entry Is Intentionally Hidden For Now.
 # - In Its Current Form It Behaves Like A Bulk All-Files Prompt Loop And Does
 #   Not Earn A Place In The Polished Workflow Menu Yet.
-#
+# =========================
 run_intro_detection_menu() {
     while true; do
         clear
@@ -11043,7 +11163,6 @@ run_intro_detection_menu() {
         echo "     0) Create/Rebuild A Key For Introfind intro_template.mkv"
         echo "     2) Multi Key Perceptual Use intro_template.mkv Find It (pHash detection)"
         echo "     3) Hybrid detection Same As Above With Black Detect FallBack (pHash + Blackdetect)"
-        echo "     5) Build / Append episodes.csv With SxxExx Added For Auto Naming"
         echo "     7) Blackdetect Only"
         echo
         echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
@@ -11056,8 +11175,8 @@ run_intro_detection_menu() {
         # ========================================================
         # TEN-KEY EXIT HOOK
         # ========================================================
-        if is_factory_exit_token "$det_choice"; then
-    	    return 0
+        if is_exit_token "$det_choice"; then
+            return 0
         fi
 
         case "$det_choice" in
@@ -11065,10 +11184,9 @@ run_intro_detection_menu() {
                 prompt_normalize_first_workflow
                 create_template
                 ;;
+
             2)
                 MODE="2"
-
-
 
                 echo -e "${YELLOW} = = > Seconds To Skip Before Starting Scan? (Default ${DEFAULT_SCAN_START}): ${NC}"
                 read -r SCAN_START
@@ -11086,7 +11204,6 @@ run_intro_detection_menu() {
                 read -r STEP_SIZE
                 STEP_SIZE=${STEP_SIZE:-0.5}
 
-
                 echo -e "${YELLOW} = = > Anchor Seconds Comma List? (Default 3,5,7): ${NC}"
                 read -r ANCHOR_SECONDS
                 ANCHOR_SECONDS=${ANCHOR_SECONDS:-3,5,7}
@@ -11095,6 +11212,7 @@ run_intro_detection_menu() {
                 prompt_normalize_first_workflow
                 return 10
                 ;;
+
             3)
                 MODE="4"
 
@@ -11105,7 +11223,6 @@ run_intro_detection_menu() {
                 echo -e "${YELLOW} = = > Max Scan Depth From Start In Seconds? (Default ${DEFAULT_MAX_SCAN}): ${NC}"
                 read -r MAX_SCAN
                 MAX_SCAN=${MAX_SCAN:-$DEFAULT_MAX_SCAN}
-
 
                 echo -e "${YELLOW} = = > Hash Diff Threshold Higher Number Easier Match? (Default ${DEFAULT_HASH_DIFF}): ${NC}"
                 read -r HASH_DIFF
@@ -11131,9 +11248,7 @@ run_intro_detection_menu() {
                 prompt_normalize_first_workflow
                 return 10
                 ;;
-            5)
-                run_build_episodes
-                ;;
+
             7)
                 MODE="7"
 
@@ -11148,9 +11263,11 @@ run_intro_detection_menu() {
                 echo
                 return 10
                 ;;
+
             [Qq])
                 return 0
                 ;;
+
             *)
                 echo -e "${REB} = = > Invalid.${NC}"
                 pause
