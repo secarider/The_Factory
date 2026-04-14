@@ -554,7 +554,7 @@ REKEY_GROWTH_WARN_PERCENT=25
 REKEY_SHRINK_WARN_PERCENT=15
 TARGET_MAX_GROWTH=10
 TARGET_MAX_SHRINK=5
-REKEY_CRF=22
+REKEY_CRF=24
 
 # - Helpers
 
@@ -810,7 +810,7 @@ rekey_auto_step_crf() {
 
 	# Keep The Search In A Conservative REKEY Window
 	(( next_crf < 18 )) && next_crf=18
-	(( next_crf > 22 )) && next_crf=22
+	(( next_crf > 26 )) && next_crf=26
 
 	printf '%s\n' "$next_crf"
 }
@@ -999,13 +999,13 @@ rekey_choose_batch_execution_mode() {
 	echo -e "${CYAN}            REKEY BATCH EXECUTION MODE SELECT              ${NC}" >&2
 	echo -e "${CYAN}==========================================================${NC}" >&2
 	echo >&2
-	echo -e "${YELLOW}     1) Adaptive Mode   (Rolling Evaluation / Sequential)${NC}" >&2
+	echo -e "${CYAN}     1) Adaptive Mode   (Rolling Evaluation / Sequential)${NC}" >&2
 	echo -e "${YELLOW}     2) Throughput Mode (Concurrency Presets)${NC}" >&2
 	echo >&2
 	echo -e "${YELLOW}     0) Return${NC}" >&2
 	echo >&2
-	echo -e "${CYAN} = = > Adaptive:${NC} Each Finished File Can Influence The Next CRF." >&2
-	echo -e "${CYAN} = = > Throughput:${NC} Fixed Batch CRF, Faster Parallel Processing." >&2
+	echo -e "${CYAN} = = > Adaptive:${NC} ${YELLOW}Each Finished File Can Influence The Next CRF.${NC}" >&2
+	echo -e "${CYAN} = = > Throughput:${NC} ${YELLOW}Fixed Batch CRF, Faster Parallel Processing.${NC}" >&2
 	echo >&2
 
 	echo -ne "${YELLOW} = = > Choose Execution Mode [1-2 | 0=return]: ${NC}" >&2
@@ -9916,9 +9916,8 @@ run_with_progress() {
 normalize_cut_friendly_file() {
 	local in="$1"
 	local rekey_crf="${2:-$REKEY_CRF}"
-	local out fps fps_calc
-
-	out="REKEY_$(basename "${in%.*}").mkv"
+	local out="${3:-REKEY_$(basename "${in%.*}").mkv}"
+	local fps fps_calc
 
 	# Skip only if existing rebuilt file is actually valid/readable.
 	if is_valid_video_file "$out"; then
@@ -9929,7 +9928,7 @@ normalize_cut_friendly_file() {
 	# If a stale/corrupt partial file exists, remove it before rebuilding.
 	if [[ -f "$out" ]]; then
 		echo -e "${YELLOW} = = > Existing Rebuilt File Is Invalid. Removing Stale File:${NC} ${GREEN}$out${NC}" >&2
-		rm -f "$out"
+		rm -f -- "$out"
 	fi
 
 	# Read source frame rate so GOP stays approximately 1 second
@@ -9958,7 +9957,7 @@ normalize_cut_friendly_file() {
 		return 0
 	else
 		echo -e "${REB} = = > Normalize FAILED:${NC} ${GREEN}$in${NC}" >&2
-		rm -f "$out"
+		rm -f -- "$out"
 		return 1
 	fi
 }
