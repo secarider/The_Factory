@@ -9922,13 +9922,13 @@ normalize_cut_friendly_file() {
 
 	# Skip only if existing rebuilt file is actually valid/readable.
 	if is_valid_video_file "$out"; then
-		echo -e "${YELLOW} = = > Skip Existing Rebuilt File:${NC} ${GREEN}$out${NC}"
+		echo -e "${YELLOW} = = > Skip Existing Rebuilt File:${NC} ${GREEN}$out${NC}" >&2
 		return 0
 	fi
 
 	# If a stale/corrupt partial file exists, remove it before rebuilding.
 	if [[ -f "$out" ]]; then
-		echo -e "${YELLOW} = = > Existing Rebuilt File Is Invalid. Removing Stale File:${NC} ${GREEN}$out${NC}"
+		echo -e "${YELLOW} = = > Existing Rebuilt File Is Invalid. Removing Stale File:${NC} ${GREEN}$out${NC}" >&2
 		rm -f "$out"
 	fi
 
@@ -9940,11 +9940,11 @@ normalize_cut_friendly_file() {
 	fps_calc=$(echo "$fps" | awk -F'/' '{if ($2>0) printf "%.0f", $1/$2}')
 	[[ -z "$fps_calc" ]] && fps_calc=24
 
-	echo -e "${CYAN} = = > Normalizing:${NC} ${GREEN}$in${NC}"
-	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
-	echo -e "${CYAN} = = > GOP target:${NC} ${YELLOW}~1 second (${fps_calc} frames)${NC}"
-	echo -e "${CYAN} = = > REKEY CRF:${NC} ${YELLOW}$rekey_crf${NC}"
-	echo -e "${CYAN} = = > Audio Policy:${NC} ${GREEN}copy-through${NC}"
+	echo -e "${CYAN} = = > Normalizing:${NC} ${GREEN}$in${NC}" >&2
+	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}" >&2
+	echo -e "${CYAN} = = > GOP target:${NC} ${YELLOW}~1 second (${fps_calc} frames)${NC}" >&2
+	echo -e "${CYAN} = = > REKEY CRF:${NC} ${YELLOW}$rekey_crf${NC}" >&2
+	echo -e "${CYAN} = = > Audio Policy:${NC} ${GREEN}copy-through${NC}" >&2
 
 	if run_with_progress "Batch Normalize: $(basename "$in")" \
 		ffmpeg -hide_banner -loglevel error -nostdin -y -i "$in" \
@@ -9954,10 +9954,10 @@ normalize_cut_friendly_file() {
 			-c:a copy \
 			"$out"; then
 
-		echo -e "${GR} = = > Normalized OK:${NC} ${GREEN}$out${NC}"
+		echo -e "${GR} = = > Normalized OK:${NC} ${GREEN}$out${NC}" >&2
 		return 0
 	else
-		echo -e "${REB} = = > Normalize FAILED:${NC} ${GREEN}$in${NC}"
+		echo -e "${REB} = = > Normalize FAILED:${NC} ${GREEN}$in${NC}" >&2
 		rm -f "$out"
 		return 1
 	fi
