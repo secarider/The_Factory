@@ -640,6 +640,66 @@ ask_yes_no() {
 }
 
 # =========================
+# #MARKER: GENERIC PROMPT READ HELPER
+# =========================
+# PURPOSE:
+# - Standardize ALL user input prompts across THE_FACTORY ecosystem
+# - Enforce:
+#     - echo -ne style
+#     - color control
+#     - consistent prompt formatting
+#
+# DESIGN:
+# - Prints prompt using echo -ne (no newline)
+# - Reads input safely with read -r
+# - Assigns value to caller variable by name
+#
+# USAGE:
+#   prompt_read " = = > Enter Value: " var_name
+#
+# NOTES:
+# - Caller controls prompt text (including spacing and prefix)
+# - Color is applied centrally here for consistency
+# =========================
+prompt_read() {
+	local prompt="$1"
+	local __var_name="$2"
+	local __input
+
+	echo -ne "${YELLOW}${prompt}${NC}"
+	read -r __input
+
+	printf -v "$__var_name" '%s' "$__input"
+}
+
+# =========================
+# #MARKER: MENU CHOICE HELPER
+# =========================
+# PURPOSE:
+# - Standardize menu selection input
+# - Normalize spacing
+# - Support ten-key exit
+# - Avoid repeated parsing logic everywhere
+#
+# USAGE:
+#   prompt_menu_choice " = = > Choose [1-3 | 0=return]: " choice
+#
+prompt_menu_choice() {
+	local prompt="$1"
+	local __var_name="$2"
+	local __input
+
+	echo -ne "${YELLOW}${prompt}${NC}"
+	read -r __input
+
+	# normalize: strip whitespace + lowercase
+	__input="${__input//[[:space:]]/}"
+	__input="${__input,,}"
+
+	printf -v "$__var_name" '%s' "$__input"
+}
+
+# =========================
 # #MARKER: INTRO_MAP LAZY CREATE
 # =========================
 # WHY:
@@ -826,126 +886,504 @@ rekey_process_with_rolling_crf() {
 	local src="$1"
 	local starting_crf="$2"
 
-	local attempt_count=0
-	local current_crf="$starting_crf"
-	local direction_lock=""
-	local next_crf
-
 	local orig_size
-	local out
-	local new_size
-	local delta_percent
-	local bucket
+	local try1_crf try2_crf
+	local out1 out2
+	local delta1 delta2
+	local bucket1 bucket2
+	local new_size1 new_size2
 
-	local -a tried_crfs=()
-	local -a tried_outs=()
-	local -a tried_sizes=()
-	local -a tried_deltas=()
-	local -a tried_buckets=()
+	orig_size="$(stat -c '%s' -- "$src" 2>/dev/null || printf '0\n')"
+	if [[ ! "$orig_size" =~ ^[0-9]+$ ]] || (( orig_size <= 0 )); then
+		return 1
+	fi
 
-	local best_idx=-1
-	local i
+	try1_crf="$starting_crf"
+	out1="REKEY_$(basename "${src%.*}").mkv"
 
-	orig_size=$(stat -c%s "$src" 2>/dev/null || printf '0\n')
-	[[ "$orig_size" -gt 0 ]] || return 1
+	rm -f -- "$out1"
+	if ! normalize_cut_friendly_file "$src" "$try1_crf"; then
+		rm -f -- "$out1"
+		return 1
+	fi
 
-	while (( attempt_count < 2 )); do
-		out="REKEY_$(basename "${src%.*}").mkv"
+	new_size1="$(stat -c '%s' -- "$out1" 2>/dev/null || printf '0\n')"
+	delta1="$(rekey_percent_change "$orig_size" "$new_size1")"
+	bucket1="$(rekey_size_sanity_bucket "$delta1" "$TARGET_MAX_GROWTH" "$TARGET_MAX_SHRINK")"
 
-		rm -f -- "$out"
+	if [[ "$bucket1" == "OK" ]]; then
+		printf '%s|%s|%s|%s|%s|%s\n' \
+			"$try1_crf" "$out1" "$bucket1" "$delta1" "$orig_size" "$new_size1"
+		return 0
+	fi
 
-		if ! normalize_cut_friendly_file "$src" "$current_crf"; then
-			rm -f -- "$out"
-			break
+	try2_crf="$(rekey_auto_step_crf "$try1_crf" "$bucket1")"
+
+	# No second try possible -> keep first result
+	if [[ "$try2_crf" == "$try1_crf" ]]; then
+		printf '%s|%s|%s|%s|%s|%s\n' \
+			"$try1_crf" "$out1" "$bucket1" "$delta1" "$orig_size" "$new_size1"
+		return 0
+	fi
+
+	out2="${out1%.mkv}.try2.mkv"
+	rm -f -- "$out2"
+
+	if ! normalize_cut_friendly_file "$src" "$try2_crf" "$out2"; then
+		rm -f -- "$out2"
+		printf '%s|%s|%s|%s|%s|%s\n' \
+			"$try1_crf" "$out1" "$bucket1" "$delta1" "$orig_size" "$new_size1"
+		return 0
+	fi
+
+	new_size2="$(stat -c '%s' -- "$out2" 2>/dev/null || printf '0\n')"
+	delta2="$(rekey_percent_change "$orig_size" "$new_size2")"
+	bucket2="$(rekey_size_sanity_bucket "$delta2" "$TARGET_MAX_GROWTH" "$TARGET_MAX_SHRINK")"
+
+	# Prefer clean landing
+	if [[ "$bucket2" == "OK" && "$bucket1" != "OK" ]]; then
+		rm -f -- "$out1"
+		mv -f -- "$out2" "$out1"
+		printf '%s|%s|%s|%s|%s|%s\n' \
+			"$try2_crf" "$out1" "$bucket2" "$delta2" "$orig_size" "$new_size2"
+		return 0
+	fi
+
+	if [[ "$bucket1" == "OK" && "$bucket2" != "OK" ]]; then
+		rm -f -- "$out2"
+		printf '%s|%s|%s|%s|%s|%s\n' \
+			"$try1_crf" "$out1" "$bucket1" "$delta1" "$orig_size" "$new_size1"
+		return 0
+	fi
+
+	# If both are warned, bias toward the larger/safer result
+	if (( new_size2 > new_size1 )); then
+		rm -f -- "$out1"
+		mv -f -- "$out2" "$out1"
+		printf '%s|%s|%s|%s|%s|%s\n' \
+			"$try2_crf" "$out1" "$bucket2" "$delta2" "$orig_size" "$new_size2"
+		return 0
+	fi
+
+	rm -f -- "$out2"
+	printf '%s|%s|%s|%s|%s|%s\n' \
+		"$try1_crf" "$out1" "$bucket1" "$delta1" "$orig_size" "$new_size1"
+	return 0
+}
+
+
+
+# =========================
+# #MARKER: REKEY BATCH MODE SELECTOR
+# =========================
+# PURPOSE:
+# - Let Batch Normalizer Run In One Of Two Honest Modes:
+#     1) Adaptive Mode   -> sequential rolling evaluation
+#     2) Throughput Mode -> concurrency presets
+#
+# DESIGN INTENT:
+# - Adaptive Mode is for "learn as you go" behavior.
+# - Throughput Mode is for "go fast with a fixed batch CRF" behavior.
+# - Do NOT mix cross-file rolling CRF with concurrent execution.
+#
+# OUTPUT:
+# - Prints ADAPTIVE or THROUGHPUT
+# - Returns 0 on a real selection
+# - Returns 1 on cancel / return
+# =========================
+rekey_choose_batch_execution_mode() {
+	local mode_choice
+
+	clear >&2
+	echo -e "${CYAN}==========================================================${NC}" >&2
+	echo -e "${CYAN}            REKEY BATCH EXECUTION MODE SELECT              ${NC}" >&2
+	echo -e "${CYAN}==========================================================${NC}" >&2
+	echo >&2
+	echo -e "${YELLOW}     1) Adaptive Mode   (Rolling Evaluation / Sequential)${NC}" >&2
+	echo -e "${YELLOW}     2) Throughput Mode (Concurrency Presets)${NC}" >&2
+	echo >&2
+	echo -e "${YELLOW}     0) Return${NC}" >&2
+	echo >&2
+	echo -e "${CYAN} = = > Adaptive:${NC} Each Finished File Can Influence The Next CRF." >&2
+	echo -e "${CYAN} = = > Throughput:${NC} Fixed Batch CRF, Faster Parallel Processing." >&2
+	echo >&2
+
+	echo -ne "${YELLOW} = = > Choose Execution Mode [1-2 | 0=return]: ${NC}" >&2
+	read -r mode_choice # < dont change this one
+
+	if is_exit_token "$mode_choice"; then
+		return 1
+	fi
+
+	case "$mode_choice" in
+		1)
+			printf '%s\n' "ADAPTIVE"
+			return 0
+			;;
+		2)
+			printf '%s\n' "THROUGHPUT"
+			return 0
+			;;
+		*)
+			echo -e "${REB} = = > Invalid Execution Mode.${NC}" >&2
+			return 1
+			;;
+	esac
+}
+
+# =========================
+# #MARKER: REKEY THROUGHPUT LOAD PRESET SELECTOR
+# =========================
+# PURPOSE:
+# - Restore The Old Light / Medium / Thrash Intent
+# - But ONLY For Throughput Mode Where Concurrency Actually Makes Sense
+#
+# OUTPUT:
+# - Prints max_jobs as an integer
+# - Returns 0 on success
+# - Returns 1 on cancel / return
+#
+# RULE:
+# - Light  = 1
+# - Medium = 3
+# - Thrash = user-chosen positive integer
+# =========================
+rekey_choose_throughput_job_count() {
+	local load_choice
+	local custom_jobs
+	local cpu_count
+
+	cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1\n')"
+	[[ -n "$cpu_count" ]] || cpu_count=1
+	(( cpu_count < 1 )) && cpu_count=1
+
+	echo
+	echo -e "${CYAN}==========================================================${NC}"
+	echo -e "${CYAN}          THROUGHPUT MODE :: CONCURRENCY PRESETS           ${NC}"
+	echo -e "${CYAN}==========================================================${NC}"
+	echo
+	echo -e "${YELLOW}     1) Light   (1 Job)${NC}"
+	echo -e "${YELLOW}     2) Medium  (3 Jobs)${NC}"
+	echo -e "${YELLOW}     3) Thrash  (Max Parallel / Custom)${NC}"
+	echo
+	echo -e "${YELLOW}     0) Return${NC}"
+	echo
+	echo -e "${CYAN} = = > Host CPU Threads Seen:${NC} ${YELLOW}$cpu_count${NC}"
+	echo
+
+	echo -e "${YELLOW}"
+	read -r -p " = = > Choose Load [1-3 | 0=return]: " load_choice
+	echo -e "${NC}"
+
+	if is_exit_token "$load_choice"; then
+		return 1
+	fi
+
+	case "$load_choice" in
+		1)
+			printf '%s\n' "1"
+			return 0
+			;;
+		2)
+			printf '%s\n' "3"
+			return 0
+			;;
+		3)
+			echo -e "${YELLOW}"
+			read -r -p " = = > Enter Max Parallel Jobs [Default ${cpu_count}]: " custom_jobs
+			echo -e "${NC}"
+
+			custom_jobs="${custom_jobs:-$cpu_count}"
+
+			if [[ ! "$custom_jobs" =~ ^[0-9]+$ ]] || (( custom_jobs < 1 )); then
+				echo -e "${REB} = = > Invalid Job Count.${NC}"
+				return 1
+			fi
+
+			printf '%s\n' "$custom_jobs"
+			return 0
+			;;
+		*)
+			echo -e "${REB} = = > Invalid Load Selection.${NC}"
+			return 1
+			;;
+	esac
+}
+
+# =========================
+# #MARKER: REKEY ADAPTIVE MODE RUNNER
+# =========================
+# PURPOSE:
+# - Hold The Current Rolling-CRF Sequential Behavior In One Honest Helper
+#
+# DESIGN:
+# - Start From REKEY_CRF
+# - Process Files In Order
+# - Let Each Winning File Adjust The Next Starting CRF
+# - Keep Existing Skip / Report / Summary Behavior
+#
+# INPUT:
+# - One Or More Source Files As Positional Arguments
+#
+# RETURNS:
+# - 0 after summary / registration pass
+# =========================
+run_batch_normalizer_adaptive() {
+	local -a norm_sources=("$@")
+	local total idx f
+	local success_count=0
+	local fail_count=0
+	local skip_count=0
+	local rolling_crf
+	local result
+	local chosen_crf chosen_out chosen_bucket chosen_delta
+	local chosen_orig_size chosen_new_size
+
+	total="${#norm_sources[@]}"
+	rolling_crf="$REKEY_CRF"
+
+	echo
+	echo -e "${CYAN}==========================================================${NC}"
+	echo -e "${CYAN}        ADAPTIVE MODE :: ROLLING EVALUATION ACTIVE        ${NC}"
+	echo -e "${CYAN}==========================================================${NC}"
+	echo -e "${CYAN} = = > Mode:${NC} Sequential"
+	echo -e "${CYAN} = = > Starting CRF:${NC} ${YELLOW}$rolling_crf${NC}"
+	echo -e "${CYAN} = = > Files In Scope:${NC} ${YELLOW}$total${NC}"
+	echo -e "${CYAN} = = > Cross-File Learning:${NC} ${GREEN}Enabled${NC}"
+	echo
+
+	for ((idx=0; idx<total; idx++)); do
+		f="${norm_sources[$idx]}"
+
+		echo -e "${CYAN}==========================================================${NC}"
+		echo -e "${CYAN} = = > File $((idx+1)) Of $total${NC}"
+		echo -e "${CYAN} = = > Source:${NC} ${GREEN}$f${NC}"
+		echo -e "${CYAN} = = > Starting Rolling CRF:${NC} ${YELLOW}$rolling_crf${NC}"
+		echo -e "${CYAN}==========================================================${NC}"
+
+		if is_valid_video_file "REKEY_$(basename "${f%.*}").mkv"; then
+			echo -e "${YELLOW} = = > Skip Existing Rebuilt File:${NC} ${GREEN}REKEY_$(basename "${f%.*}").mkv${NC}"
+			echo
+			((skip_count+=1)) || :
+			continue
 		fi
 
-		[[ -f "$out" ]] || break
+		if result="$(rekey_process_with_rolling_crf "$f" "$rolling_crf")"; then
+			chosen_crf="${result%%|*}"
+			result="${result#*|}"
 
-		new_size=$(stat -c%s "$out" 2>/dev/null || printf '0\n')
-		[[ "$new_size" -gt 0 ]] || break
+			chosen_out="${result%%|*}"
+			result="${result#*|}"
 
-		delta_percent="$(rekey_percent_change "$orig_size" "$new_size")"
-		bucket="$(rekey_size_sanity_bucket "$delta_percent")"
+			chosen_bucket="${result%%|*}"
+			result="${result#*|}"
 
-		tried_crfs+=("$current_crf")
-		tried_outs+=("$out")
-		tried_sizes+=("$new_size")
-		tried_deltas+=("$delta_percent")
-		tried_buckets+=("$bucket")
+			chosen_delta="${result%%|*}"
+			result="${result#*|}"
 
-		if [[ "$bucket" == "OK" ]]; then
-			best_idx=$(( ${#tried_outs[@]} - 1 ))
-			break
+			chosen_orig_size="${result%%|*}"
+			chosen_new_size="${result##*|}"
+
+			rekey_print_size_sanity_report \
+				"$f" \
+				"$chosen_out" \
+				"$chosen_orig_size" \
+				"$chosen_new_size" \
+				"$chosen_delta" \
+				"$chosen_bucket"
+
+			echo -e "${GREEN} = = > Created:${NC} ${CYAN}$chosen_out${NC}"
+			echo -e "${CYAN} = = > Winning CRF:${NC} ${YELLOW}$chosen_crf${NC}"
+
+			rolling_crf="$chosen_crf"
+			echo -e "${CYAN} = = > Rolling CRF Updated To:${NC} ${YELLOW}$rolling_crf${NC}"
+			echo
+
+			((success_count+=1)) || :
+		else
+			echo -e "${REB} = = > Failed:${NC} ${GREEN}$f${NC}"
+			echo -e "${YELLOW} = = > Rolling CRF Unchanged:${NC} ${YELLOW}$rolling_crf${NC}"
+			echo
+			((fail_count+=1)) || :
 		fi
-
-		if [[ -z "$direction_lock" ]]; then
-			case "$bucket" in
-				GROWTH_WARN) direction_lock="grow" ;;
-				SHRINK_WARN) direction_lock="shrink" ;;
-			esac
-		fi
-
-		next_crf="$(rekey_auto_step_crf "$current_crf" "$bucket")"
-
-		if [[ "$next_crf" == "$current_crf" ]]; then
-			break
-		fi
-
-		if [[ " ${tried_crfs[*]} " == *" $next_crf "* ]]; then
-			break
-		fi
-
-		if [[ "$direction_lock" == "grow" && "$next_crf" -lt "$current_crf" ]]; then
-			break
-		fi
-		if [[ "$direction_lock" == "shrink" && "$next_crf" -gt "$current_crf" ]]; then
-			break
-		fi
-
-		mv -f -- "$out" "${out%.mkv}.try${attempt_count}.mkv"
-		tried_outs[$(( ${#tried_outs[@]} - 1 ))]="${out%.mkv}.try${attempt_count}.mkv"
-
-		current_crf="$next_crf"
-		((attempt_count+=1)) || :
 	done
 
-	if (( best_idx < 0 )); then
-		for ((i=0; i<${#tried_outs[@]}; i++)); do
-			if [[ "${tried_buckets[$i]}" == "OK" ]]; then
-				best_idx="$i"
-				break
-			fi
-		done
-	fi
+	echo
+	echo -e "${CYAN}==========================================================${NC}"
+	echo -e "${GREEN} = = > Adaptive Batch Normalization Pass Complete.${NC}"
+	echo -e "${CYAN} = = > Successful New REKEY Files:${NC} $success_count"
+	echo -e "${CYAN} = = > Skipped Existing REKEY Files:${NC} $skip_count"
+	echo -e "${CYAN} = = > Failed Normalizations:${NC} $fail_count"
+	echo -e "${CYAN} = = > Final Rolling CRF:${NC} ${YELLOW}$rolling_crf${NC}"
+	echo -e "${CYAN} = = > Outputs:${NC} REKEY_*.mkv"
+	echo -e "${CYAN}==========================================================${NC}"
 
-	if (( best_idx < 0 )); then
-		best_idx=0
-		for ((i=1; i<${#tried_outs[@]}; i++)); do
-			if (( ${tried_sizes[$i]} > ${tried_sizes[$best_idx]} )); then
-				best_idx="$i"
-			fi
-		done
-	fi
+	register_new_rekeys_after_batch_normalizer
+	pause
+	return 0
+}
 
-	(( best_idx >= 0 )) || return 1
-	[[ -f "${tried_outs[$best_idx]}" ]] || return 1
+# =========================
+# #MARKER: REKEY THROUGHPUT MODE WORKER
+# =========================
+# PURPOSE:
+# - Normalize One File In Throughput Mode With A Fixed Batch CRF
+# - Report Result Into A Small Temp Status File So The Parent Can Tally It
+#
+# INPUT:
+# - $1 = source file
+# - $2 = batch_rekey_crf
+# - $3 = status_dir
+# - $4 = slot_id
+#
+# STATUS FILE FORMAT:
+# - status_dir/slot_id.status
+# - OK|source|output
+# - SKIP|source|output
+# - FAIL|source|
+# =========================
+run_batch_normalizer_throughput_worker() {
+	local src="$1"
+	local batch_rekey_crf="$2"
+	local status_dir="$3"
+	local slot_id="$4"
+
+	local out
+	local status_file
 
 	out="REKEY_$(basename "${src%.*}").mkv"
-	rm -f -- "$out"
-	mv -f -- "${tried_outs[$best_idx]}" "$out"
+	status_file="${status_dir}/${slot_id}.status"
 
-	for ((i=0; i<${#tried_outs[@]}; i++)); do
-		[[ "$i" -eq "$best_idx" ]] && continue
-		rm -f -- "${tried_outs[$i]}"
+	if is_valid_video_file "$out"; then
+		printf '%s|%s|%s\n' "SKIP" "$src" "$out" > "$status_file"
+		return 0
+	fi
+
+	if normalize_cut_friendly_file "$src" "$batch_rekey_crf"; then
+		printf '%s|%s|%s\n' "OK" "$src" "$out" > "$status_file"
+		return 0
+	fi
+
+	printf '%s|%s|\n' "FAIL" "$src" > "$status_file"
+	return 1
+}
+
+# =========================
+# #MARKER: REKEY THROUGHPUT MODE RUNNER
+# =========================
+# PURPOSE:
+# - Restore Concurrency Presets For A Fast Fixed-CRF Batch Pass
+#
+# DESIGN RULES:
+# - Every file starts from the SAME batch CRF
+# - No cross-file rolling updates
+# - Throughput is controlled by max_jobs
+# - Parent tallies results after all workers finish
+#
+# INPUT:
+# - $1 = max_jobs
+# - remaining args = source files
+#
+# RETURNS:
+# - 0 after summary / registration pass
+# =========================
+run_batch_normalizer_throughput() {
+	local max_jobs="$1"
+	shift
+	local -a norm_sources=("$@")
+
+	local total idx f
+	local batch_rekey_crf="$REKEY_CRF"
+	local success_count=0
+	local fail_count=0
+	local skip_count=0
+
+	local status_dir
+	local slot_id=0
+	local running_jobs=0
+	local status_file
+	local line state src out
+
+	status_dir="$(mktemp -d)"
+
+	total="${#norm_sources[@]}"
+
+	echo
+	echo -e "${CYAN}==========================================================${NC}"
+	echo -e "${CYAN}        THROUGHPUT MODE :: FIXED-CRF CONCURRENCY          ${NC}"
+	echo -e "${CYAN}==========================================================${NC}"
+	echo -e "${CYAN} = = > Mode:${NC} Parallel"
+	echo -e "${CYAN} = = > Fixed Batch CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
+	echo -e "${CYAN} = = > Max Parallel Jobs:${NC} ${YELLOW}$max_jobs${NC}"
+	echo -e "${CYAN} = = > Files In Scope:${NC} ${YELLOW}$total${NC}"
+	echo -e "${CYAN} = = > Cross-File Learning:${NC} ${YELLOW}Disabled${NC}"
+	echo
+
+	for ((idx=0; idx<total; idx++)); do
+		f="${norm_sources[$idx]}"
+		slot_id=$((idx + 1))
+
+		echo -e "${CYAN} = = > Queueing File $slot_id Of $total:${NC} ${GREEN}$f${NC}"
+
+		run_batch_normalizer_throughput_worker "$f" "$batch_rekey_crf" "$status_dir" "$slot_id" &
+		((running_jobs+=1)) || :
+
+		while (( running_jobs >= max_jobs )); do
+			wait -n || :
+			((running_jobs-=1)) || :
+		done
 	done
 
-	printf '%s|%s|%s|%s|%s|%s\n' \
-		"${tried_crfs[$best_idx]}" \
-		"$out" \
-		"${tried_buckets[$best_idx]}" \
-		"${tried_deltas[$best_idx]}" \
-		"$orig_size" \
-		"${tried_sizes[$best_idx]}"
+	while (( running_jobs > 0 )); do
+		wait -n || :
+		((running_jobs-=1)) || :
+	done
+
+	for status_file in "$status_dir"/*.status; do
+		[[ -f "$status_file" ]] || continue
+
+		line="$(<"$status_file")"
+		state="${line%%|*}"
+		line="${line#*|}"
+
+		src="${line%%|*}"
+		out="${line#*|}"
+
+		case "$state" in
+			OK)
+				echo -e "${GREEN} = = > Created:${NC} ${CYAN}$out${NC}"
+				((success_count+=1)) || :
+				;;
+			SKIP)
+				echo -e "${YELLOW} = = > Skip Existing Rebuilt File:${NC} ${GREEN}$out${NC}"
+				((skip_count+=1)) || :
+				;;
+			FAIL)
+				echo -e "${REB} = = > Failed:${NC} ${GREEN}$src${NC}"
+				((fail_count+=1)) || :
+				;;
+			*)
+				echo -e "${YE} = = > Unknown Worker Status:${NC} $status_file"
+				((fail_count+=1)) || :
+				;;
+		esac
+	done
+
+	rm -rf -- "$status_dir"
+
+	echo
+	echo -e "${CYAN}==========================================================${NC}"
+	echo -e "${GREEN} = = > Throughput Batch Normalization Pass Complete.${NC}"
+	echo -e "${CYAN} = = > Successful New REKEY Files:${NC} $success_count"
+	echo -e "${CYAN} = = > Skipped Existing REKEY Files:${NC} $skip_count"
+	echo -e "${CYAN} = = > Failed Normalizations:${NC} $fail_count"
+	echo -e "${CYAN} = = > Fixed Batch CRF Used:${NC} ${YELLOW}$batch_rekey_crf${NC}"
+	echo -e "${CYAN} = = > Outputs:${NC} REKEY_*.mkv"
+	echo -e "${CYAN}==========================================================${NC}"
+
+	register_new_rekeys_after_batch_normalizer
+	pause
+	return 0
 }
 
 # =========================
@@ -9139,19 +9577,6 @@ create_template() {
         fi
     fi
 
-    if [[ "$src_verdict" == "RISKY" || "$src_verdict" == "CAUTION" ]]; then
-        echo
-        if ask_yes_no " = = > Source May Be Poor For Precise Cuts. Build Cut-Friendly Rebuilt Source First? (y/n, default: n): "; then
-            rebuilt_src="$(rebuild_cut_friendly_source "$src")"
-            if [[ -n "$rebuilt_src" && -f "$rebuilt_src" ]]; then
-                src="$rebuilt_src"
-                echo -e "${GR} = = > Using Rebuilt Source: $src${NC}"
-            else
-                echo -e "${REB} = = > Rebuild Failed. Continuing With Original Source.${NC}"
-            fi
-        fi
-    fi
-
 	# =========================
 	# #MARKER: TEMPLATE TIME ENTRY CONFIRM LOOP
 	# =========================
@@ -9979,16 +10404,9 @@ restore_OEM_prefix() {
 
 run_batch_normalizer() {
 
-	local load_mode max_jobs custom_jobs load_choice
+	local execution_mode
+	local max_jobs
 	local -a norm_sources
-	local total idx f
-	local success_count=0
-	local fail_count=0
-	local skip_count=0
-	local rolling_crf
-	local result
-	local chosen_crf chosen_out chosen_bucket chosen_delta
-	local chosen_orig_size chosen_new_size
 
 	clear
 	echo -e "${CYAN}==========================================================${NC}"
@@ -10016,13 +10434,12 @@ run_batch_normalizer() {
     echo -e "${CYAN}------------------------------------------------------------------------${NC}"
 	echo
 
-    echo -e "${YELLOW}"
-	if ! ask_yes_no " = = > Continue Into Source Scan? (y/n): "; then
+	if ! ask_yes_no " = = > Continue Into Source Scan? (y/n or 1/2): "; then
 		echo -e "${YELLOW} = = > Batch Normalizer Canceled.${NC}"
 		pause
 		return 0
 	fi
-    echo -e "${NC}"
+	echo
 
 	# =========================
 	# #MARKER: BATCH NORMALIZER TARGET DISCOVERY
@@ -10035,199 +10452,108 @@ run_batch_normalizer() {
 	local -a all_norm_candidates=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
 	shopt -u nullglob nocaseglob
 
-	norm_sources=()
+	local f
 	for f in "${all_norm_candidates[@]}"; do
-		[[ "$f" =~ ^OEM_ ]] && continue
-		[[ "$f" =~ ^REKEY_ ]] && continue
-		[[ "$f" =~ ^(SUTURED_|PILOT_SUTURED_) ]] && continue
-		[[ "$f" =~ ^BARFIX_ ]] && continue
-		[[ "$f" =~ ^intro_template ]] && continue
+		[[ "$f" =~ ^(REKEY_|SUTURED_|BARFIX_|SUBPACKED_|OEM_|PILOT_SUTURED_) ]] && continue
+		[[ "$f" == "intro_template.mkv" ]] && continue
+		[[ "$f" == intro_template_* ]] && continue
 		norm_sources+=("$f")
 	done
 
-	total=${#norm_sources[@]}
-	if [[ "$total" -eq 0 ]]; then
-		echo -e "${RE} = = > No Eligible Source Files Found For Normalization.${NC}"
-		pause
-		return 1
-	fi
-
-	echo
-	echo -e "${CYAN} = = > Eligible Source Files: $total${NC}"
-	for f in "${norm_sources[@]}"; do
-		echo " - $f"
-	done
-	echo
-
-	# =========================
-	# #MARKER: BATCH NORMALIZER LOAD MENU
-	# =========================
-	# WHY:
-	# - Numeric Menu Is Easier And Less Error-Prone Than Typing Words.
-	# - Keep The User Choice Simple And Predictable.
-	#
-	# LOAD TIERS:
-	# 1 = LIGHT   = 1 Concurrent File
-	# 2 = MEDIUM  = 3 Concurrent Files
-	# 3 = THRASH  = User-Chosen Concurrent File Count
-	#
-    echo -e "${YELLOW}"
-	echo -e "${CYAN} = = > Select Load Level:${NC}"
-	echo -e "${GR} = = > 1) Light   (1 File At A Time)${NC}"
-	echo -e "${YE} = = > 2) Medium  (3 Files At A Time)${NC}"
-	echo -e "${REB} = = > 3) Thrash  (Default ALL Or Choose Concurrent File Count)${NC}"
-	echo
-
-    echo -e "${YELLOW} = = > Load Level [1/2/3] (Default: 2): ${NC}"
-    read -r load_choice
-	load_choice=${load_choice:-2}
-
-	case "$load_choice" in
-		1)
-			load_mode="light"
-			max_jobs=1
-			;;
-		2)
-			load_mode="medium"
-			max_jobs=3
-			;;
-		3)
-			load_mode="thrash"
-
-			# =========================
-			# #MARKER: THRASH DEFAULT = ALL FILES
-			# =========================
-			# WHY:
-			# - Thrash Mode Is Intended To Push The Machine As Hard As Possible.
-			# - Default Behavior Should Therefore Use ALL Eligible Files Concurrently.
-			#
-			# DESIGN:
-			# - Total = Number Of Eligible Source Files Already Discovered
-			# - If User Presses Enter, Use Total
-			# - User Can Still Override With A Smaller Number If Desired
-			#
-            echo -e "${YELLOW} = = > Max Concurrent Rebuild Jobs? (Default: ALL = $total):${NC}"
-            read -r custom_jobs
-			custom_jobs=${custom_jobs:-$total}
-
-			if ! [[ "$custom_jobs" =~ ^[0-9]+$ ]] || [[ "$custom_jobs" -lt 1 ]]; then
-				echo -e "${YELLOW} = = > Invalid Thrash Job Count. Falling Back To ALL (${total}).${NC}"
-				custom_jobs="$total"
-			fi
-
-			max_jobs="$custom_jobs"
-			;;
-		*)
-			echo -e "${YELLOW} = = > Invalid Selection. Falling Back To Medium (3 Jobs).${NC}"
-			load_mode="medium"
-			max_jobs=3
-			;;
-	esac
-
-	echo
-	echo -e "${CYAN} = = > Selected Load Mode:${NC} $load_mode"
-	echo -e "${CYAN} = = > Concurrent Jobs:${NC} $max_jobs"
-	echo
-
-    echo -e "${YELLOW}"
-	if ! ask_yes_no " = = > Start Batch Normalization Now? (y/n): "; then
-		echo -e "${YELLOW} = = > Batch Normalizer Canceled.${NC}"
+	if (( ${#norm_sources[@]} == 0 )); then
+		echo -e "${REB} = = > No Eligible Source Videos Found For Batch Normalization.${NC}"
 		pause
 		return 0
 	fi
-    echo -e "${NC}"
 
 	echo
-	echo -e "${CYAN} = = > Starting Batch Normalization...${NC}"
-
-	success_count=0
-	fail_count=0
-	skip_count=0
-	batch_rekey_crf="$REKEY_CRF"
-
-	# ========================================================
-	# #MARKER: ROLLING PER-FILE REKEY CALIBRATION
-	# ========================================================
-	# PURPOSE:
-	# - Replace First-File Calibration + Fixed Batch CRF
-	#   With Sequential Rolling Per-File CRF
-	#
-	# IMPORTANT:
-	# - Source Scan / Target Discovery / Load Menu Above Stay Intact
-	# - This replacement begins at the old execution engine
-	# - Rolling CRF requires ordered sequential processing
-	# ========================================================
-
-	rolling_crf="$REKEY_CRF"
-
-	echo
-	echo -e "${CYAN} = = > Starting Batch Normalization With Rolling CRF:${NC} ${YELLOW}$rolling_crf${NC}"
-	echo -e "${YE} = = > Load Menu Above Is Informational Only In This Mode.${NC}"
+	echo -e "${CYAN}==========================================================${NC}"
+	echo -e "${CYAN}            BATCH NORMALIZER TARGET PREVIEW               ${NC}"
+	echo -e "${CYAN}==========================================================${NC}"
+	echo -e "${CYAN} = = > Eligible Source Files Found:${NC} ${YELLOW}${#norm_sources[@]}${NC}"
 	echo
 
-	for ((idx=0; idx<total; idx++)); do
-		f="${norm_sources[$idx]}"
-
-		if [[ -f "REKEY_$(basename "${f%.*}").mkv" ]]; then
-			echo -e "${GREEN} = = > [SKIP $((idx+1)) / $total] Matching REKEY Exists For:${NC} ${GREEN}$f${NC}"
-			((skip_count+=1)) || :
-			continue
-		fi
-
-		echo -e "${MAGENTA} = = > [$((idx+1)) / $total] Processing:${NC} ${GREEN}$f${NC}"
-		echo -e "${CYAN} = = > Starting CRF For This File:${NC} ${YELLOW}$rolling_crf${NC}"
-
-		if result="$(rekey_process_with_rolling_crf "$f" "$rolling_crf")"; then
-			chosen_crf="${result%%|*}"
-			result="${result#*|}"
-
-			chosen_out="${result%%|*}"
-			result="${result#*|}"
-
-			chosen_bucket="${result%%|*}"
-			result="${result#*|}"
-
-			chosen_delta="${result%%|*}"
-			result="${result#*|}"
-
-			chosen_orig_size="${result%%|*}"
-			chosen_new_size="${result##*|}"
-
-			rekey_print_size_sanity_report \
-				"$f" \
-				"$chosen_out" \
-				"$chosen_orig_size" \
-				"$chosen_new_size" \
-				"$chosen_delta" \
-				"$chosen_bucket"
-
-			echo -e "${GREEN} = = > Created:${NC} ${CYAN}$chosen_out${NC}"
-			echo -e "${CYAN} = = > Winning CRF:${NC} ${YELLOW}$chosen_crf${NC}"
-
-			rolling_crf="$chosen_crf"
-			echo -e "${CYAN} = = > Rolling CRF Updated To:${NC} ${YELLOW}$rolling_crf${NC}"
-			echo
-
-			((success_count+=1)) || :
-		else
-			echo -e "${REB} = = > Failed:${NC} ${GREEN}$f${NC}"
-			echo -e "${YELLOW} = = > Rolling CRF Unchanged:${NC} ${YELLOW}$rolling_crf${NC}"
-			echo
-			((fail_count+=1)) || :
-		fi
+	local idx
+	for ((idx=0; idx<${#norm_sources[@]}; idx++)); do
+		echo -e "${GREEN}  $((idx+1)))${NC} ${norm_sources[$idx]}"
 	done
+	echo
+
+	# =========================
+	# #MARKER: BATCH NORMALIZER EXECUTION MODE SELECT
+	# =========================
+	# WHY:
+	# - Adaptive Mode Needs Ordered Sequential Feedback
+	# - Throughput Mode Needs Independent Parallel Jobs
+	# - These Are Opposite Behaviors, So We Choose Intentionally
+	#
+	if ! execution_mode="$(rekey_choose_batch_execution_mode)"; then
+		echo
+		echo -e "${YELLOW} = = > Batch Normalizer Canceled At Execution Mode Selection.${NC}"
+		pause
+		return 0
+	fi
 
 	echo
 	echo -e "${CYAN}==========================================================${NC}"
-	echo -e "${GREEN} = = > Batch Normalization Pass Complete.${NC}"
-	echo -e "${CYAN} = = > Successful New REKEY Files:${NC} $success_count"
-	echo -e "${CYAN} = = > Skipped Existing REKEY Files:${NC} $skip_count"
-	echo -e "${CYAN} = = > Failed Normalizations:${NC} $fail_count"
-	echo -e "${CYAN} = = > Outputs:${NC} REKEY_*.mkv"
+	echo -e "${CYAN}          BATCH NORMALIZER :: EXECUTION CONFIRM           ${NC}"
 	echo -e "${CYAN}==========================================================${NC}"
-    register_new_rekeys_after_batch_normalizer
-	pause
-	return 0
+	echo -e "${CYAN} = = > Selected Mode:${NC} ${YELLOW}$execution_mode${NC}"
+	echo -e "${CYAN} = = > Files In Scope:${NC} ${YELLOW}${#norm_sources[@]}${NC}"
+	echo
+
+	case "$execution_mode" in
+		ADAPTIVE)
+			echo -e "${CYAN} = = > Adaptive Mode Selected.${NC}"
+			echo -e "${CYAN} = = > Rolling CRF Will Update From File To File.${NC}"
+			echo -e "${CYAN} = = > Concurrency Presets Do Not Apply In This Mode.${NC}"
+			echo
+
+			if ! ask_yes_no " = = > Start Adaptive Mode Batch Now? (y/n or 1/2): "; then
+				echo -e "${YELLOW} = = > Adaptive Mode Launch Canceled.${NC}"
+				pause
+				return 0
+			fi
+			echo
+
+			run_batch_normalizer_adaptive "${norm_sources[@]}"
+			return 0
+			;;
+
+		THROUGHPUT)
+			echo -e "${CYAN} = = > Throughput Mode Selected.${NC}"
+			echo -e "${CYAN} = = > Fixed Batch CRF Will Be Used For This Pass.${NC}"
+			echo -e "${CYAN} = = > Light / Medium / Thrash Concurrency Is Available Here.${NC}"
+			echo
+
+			if ! max_jobs="$(rekey_choose_throughput_job_count)"; then
+				echo
+				echo -e "${YELLOW} = = > Throughput Mode Canceled At Load Selection.${NC}"
+				pause
+				return 0
+			fi
+
+			echo
+			echo -e "${CYAN} = = > Max Parallel Jobs Selected:${NC} ${YELLOW}$max_jobs${NC}"
+			echo
+
+			if ! ask_yes_no " = = > Start Throughput Mode Batch Now? (y/n or 1/2): "; then
+				echo -e "${YELLOW} = = > Throughput Mode Launch Canceled.${NC}"
+				pause
+				return 0
+			fi
+			echo
+
+			run_batch_normalizer_throughput "$max_jobs" "${norm_sources[@]}"
+			return 0
+			;;
+
+		*)
+			echo -e "${REB} = = > Unknown Execution Mode Returned:${NC} $execution_mode"
+			pause
+			return 1
+			;;
+	esac
 }
 
 # ============================================================
@@ -10442,28 +10768,22 @@ echo -e "${MAGENTA}   GAPMAN v2 :: Normalized Pipeline = = = =     ${NC}"
 echo -e "${MAGENTA}================================================${NC}"
 echo
 
-echo -ne "${YELLOW} = = > Map CSV File? (Default: ${DEFAULT_MAP}): ${NC}"
-read -r MAP_FILE
+prompt_read " = = > Map CSV File? (Default: ${DEFAULT_MAP}): " MAP_FILE
 MAP_FILE=${MAP_FILE:-$DEFAULT_MAP}
 
-echo -ne "${YELLOW} = = > Global offset seconds to apply to intro START (+/-) (Default: ${DEFAULT_GLOBAL_OFFSET}): ${NC}"
-read -r GLOBAL_OFFSET
+prompt_read " = = > Global offset seconds to apply to intro START (+/-) (Default: ${DEFAULT_GLOBAL_OFFSET}): " GLOBAL_OFFSET
 GLOBAL_OFFSET=${GLOBAL_OFFSET:-$DEFAULT_GLOBAL_OFFSET}
 
-echo -ne "${YELLOW} = = > Pad intro START seconds (+/-) After Map/Manual (Default: ${DEFAULT_PAD_START}): ${NC}"
-read -r PAD_START
+prompt_read " = = > Pad intro START seconds (+/-) After Map/Manual (Default: ${DEFAULT_PAD_START}): " PAD_START
 PAD_START=${PAD_START:-$DEFAULT_PAD_START}
 
-echo -ne "${YELLOW} = = > Pad intro END seconds (+/-) After Map/Manual (Default: ${DEFAULT_PAD_END}): ${NC}"
-read -r PAD_END
+prompt_read " = = > Pad intro END seconds (+/-) After Map/Manual (Default: ${DEFAULT_PAD_END}): " PAD_END
 PAD_END=${PAD_END:-$DEFAULT_PAD_END}
 
-echo -ne "${YELLOW} = = > Global PRE-trim seconds (Remove From Beginning) (Default: ${DEFAULT_PRE_TRIM}): ${NC}"
-read -r PRE_TRIM
+prompt_read " = = > Global PRE-trim seconds (Remove From Beginning) (Default: ${DEFAULT_PRE_TRIM}): " PRE_TRIM
 PRE_TRIM=${PRE_TRIM:-$DEFAULT_PRE_TRIM}
 
-echo -ne "${YELLOW} = = > Global POST-trim seconds (Remove From End) (Default: ${DEFAULT_POST_TRIM}): ${NC}"
-read -r POST_TRIM
+prompt_read " = = > Global POST-trim seconds (Remove From End) (Default: ${DEFAULT_POST_TRIM}): " POST_TRIM
 POST_TRIM=${POST_TRIM:-$DEFAULT_POST_TRIM}
 
 GLOBAL_OFFSET="$(num_norm "$GLOBAL_OFFSET")"
@@ -10475,8 +10795,7 @@ POST_TRIM="$(num_norm "$POST_TRIM")"
 echo
 echo -e "${CYAN} = = > Title Bar Repair ---${NC}"
 
-echo -ne "${YELLOW} = = > Start Title At Which Underscore Segment? (1-based, Default: ${DEFAULT_TITLE_SEGMENT}): ${NC}"
-read -r TITLE_SEGMENT
+prompt_read " = = > Start Title At Which Underscore Segment? (1-based, Default: ${DEFAULT_TITLE_SEGMENT}): " TITLE_SEGMENT
 TITLE_SEGMENT=${TITLE_SEGMENT:-$DEFAULT_TITLE_SEGMENT}
 KF_CHECK=${KF_CHECK:-n}
 WIPE_META=${WIPE_META:-$DEFAULT_WIPE_META}
@@ -10783,7 +11102,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
     t_end="$(fadd "$t_start" "$intro_dur")"
 
     echo -e "${GREEN} = = > [MAP]${NC} ${YE}Start=${t_start}s End=${t_end}s Dur=${intro_dur}s${NC}"
-  else
+    else
     echo -e "${YELLOW} = = > [NO MAP]${NC} Manual Entry Needed."
     echo
     echo -e "${CYAN} = = > Enter Cut Range:${NC}"
@@ -10793,13 +11112,14 @@ for ((idx=0; idx<TOTAL; idx++)); do
     read -r end_raw
     echo
 
-    #MARKER: NORM MANUAL TIMES
-    t_start="$(to_seconds "$t_start_raw")"
-    t_end="$(to_seconds "$t_end_raw")"
-    intro_dur="$(fsub "$t_end" "$t_start")"
+		#MARKER: NORM MANUAL TIMES
+	t_start="$(to_seconds "$start_raw")"
+	t_end="$(to_seconds "$end_raw")"
+	intro_dur="$(fsub "$t_end" "$t_start")"
 
-    echo -e "${CYAN} = = > Manual Start:${NC} ${t_start_raw} -> ${t_start}s"
-    echo -e "${CYAN} = = > Manual End:${NC} ${t_end_raw} -> ${t_end}s"
+	echo -e "${CYAN} = = > Manual Start:${NC} ${start_raw} -> ${t_start}s"
+	echo -e "${CYAN} = = > Manual End:${NC} ${end_raw} -> ${t_end}s"
+	echo -e "${CYAN} = = > Manual Intro Duration:${NC} ${intro_dur}s"
   fi
 
   # ---- apply global PRE/POST trims to whole file ----
@@ -10840,7 +11160,7 @@ for ((idx=0; idx<TOTAL; idx++)); do
   fi
 
   # ---- title ----
-  title="$(make_title_from_filename "$base_in")"
+  title="$(make_title_from_filename "$base_in" "$TITLE_SEGMENT")"
   echo -e "${CYAN} = = > Title Segment In Use:${NC} ${GREEN}${TITLE_SEGMENT}${NC}"
   echo -e "${CYAN} = = > Title Bar:${NC} ${GREEN}${title}${NC}"
 
