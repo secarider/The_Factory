@@ -554,7 +554,7 @@ REKEY_GROWTH_WARN_PERCENT=25
 REKEY_SHRINK_WARN_PERCENT=15
 TARGET_MAX_GROWTH=10
 TARGET_MAX_SHRINK=5
-REKEY_CRF=24
+REKEY_CRF=25
 
 # - Helpers
 
@@ -601,6 +601,52 @@ is_exit_token() {
     local v="${1:-}"
     [[ "$v" == "0" || "$v" == "0." || "$v" == "q" || "$v" == "Q" ]]
 }
+
+#need to fill these in 
+
+# =========================
+# #MARKER: CORE MATH HELPERS
+# =========================
+
+# Safe float math
+fadd() { echo "scale=3; ($1)+($2)" | bc; }
+fsub() { echo "scale=3; ($1)-($2)" | bc; }
+fmax0() { echo "scale=3; if(($1)<0) 0 else ($1)" | bc; }
+
+
+# =========================
+# #MARKER: TIME / PARSE HELPERS
+# =========================
+
+# =========================
+# #MARKER: HMS DISPLAY HELPER
+# =========================
+# PURPOSE:
+# - Convert decimal seconds into HH:MM:SS.mmm for friendly display
+#
+# EXAMPLE:
+# - 2592.616 -> 00:43:12.616
+# =========================
+format_seconds_hms() {
+	local total="${1:-0}"
+
+	awk -v t="$total" 'BEGIN {
+		if (t < 0) t = 0
+
+		h = int(t / 3600)
+		m = int((t - (h * 3600)) / 60)
+		s = t - (h * 3600) - (m * 60)
+
+		printf "%02d:%02d:%06.3f", h, m, s
+	}'
+}
+
+
+# =========================
+# #MARKER: IO / DISPLAY HELPERS
+# =========================
+
+
 
 ask_yes_no() {
 	local prompt="$1"
@@ -666,8 +712,9 @@ prompt_read() {
 	local __var_name="$2"
 	local __input
 
-	echo -ne "${YELLOW}${prompt}${NC}"
+	echo -ne "${YELLOW}${prompt}"
 	read -r __input
+	echo -e "${NC}"
 
 	printf -v "$__var_name" '%s' "$__input"
 }
@@ -689,8 +736,9 @@ prompt_menu_choice() {
 	local __var_name="$2"
 	local __input
 
-	echo -ne "${YELLOW}${prompt}${NC}"
+	echo -ne "${YELLOW}${prompt}"
 	read -r __input
+	echo -e "${NC}"
 
 	# normalize: strip whitespace + lowercase
 	__input="${__input//[[:space:]]/}"
@@ -722,6 +770,33 @@ ensure_intro_map() {
 	if [[ ! -f "$INTRO_MAP" ]]; then
 		printf '%s\n' "filename,start,end,start_hms,end_hms,template_used,diff" > "$INTRO_MAP"
 	fi
+}
+
+# =========================
+# #MARKER: HUMAN SIZE DISPLAY HELPER
+# =========================
+# PURPOSE:
+# - Convert raw byte counts into friendly KB / MB / GB text
+# - Keep reporting readable without losing exact values
+#
+# EXAMPLES:
+# - 584194734  -> 557.1 MB
+# - 1073741824 -> 1.00 GB
+# =========================
+format_bytes_human() {
+	local bytes="${1:-0}"
+
+	awk -v b="$bytes" 'BEGIN {
+		if (b < 1024) {
+			printf "%d B", b
+		} else if (b < 1048576) {
+			printf "%.1f KB", b / 1024
+		} else if (b < 1073741824) {
+			printf "%.1f MB", b / 1048576
+		} else {
+			printf "%.2f GB", b / 1073741824
+		}
+	}'
 }
 
 # start new rekey helpers all rekey related
@@ -836,8 +911,8 @@ rekey_print_size_sanity_report() {
 	echo -e "${CYAN}================================================${NC}"
 	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$src${NC}"
 	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
-	echo -e "${CYAN} = = > Original Size:${NC} ${YELLOW}$orig_size${NC} bytes"
-	echo -e "${CYAN} = = > REKEY Size:${NC} ${YELLOW}$new_size${NC} bytes"
+	echo -e "${CYAN} = = > Original Size:${NC} ${YELLOW}$(format_bytes_human "$orig_size")${NC} ${WHITE}(${orig_size} bytes)${NC}"
+	echo -e "${CYAN} = = > REKEY Size:${NC} ${YELLOW}$(format_bytes_human "$new_size")${NC} ${WHITE}(${new_size} bytes)${NC}"
 
 	if (( delta_percent >= 0 )); then
 		echo -e "${CYAN} = = > Percent Change:${NC} ${YELLOW}+${delta_percent}%${NC}"
@@ -862,6 +937,70 @@ rekey_print_size_sanity_report() {
 			;;
 	esac
 	echo
+}
+
+# =========================
+# #MARKER: REKEY ROLLING WINNER SELECTOR
+# =========================
+# PURPOSE:
+# - Decide Which Rolling REKEY Attempt Wins
+#
+# INPUT:
+# - $1 = bucket1
+# - $2 = delta1
+# - $3 = size1
+# - $4 = bucket2
+# - $5 = delta2
+# - $6 = size2
+#
+# OUTPUT:
+# - Prints 1 Or 2
+# =========================
+rekey_choose_rolling_winner() {
+	local bucket1="$1"
+	local delta1="$2"
+	local size1="$3"
+	local bucket2="$4"
+	local delta2="$5"
+	local size2="$6"
+
+	# Clean landing beats warned result
+	if [[ "$bucket2" == "OK" && "$bucket1" != "OK" ]]; then
+		printf '2\n'
+		return 0
+	fi
+
+	if [[ "$bucket1" == "OK" && "$bucket2" != "OK" ]]; then
+		printf '1\n'
+		return 0
+	fi
+
+	# Both too big -> choose smaller file / less growth
+	if [[ "$bucket1" == "GROWTH_WARN" && "$bucket2" == "GROWTH_WARN" ]]; then
+		if (( size2 < size1 )); then
+			printf '2\n'
+		else
+			printf '1\n'
+		fi
+		return 0
+	fi
+
+	# Both too small -> choose larger file / less shrink
+	if [[ "$bucket1" == "SHRINK_WARN" && "$bucket2" == "SHRINK_WARN" ]]; then
+		if (( size2 > size1 )); then
+			printf '2\n'
+		else
+			printf '1\n'
+		fi
+		return 0
+	fi
+
+	# Mixed warning fallback -> choose smaller absolute drift
+	if (( ${delta2#-} < ${delta1#-} )); then
+		printf '2\n'
+	else
+		printf '1\n'
+	fi
 }
 
 # =========================
@@ -940,24 +1079,13 @@ rekey_process_with_rolling_crf() {
 	delta2="$(rekey_percent_change "$orig_size" "$new_size2")"
 	bucket2="$(rekey_size_sanity_bucket "$delta2" "$TARGET_MAX_GROWTH" "$TARGET_MAX_SHRINK")"
 
-	# Prefer clean landing
-	if [[ "$bucket2" == "OK" && "$bucket1" != "OK" ]]; then
-		rm -f -- "$out1"
-		mv -f -- "$out2" "$out1"
-		printf '%s|%s|%s|%s|%s|%s\n' \
-			"$try2_crf" "$out1" "$bucket2" "$delta2" "$orig_size" "$new_size2"
-		return 0
-	fi
+	local winner
 
-	if [[ "$bucket1" == "OK" && "$bucket2" != "OK" ]]; then
-		rm -f -- "$out2"
-		printf '%s|%s|%s|%s|%s|%s\n' \
-			"$try1_crf" "$out1" "$bucket1" "$delta1" "$orig_size" "$new_size1"
-		return 0
-	fi
+	winner="$(rekey_choose_rolling_winner \
+		"$bucket1" "$delta1" "$new_size1" \
+		"$bucket2" "$delta2" "$new_size2")"
 
-	# If both are warned, bias toward the larger/safer result
-	if (( new_size2 > new_size1 )); then
+	if [[ "$winner" == "2" ]]; then
 		rm -f -- "$out1"
 		mv -f -- "$out2" "$out1"
 		printf '%s|%s|%s|%s|%s|%s\n' \
@@ -970,8 +1098,6 @@ rekey_process_with_rolling_crf() {
 		"$try1_crf" "$out1" "$bucket1" "$delta1" "$orig_size" "$new_size1"
 	return 0
 }
-
-
 
 # =========================
 # #MARKER: REKEY BATCH MODE SELECTOR
@@ -1071,9 +1197,7 @@ rekey_choose_throughput_job_count() {
 	echo -e "${CYAN} = = > Host CPU Threads Seen:${NC} ${YELLOW}$cpu_count${NC}"
 	echo
 
-	echo -e "${YELLOW}"
-	read -r -p " = = > Choose Load [1-3 | 0=return]: " load_choice
-	echo -e "${NC}"
+	prompt_menu_choice " = = > Choose Load [1-3 | 0=return]: " load_choice
 
 	if is_exit_token "$load_choice"; then
 		return 1
@@ -4345,9 +4469,7 @@ run_main_menu() {
     echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
     echo
 
-    read -r -p "     Choice: " MAIN_CHOICE
-    echo -e "${NC}"
-    MAIN_CHOICE="${MAIN_CHOICE//[[:space:]]/}"
+	prompt_menu_choice "     Choice: " MAIN_CHOICE
 
     # ========================================================
     # TEN-KEY EXIT HOOK
@@ -8051,9 +8173,7 @@ run_prepare_sources() {
         echo "     10key exit > 0.Enter to Quit   (or q) to Quit${NC}"
         echo
 
-        echo -e "${YELLOW}      Choice: ${NC}"
-        read -r prep_choice
-        prep_choice="${prep_choice//[[:space:]]/}"
+		prompt_menu_choice "      Choice: " prep_choice
 
         # ========================================================
         # TEN-KEY EXIT HOOK
@@ -8609,6 +8729,214 @@ run_join_two_clips() {
     return 0
 }
 
+# =========================
+# #MARKER: TRIAGE WORKING-FILE PICKER
+# =========================
+# PURPOSE:
+# - Let Working-Dir Surgery Tools Pick Almost Any Video File In The Folder
+# - Unlike the stricter raw-source picker, this one intentionally allows:
+#     REKEY_
+#     SUTURED_
+#     BARFIX_
+#     TIPSNIP_
+#     TAILTUCK_
+#     PILOT_SUTURED_
+#
+# DESIGN:
+# - This is for "work on whatever file is here now"
+# - Only hide things that are not real working targets
+#
+# OUTPUT:
+# - Prints chosen filename on stdout
+# - Returns 0 on success
+# - Returns 1 on cancel / no valid files
+# =========================
+triage_choose_single_working_file() {
+	local choice
+	local -a vids=()
+	local -a candidates=()
+	local f i
+
+	shopt -s nullglob nocaseglob
+	vids=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
+	shopt -u nullglob nocaseglob
+
+	for f in "${vids[@]}"; do
+		# Hide only things that are clearly not normal working targets
+		[[ "$f" =~ ^(OEM_|SUBPACKED_) ]] && continue
+		candidates+=("$f")
+	done
+
+	if (( ${#candidates[@]} == 0 )); then
+		echo >&2
+		echo -e "${YE} = = > No Eligible Working Video Files Found In This Directory.${NC}" >&2
+		pause
+		return 1
+	fi
+
+	while true; do
+		clear >&2
+		echo -e "${CYAN}================================================${NC}" >&2
+		echo -e "${CYAN}         TRIAGE / SURGERY WORKING-FILE PICKER   ${NC}" >&2
+		echo -e "${CYAN}================================================${NC}" >&2
+		echo >&2
+
+		for ((i=0; i<${#candidates[@]}; i++)); do
+			echo -e "${YELLOW}    $((i+1))) ${GREEN}${candidates[$i]}${NC}" >&2
+		done
+
+		echo >&2
+		echo -e "${YELLOW}    0.) Return${NC}" >&2
+		echo >&2
+
+		echo -ne "${YELLOW}     Choice: " >&2
+		read -r choice
+		echo -e "${NC}" >&2
+
+		choice="${choice//[[:space:]]/}"
+		choice="${choice,,}"
+
+		if is_exit_token "$choice"; then
+			return 1
+		fi
+
+		if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#candidates[@]} )); then
+			printf '%s\n' "${candidates[$((choice-1))]}"
+			return 0
+		fi
+
+		echo >&2
+		echo -e "${REB} = = > Invalid Selection.${NC}" >&2
+		pause
+	done
+}
+
+
+# =========================
+# #MARKER: TRIAGE ONE-FILE SOURCE PICKER
+# =========================
+# PURPOSE:
+# - Let Triage / Surgery tools pick one real working-dir source file
+# - Exclude generated workflow outputs so user sees the raw/main candidates
+#
+# OUTPUT:
+# - Prints chosen filename on stdout
+# - Returns 0 on success
+# - Returns 1 on cancel / no valid files
+# =========================
+triage_choose_single_source_file() {
+	local choice
+	local -a vids=()
+	local -a candidates=()
+	local f i
+
+	shopt -s nullglob nocaseglob
+	vids=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
+	shopt -u nullglob nocaseglob
+
+	for f in "${vids[@]}"; do
+		[[ "$f" =~ ^(REKEY_|SUTURED_|BARFIX_|SUBPACKED_|OEM_|PILOT_SUTURED_|TIPSNIP_|TAILTUCK_) ]] && continue
+		candidates+=("$f")
+	done
+
+	if (( ${#candidates[@]} == 0 )); then
+		echo >&2
+		echo -e "${YE} = = > No Eligible Source Video Files Found In This Working Directory.${NC}" >&2
+		pause
+		return 1
+	fi
+
+	while true; do
+		clear >&2
+		echo -e "${CYAN}================================================${NC}" >&2
+		echo -e "${CYAN}           TRIAGE / SURGERY SOURCE PICKER       ${NC}" >&2
+		echo -e "${CYAN}================================================${NC}" >&2
+		echo >&2
+
+		for ((i=0; i<${#candidates[@]}; i++)); do
+			echo -e "${YELLOW}    $((i+1))) ${GREEN}${candidates[$i]}${NC}" >&2
+		done
+
+		echo >&2
+		echo -e "${YELLOW}    0.) Return${NC}" >&2
+		echo >&2
+
+		echo -ne "${YELLOW}     Choice: " >&2
+		read -r choice
+		echo -e "${NC}" >&2
+
+		choice="${choice//[[:space:]]/}"
+		choice="${choice,,}"
+
+		if is_exit_token "$choice"; then
+			return 1
+		fi
+
+		if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#candidates[@]} )); then
+			printf '%s\n' "${candidates[$((choice-1))]}"
+			return 0
+		fi
+
+		echo >&2
+		echo -e "${REB} = = > Invalid Selection.${NC}" >&2
+		pause
+	done
+}
+
+# =========================
+# #MARKER: TRIAGE ONE-FILE REKEY TOOL
+# =========================
+# PURPOSE:
+# - Run A Single-File REKEY Rebuild From Triage Center
+# - Give The User A Fast Shortcut To Cut-Friendlier Working Output
+#
+# NOTES:
+# - Uses Current REKEY_CRF Default
+# - Leaves Original Untouched
+# - Output Naming:
+#     REKEY_<original_stem>.mkv
+# =========================
+run_one_file_rekey_tool() {
+	local src
+	local out
+
+	if ! src="$(triage_choose_single_source_file)"; then
+		return 0
+	fi
+
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}             ONE-FILE REKEY / NORMALIZE         ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$src${NC}"
+	echo -e "${CYAN} = = > Starting REKEY CRF:${NC} ${YELLOW}$REKEY_CRF${NC}"
+	echo -e "${CYAN} = = > Audio Policy:${NC} ${GREEN}copy-through${NC}"
+	echo -e "${CYAN} = = > Goal:${NC} ${YELLOW}Cut-Friendlier Working Source${NC}"
+	echo
+
+	if ! ask_yes_no " = = > Proceed With One-File REKEY Build? (y/n or 1/2): "; then
+		echo
+		echo -e "${YE} = = > One-File REKEY Cancelled.${NC}"
+		pause
+		return 0
+	fi
+
+	if normalize_cut_friendly_file "$src" "$REKEY_CRF"; then
+		out="REKEY_$(basename "${src%.*}").mkv"
+		echo
+		echo -e "${GR} = = > One-File REKEY Completed.${NC}"
+		echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+	else
+		echo
+		echo -e "${REB} = = > One-File REKEY Failed.${NC}"
+		echo -e "${CYAN} = = > Source:${NC} ${GREEN}$src${NC}"
+	fi
+
+	pause
+}
+
+
 
 # =========================
 # #MARKER: TRIAGE CENTER / QUICK CLIP SURGERY HELPERS
@@ -8722,21 +9050,215 @@ run_one_file_normalize_to_mkv_tool() {
 	pause
 }
 
+
+# =========================
+# #MARKER: TRIAGE TIP SNIP
+# =========================
+# PURPOSE:
+# - Trim Time Off The Beginning Of One Selected File
+# - Keep Original Untouched
+#
+# OUTPUT NAME:
+# - TIPSNIP_<original_stem>.mkv
+#
+# NOTES:
+# - Fast copy trim
+# - Best on REKEY / keyframe-friendly sources
+# - Exact edge accuracy may vary on hostile raw sources
+# =========================
+run_tip_snip() {
+	local src
+	local trim_amount
+	local duration
+	local out
+
+	if ! src="$(triage_choose_single_working_file)"; then
+		return 0
+	fi
+
+	duration="$(ffprobe -v error -show_entries format=duration \
+		-of default=noprint_wrappers=1:nokey=1 "$src" 2>/dev/null || true)"
+
+	if [[ -z "${duration:-}" ]]; then
+		echo
+		echo -e "${REB} = = > Could Not Read Source Duration.${NC}"
+		pause
+		return 0
+	fi
+
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}                  TIP SNIP TOOL                 ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$src${NC}"
+	echo -e "${CYAN} = = > Duration:${NC} ${YELLOW}$(format_seconds_hms "$duration")${NC}"
+	echo -e "${YE} = = > Fast Copy Trim.${NC}"
+	echo -e "${YE} = = > Best On REKEY / Keyframe-Friendly Sources.${NC}"
+	echo
+
+	prompt_read " = = > Enter Tip Snip Amount To Remove From Beginning (seconds or HH:MM:SS | 0.=cancel): " trim_amount
+
+	if is_exit_token "$trim_amount"; then
+		return 0
+	fi
+
+	trim_amount="$(to_seconds "$trim_amount" 2>/dev/null || true)"
+	if [[ -z "${trim_amount:-}" ]]; then
+		echo -e "${REB} = = > Invalid Time Entry.${NC}"
+		pause
+		return 0
+	fi
+
+	if ! awk -v t="$trim_amount" -v d="$duration" 'BEGIN { exit (t < d ? 0 : 1) }'; then
+		echo
+		echo -e "${REB} = = > Tip Snip Amount Is Too Large For This File.${NC}"
+		pause
+		return 0
+	fi
+
+	out="TIPSNIP_$(basename "${src%.*}").mkv"
+
+	echo
+	echo -e "${CYAN} = = > Trim Amount:${NC} ${YELLOW}${trim_amount}s${NC}"
+	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+	echo
+
+	if ! ask_yes_no " = = > Proceed With Tip Snip? (y/n or 1/2): "; then
+		echo
+		echo -e "${YE} = = > Tip Snip Cancelled.${NC}"
+		pause
+		return 0
+	fi
+
+	if run_with_progress "Tip Snip: $(basename "$src")" \
+		ffmpeg -hide_banner -loglevel error -nostdin -y \
+			-ss "$trim_amount" -i "$src" -c copy "$out"; then
+		echo
+		echo -e "${GR} = = > Tip Snip Completed.${NC}"
+		echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+	else
+		rm -f -- "$out"
+		echo
+		echo -e "${REB} = = > Tip Snip Failed.${NC}"
+	fi
+
+	pause
+}
+
+# =========================
+# #MARKER: TRIAGE TAIL TUCK
+# =========================
+run_tail_tuck() {
+	local src
+	local trim_amount
+	local duration
+	local end_time
+	local out
+
+	if ! src="$(triage_choose_single_working_file)"; then
+	return 0
+	fi
+
+	duration="$(ffprobe -v error -show_entries format=duration \
+		-of default=noprint_wrappers=1:nokey=1 "$src" 2>/dev/null || true)"
+
+	if [[ -z "${duration:-}" ]]; then
+		echo
+		echo -e "${REB} = = > Could Not Read Source Duration.${NC}"
+		pause
+		return 0
+	fi
+
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}                  TAIL TUCK TOOL                ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$src${NC}"
+	echo -e "${CYAN} = = > Duration:${NC} ${YELLOW}$(format_seconds_hms "$duration")${NC}"
+	echo -e "${YE} = = > Fast Copy Trim.${NC}"
+	echo -e "${YE} = = > Best On REKEY / Keyframe-Friendly Sources.${NC}"
+	echo
+
+	prompt_read " = = > Enter Tail Tuck Amount To Remove (seconds or HH:MM:SS | 0.=cancel): " trim_amount
+
+	if is_exit_token "$trim_amount"; then
+		return 0
+	fi
+
+	trim_amount="$(to_seconds "$trim_amount" 2>/dev/null || true)"
+	if [[ -z "${trim_amount:-}" ]]; then
+		echo -e "${REB} = = > Invalid Time Entry.${NC}"
+		pause
+		return 0
+	fi
+
+	end_time="$(fsub "$duration" "$trim_amount")"
+
+	# Validate result
+	if [[ -z "${end_time:-}" ]] || ! awk -v e="$end_time" 'BEGIN { exit (e > 0 ? 0 : 1) }'; then
+		echo
+		echo -e "${REB} = = > Tail Tuck Amount Is Too Large For This File.${NC}"
+		pause
+		return 0
+	fi
+
+	out="TAILTUCK_$(basename "${src%.*}").mkv"
+
+	echo
+	echo -e "${CYAN} = = > Trim Amount:${NC} ${YELLOW}${trim_amount}s${NC}"
+	echo -e "${CYAN} = = > New End Time:${NC} ${YELLOW}${end_time}s${NC}"
+	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+	echo
+
+	if ! ask_yes_no " = = > Proceed With Tail Tuck? (y/n or 1/2): "; then
+		echo
+		echo -e "${YE} = = > Tail Tuck Cancelled.${NC}"
+		pause
+		return 0
+	fi
+
+	if run_with_progress "Tail Tuck: $(basename "$src")" \
+		ffmpeg -hide_banner -loglevel error -nostdin -y \
+			-i "$src" -to "$end_time" -c copy "$out"; then
+		echo
+		echo -e "${GR} = = > Tail Tuck Completed.${NC}"
+		echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+	else
+		rm -f -- "$out"
+		echo
+		echo -e "${REB} = = > Tail Tuck Failed.${NC}"
+	fi
+
+	pause
+}
+
+run_one_file_rekey_tool() {
+	echo
+	echo -e "${YE} = = > One-File Rekey Tool Not Wired Yet.${NC}"
+	pause
+}
+
+
 run_clip_join_triage_menu() {
+	local triage_choice
+
 	while true; do
 		clear
 		echo -e "${CYAN}================================================${NC}"
 		echo -e "${CYAN}        TRIAGE CENTER / CLIP SURGERY TOOLS      ${NC}"
 		echo -e "${CYAN}================================================${NC}"
 		echo
-		echo -e "${YELLOW}"
-		echo "     1) Clip_Grab BitZ From VidZ"
-		echo "     2) Join Two Clips Into One Episode"
-		echo "     3) One-File Normalize To MKV / Playback Defaults"
-		echo "     4) Rebuild / Normalize Sources To REKEY"
-		echo "     5) BARFIX Title + Playback Tools"
+		echo -e "${YELLOW}     1) Clip_Grab BitZ From VidZ${NC}"
+		echo -e "${YELLOW}     2) Join Two Clips Into One Episode${NC}"
+		echo -e "${YELLOW}     3) Tip Snip        (Trim Beginning)${NC}"
+		echo -e "${YELLOW}     4) Tail Tuck       (Trim Ending)${NC}"
+		echo -e "${YELLOW}     5) One-File Normalize To MKV / Playback Defaults${NC}"
+		echo -e "${YELLOW}     6) Rekey This File First${NC}"
+		echo -e "${YELLOW}     7) BARFIX Title + Playback Tools${NC}"
 		echo
-		echo "     0.)Return  (or q)  =  Quit"
+		echo -e "${YELLOW}     0.) Return  (or q)  =  Quit${NC}"
 		echo
 		echo -e "${CYAN} = = > If Your Clip Grabs And Joins Aren't Becoming To You${NC}"
 		echo -e "${CYAN}= = = = = = = = = = = = = = = = = = = = = = = = = = = = = ${NC}"
@@ -8744,13 +9266,8 @@ run_clip_join_triage_menu() {
 		echo -e "${CYAN}= = = = = = = = = = = = = = = = = = = = = = = = = = = = = ${NC}"
 		echo
 
-		read -r -p "     Choice: " triage_choice
-		echo -e "${NC}"
-		triage_choice="${triage_choice//[[:space:]]/}"
+		prompt_menu_choice "     Choice: " triage_choice
 
-		# ========================================================
-		# TEN-KEY EXIT HOOK
-		# ========================================================
 		if is_exit_token "$triage_choice"; then
 			return 0
 		fi
@@ -8763,12 +9280,18 @@ run_clip_join_triage_menu() {
 				run_join_two_clips
 				;;
 			3)
-				run_one_file_normalize_to_mkv_tool
+				run_tip_snip
 				;;
 			4)
-				run_rebuild_rekey_handoff_tool
+				run_tail_tuck
 				;;
 			5)
+				run_one_file_normalize_to_mkv_tool
+				;;
+			6)
+				run_one_file_rekey_tool
+				;;
+			7)
 				run_barfix
 				;;
 			*)
@@ -10898,9 +11421,10 @@ lookup_map() {
 }
 
 # Safe float math
-fadd() { echo "scale=3; ($1)+($2)" | bc; }
-fsub() { echo "scale=3; ($1)-($2)" | bc; }
-fmax0() { echo "scale=3; if(($1)<0) 0 else ($1)" | bc; }
+# Safe float math
+#fadd() { echo "scale=3; ($1)+($2)" | bc; }
+#fsub() { echo "scale=3; ($1)-($2)" | bc; }
+#fmax0() { echo "scale=3; if(($1)<0) 0 else ($1)" | bc; }
 
 # =========================
 # #MARKER: KEYFRAME FILE SELECTOR
