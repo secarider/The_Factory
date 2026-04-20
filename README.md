@@ -1,5 +1,4 @@
 ![The_Factory Logo](TheFactory.png)
-
 # THE_FACTORY
 
 A terminal-driven video processing pipeline designed for non-destructive, batch-safe, intro-aware media preparation.
