@@ -584,22 +584,17 @@ canonical_factory_path() {
 # PURPOSE:
 # - Provide A Universal One-Hand Numpad Exit / Cancel Token
 #
-# TEN-KEY EXIT HOOK
-#
-# IMPORTANT:
-# - In The MAIN MENU, 0. Means True Program Exit
-# - It Must Behave Like q, Not Like "Return From Function"
-# - If We Only return 0 Here, Control Falls Through Into The
-#   Legacy IntroFind Processing Tail Below run_main_menu
-#
-#
 # RULE:
 # - "0." = cancel / back / exit
-# - also accepts q/Q for normal keyboard flow
+# - q/Q  = normal keyboard exit
+#
+# IMPORTANT:
+# - Plain "0" is NOT a universal exit token anymore.
+# - Some menus use 0 as a real selectable option.
 #
 is_exit_token() {
     local v="${1:-}"
-    [[ "$v" == "0" || "$v" == "0." || "$v" == "q" || "$v" == "Q" ]]
+    [[ "$v" == "0." || "$v" == "q" || "$v" == "Q" ]]
 }
 
 #need to fill these in 
@@ -652,8 +647,9 @@ ask_yes_no() {
 	local prompt="$1"
 	local ans
 
-	echo -e "${YELLOW}${prompt}${NC}"
+	echo -ne "${YELLOW}${prompt}"
 	read -r ans
+	echo -e "${NC}"
 
 	ans="${ans,,}"
 	ans="${ans//[[:space:]]/}"
@@ -672,6 +668,7 @@ ask_yes_no() {
 	# - Add simple 10-key friendly 1/2 support
 	# - Treat blank as safe default NO
 	# ========================================================
+
 	case "${ans:-2}" in
 		y|yes|1)
 			return 0
@@ -1183,21 +1180,25 @@ rekey_choose_throughput_job_count() {
 	[[ -n "$cpu_count" ]] || cpu_count=1
 	(( cpu_count < 1 )) && cpu_count=1
 
-	echo
-	echo -e "${CYAN}==========================================================${NC}"
-	echo -e "${CYAN}          THROUGHPUT MODE :: CONCURRENCY PRESETS           ${NC}"
-	echo -e "${CYAN}==========================================================${NC}"
-	echo
-	echo -e "${YELLOW}     1) Light   (1 Job)${NC}"
-	echo -e "${YELLOW}     2) Medium  (3 Jobs)${NC}"
-	echo -e "${YELLOW}     3) Thrash  (Max Parallel / Custom)${NC}"
-	echo
-	echo -e "${YELLOW}     0) Return${NC}"
-	echo
-	echo -e "${CYAN} = = > Host CPU Threads Seen:${NC} ${YELLOW}$cpu_count${NC}"
-	echo
+	echo >&2
+	echo -e "${CYAN}==========================================================${NC}" >&2
+	echo -e "${CYAN}          THROUGHPUT MODE :: CONCURRENCY PRESETS           ${NC}" >&2
+	echo -e "${CYAN}==========================================================${NC}" >&2
+	echo >&2
+	echo -e "${YELLOW}     1) Light   (1 Job)${NC}" >&2
+	echo -e "${YELLOW}     2) Medium  (3 Jobs)${NC}" >&2
+	echo -e "${YELLOW}     3) Thrash  (Max Parallel / Custom)${NC}" >&2
+	echo >&2
+	echo -e "${YELLOW}     0) Return${NC}" >&2
+	echo >&2
+	echo -e "${CYAN} = = > Host CPU Threads Seen:${NC} ${YELLOW}$cpu_count${NC}" >&2
+	echo >&2
 
-	prompt_menu_choice " = = > Choose Load [1-3 | 0=return]: " load_choice
+	echo -ne "${YELLOW} = = > Choose Load [1-3 | 0=return]: ${NC}" >&2
+	read -r load_choice
+
+	load_choice="${load_choice//[[:space:]]/}"
+	load_choice="${load_choice,,}"
 
 	if is_exit_token "$load_choice"; then
 		return 1
@@ -1213,14 +1214,14 @@ rekey_choose_throughput_job_count() {
 			return 0
 			;;
 		3)
-			echo -e "${YELLOW}"
-			read -r -p " = = > Enter Max Parallel Jobs [Default ${cpu_count}]: " custom_jobs
-			echo -e "${NC}"
+			echo -ne "${YELLOW} = = > Enter Max Parallel Jobs [Default ${cpu_count}]: ${NC}" >&2
+			read -r custom_jobs
 
 			custom_jobs="${custom_jobs:-$cpu_count}"
+			custom_jobs="${custom_jobs//[[:space:]]/}"
 
 			if [[ ! "$custom_jobs" =~ ^[0-9]+$ ]] || (( custom_jobs < 1 )); then
-				echo -e "${REB} = = > Invalid Job Count.${NC}"
+				echo -e "${REB} = = > Invalid Job Count.${NC}" >&2
 				return 1
 			fi
 
@@ -1228,7 +1229,7 @@ rekey_choose_throughput_job_count() {
 			return 0
 			;;
 		*)
-			echo -e "${REB} = = > Invalid Load Selection.${NC}"
+			echo -e "${REB} = = > Invalid Load Selection.${NC}" >&2
 			return 1
 			;;
 	esac
@@ -1383,7 +1384,7 @@ run_batch_normalizer_throughput_worker() {
 		return 0
 	fi
 
-	if normalize_cut_friendly_file "$src" "$batch_rekey_crf"; then
+	if normalize_cut_friendly_file "$src" "$batch_rekey_crf" "$out" "1"; then
 		printf '%s|%s|%s\n' "OK" "$src" "$out" > "$status_file"
 		return 0
 	fi
@@ -1428,6 +1429,24 @@ run_batch_normalizer_throughput() {
 	local status_file
 	local line state src out
 
+	# ========================================================
+	# THROUGHPUT STATUS HEARTBEAT COUNTERS
+	# --------------------------------------------------------
+	# PURPOSE:
+	# - Give Thrash / concurrent mode one calm parent-only sign of life
+	# - Avoid spinner collisions and per-worker terminal fights
+	#
+	# NOTES:
+	# - finished_count advances as child jobs complete
+	# - fail_count still becomes authoritative during final status-file tally
+	# - heartbeat is informational, not the final truth source
+	# ========================================================
+	local finished_count=0
+	local last_status_ts=0
+	local status_interval=2
+	local now_ts
+	local queued_count=0
+
 	status_dir="$(mktemp -d)"
 
 	total="${#norm_sources[@]}"
@@ -1446,21 +1465,49 @@ run_batch_normalizer_throughput() {
 	for ((idx=0; idx<total; idx++)); do
 		f="${norm_sources[$idx]}"
 		slot_id=$((idx + 1))
+		queued_count=$((idx + 1))
 
 		echo -e "${CYAN} = = > Queueing File $slot_id Of $total:${NC} ${GREEN}$f${NC}"
 
 		run_batch_normalizer_throughput_worker "$f" "$batch_rekey_crf" "$status_dir" "$slot_id" &
 		((running_jobs+=1)) || :
 
+		# ====================================================
+		# THROTTLE LOOP
+		# ----------------------------------------------------
+		# When we hit max_jobs, wait for at least one worker
+		# to finish before queueing more. Parent prints a
+		# periodic heartbeat only; workers stay quiet.
+		# ====================================================
 		while (( running_jobs >= max_jobs )); do
 			wait -n || :
 			((running_jobs-=1)) || :
+			((finished_count+=1)) || :
+
+			now_ts="$(date +%s)"
+			if (( now_ts - last_status_ts >= status_interval )); then
+				echo -e "${YELLOW} = = > Thrash Mode Running...${NC} ${CYAN}${queued_count} queued | ${running_jobs} active | ${finished_count} finished | ${fail_count} failed${NC}"
+				last_status_ts="$now_ts"
+			fi
 		done
 	done
 
+	# ========================================================
+	# FINAL DRAIN LOOP
+	# --------------------------------------------------------
+	# After queueing is done, keep waiting until all remaining
+	# background workers finish. Parent heartbeat continues.
+	# ========================================================
 	while (( running_jobs > 0 )); do
 		wait -n || :
 		((running_jobs-=1)) || :
+		((finished_count+=1)) || :
+
+		now_ts="$(date +%s)"
+		if (( now_ts - last_status_ts >= status_interval )); then
+			echo -e "${YELLOW} = = > Thrash Mode Running...${NC} ${CYAN}${queued_count} queued | ${running_jobs} active | ${finished_count} finished | ${fail_count} failed${NC}"
+			last_status_ts="$now_ts"
+		fi
 	done
 
 	for status_file in "$status_dir"/*.status; do
@@ -2320,6 +2367,189 @@ get_templates_from_intro_map() {
 # end of EXTRACT TEMPLATES that were a match for archival purposes FROM INTRO_MAP
 #====================================================================================
 # more helpers
+
+# =========================
+# #MARKER: VIDEO TRUTH PROBE (PLAYBACK / ENCODE DIAGNOSTICS)
+# =========================
+# PURPOSE:
+# - Quickly inspect what a file actually is
+# - Highlight codec / profile / pixel-format facts that often explain
+#   playback weirdness immediately
+# - Compare default playback path vs software-decode playback path
+# - Help separate:
+#     bad file
+#     bad player path
+#     bad hardware decode path
+#
+# USAGE:
+# - run_video_truth_probe "file.mkv"
+#
+# DESIGN:
+# - Non-destructive
+# - Informational only
+# - Safe to run from Utility / Advanced Tools
+# =========================
+run_video_truth_probe() {
+	local f="$1"
+	local codec_name=""
+	local profile=""
+	local pix_fmt=""
+	local width=""
+	local height=""
+	local level=""
+	local profile_color="$GREEN"
+	local pix_color="$GREEN"
+
+	if [[ ! -f "$f" ]]; then
+		echo -e "${REB} = = > File Not Found:${NC} ${GREEN}$f${NC}"
+		return 1
+	fi
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}                VIDEO TRUTH PROBE               ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > File:${NC} ${GREEN}$f${NC}"
+	echo
+
+	# --------------------------------------------------------
+	# STREAM FACTS
+	# --------------------------------------------------------
+	# Read each field separately so we can color the important ones.
+	codec_name="$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$f" 2>/dev/null || true)"
+	profile="$(ffprobe -v error -select_streams v:0 -show_entries stream=profile -of default=nw=1:nk=1 "$f" 2>/dev/null || true)"
+	pix_fmt="$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of default=nw=1:nk=1 "$f" 2>/dev/null || true)"
+	width="$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=nw=1:nk=1 "$f" 2>/dev/null || true)"
+	height="$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=nw=1:nk=1 "$f" 2>/dev/null || true)"
+	level="$(ffprobe -v error -select_streams v:0 -show_entries stream=level -of default=nw=1:nk=1 "$f" 2>/dev/null || true)"
+
+	# --------------------------------------------------------
+	# COLOR RULES
+	# --------------------------------------------------------
+	# High 10 / yuv420p10le are not "bad", but they deserve attention
+	# because they are much more likely to expose hardware decode issues.
+	case "${profile,,}" in
+		*"high 10"*)
+			profile_color="$YE"
+			;;
+		*)
+			profile_color="$GR"
+			;;
+	esac
+
+	case "${pix_fmt,,}" in
+		*yuv420p10le*|*10le*|*p10*)
+			pix_color="$YE"
+			;;
+		*yuv420p*)
+			pix_color="$GR"
+			;;
+		*)
+			pix_color="$CYAN"
+			;;
+	esac
+
+	echo -e "${CYAN} = = > Stream Info:${NC}"
+	echo -e "${CYAN}     Codec:${NC} ${GREEN}${codec_name:-unknown}${NC}"
+	echo -e "${CYAN}     Profile:${NC} ${profile_color}${profile:-unknown}${NC}"
+	echo -e "${CYAN}     Pixel Format:${NC} ${pix_color}${pix_fmt:-unknown}${NC}"
+	echo -e "${CYAN}     Resolution:${NC} ${GREEN}${width:-?}x${height:-?}${NC}"
+	echo -e "${CYAN}     Level:${NC} ${GREEN}${level:-unknown}${NC}"
+	echo
+
+	# --------------------------------------------------------
+	# QUICK HUMAN HINTS
+	# --------------------------------------------------------
+	if [[ "${profile,,}" == *"high 10"* ]] || [[ "${pix_fmt,,}" == *"10le"* ]] || [[ "${pix_fmt,,}" == *"p10"* ]]; then
+		echo -e "${YE} = = > Attention:${NC} ${YE}10-bit video path detected.${NC}"
+		echo -e "${YE} = = > Some players / GPU decode paths may garble this even when the file is valid.${NC}"
+		echo
+	fi
+
+	echo -e "${CYAN} = = > Playback Tests:${NC}"
+
+	echo -e "${YELLOW} = = > ffplay (default path)...${NC}"
+	if ffplay -v error -autoexit "$f" >/dev/null 2>&1; then
+		echo -e "${GR} = = > ffplay Default Test: PASS${NC}"
+	else
+		echo -e "${REB} = = > ffplay Default Test: FAIL${NC}"
+	fi
+
+	echo -e "${YELLOW} = = > ffplay (software decode / hwaccel none)...${NC}"
+	if ffplay -v error -hwaccel none -autoexit "$f" >/dev/null 2>&1; then
+		echo -e "${GR} = = > ffplay Software-Decode Test: PASS${NC}"
+	else
+		echo -e "${REB} = = > ffplay Software-Decode Test: FAIL${NC}"
+	fi
+
+	echo
+	echo -e "${CYAN} = = > GPU / Decode Stack:${NC}"
+	if have_cmd vainfo; then
+		vainfo 2>/dev/null | sed -n '1,20p' || true
+	else
+		echo -e "${YELLOW} = = > vainfo Not Found.${NC}"
+	fi
+
+	echo
+	echo -e "${CYAN} = = > Interpretation:${NC}"
+	echo -e "${CYAN} If software decode works but another player does not:${NC}"
+	echo -e "${YE} = = > Likely hardware decode / player path issue, NOT a bad file.${NC}"
+	echo
+	echo -e "${CYAN} If both default and software decode fail:${NC}"
+	echo -e "${REB} = = > File, stream, or encode problem becomes more likely.${NC}"
+	echo
+
+	return 0
+}
+
+# =========================
+# #MARKER: VIDEO TRUTH PROBE MENU WRAPPER
+# =========================
+# PURPOSE:
+# - Provide a Factory-style file picker for the Video Truth Probe
+# - Keep the probe itself simple and reusable
+# - Avoid requiring manual path typing for routine diagnostics
+# =========================
+run_video_truth_probe_menu() {
+	local -a vids=()
+	local chosen=""
+
+	shopt -s nullglob nocaseglob
+	vids=(*.{LRV,mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
+	shopt -u nullglob nocaseglob
+
+	if ((${#vids[@]} == 0)); then
+		echo
+		echo -e "${YE} = = > No Eligible Video Files Found In Current Folder.${NC}"
+		echo
+		pause
+		return 0
+	fi
+
+	while true; do
+		clear
+		echo -e "${CYAN}================================================${NC}"
+		echo -e "${CYAN}             VIDEO TRUTH PROBE PICKER           ${NC}"
+		echo -e "${CYAN}================================================${NC}"
+		echo
+		echo -e "${CYAN} = = > Select A Video To Inspect:${NC}"
+		echo
+
+		select chosen in "${vids[@]}"; do
+			if [[ -n "${chosen:-}" ]]; then
+				echo
+				run_video_truth_probe "$chosen"
+				pause
+				return 0
+			fi
+
+			echo
+			echo -e "${REB} = = > Invalid Selection.${NC}"
+			echo
+			break
+		done
+	done
+}
 
 	remove_pilot_outputs_for_current_map() {
 		local map="${1:-$INTRO_MAP}"
@@ -4103,6 +4333,10 @@ HAS_ICONV=0
     # ============================================================
 show_global_dependency_help_wall() {
 	cat <<'EOF'
+
+	INSTALL COMMAND:
+	sudo apt update && sudo apt install ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less -y && pipx install "scenedetect[opencv]"
+
 	-------------------------DEPENDENCY DESCRIPTIONS INSTALL THESE---------------------------
 	ffmpeg:       The Main Engine For Remuxing, Trimming, Joining, Rebuilding, And More.
 	-----------------------------------------------------------------------------------------
@@ -4162,17 +4396,43 @@ EOF
 print_missing_required_dep() {
 	local dep="$1"
 	echo -e "${RE}============================================================${NC}"
-	echo -e "${REB} = = > Missing Required Dependency: $dep${NC}"
+	echo -e "${REB} = = > MISSING REQUIRED DEPENDENCY${NC}"
+	echo -e "${RE}------------------------------------------------------------${NC}"
+	echo -e "${YELLOW} = = > $dep${NC}"
+	echo -e "${YELLOW} = = > Factory Cannot Run Until This Is Installed${NC}"
 	echo -e "${RE}============================================================${NC}"
+	echo
+
+	# --------------------------------------------------------
+	# Only ask once per run
+	# --------------------------------------------------------
+	if [[ -z "${_DEP_HELP_SHOWN:-}" ]]; then
+		if ask_yes_no " = = > Show Install / Help Wall? (y/n or 1/2): "; then
+			show_global_dependency_help_wall
+			_DEP_HELP_SHOWN=1
+		fi
+	fi
 }
 
 print_missing_optional_dep() {
 	local dep="$1"
 	local why="$2"
-	echo -e "${YELLOW}------------------------------------------------------------${NC}"
-	echo -e "${YEB} = = > Optional Tool Missing: $dep${NC}"
-	echo -e "${YEB} = = > Related Feature Impact: $why${NC}"
-	echo -e "${YELLOW}------------------------------------------------------------${NC}"
+	echo -e "${REB}------------------------------------------------------------${NC}"
+	echo -e "${YELLOW} = = > Optional Tool Missing: $dep${NC}"
+	echo -e "${YELLOW} = = > Related Feature Impact: $why${NC}"
+	echo -e "${YELLOW} = = > Use Install / Help Wall For Fix Commands${NC}"
+	echo -e "${REB}------------------------------------------------------------${NC}"
+	echo
+
+	# --------------------------------------------------------
+	# Only ask once per run
+	# --------------------------------------------------------
+	if [[ -z "${_DEP_HELP_SHOWN:-}" ]]; then
+		if ask_yes_no " = = > Show Install / Help Wall? (y/n or 1/2): "; then
+			show_global_dependency_help_wall
+			_DEP_HELP_SHOWN=1
+		fi
+	fi
 }
 
     # ============================================================
@@ -4370,32 +4630,27 @@ inspect_dependencies() {
 	check_opt findmnt     "Drive Label Display Will Fallback"
 	check_opt less        "Long Notes Will Fallback To Plain Output"
 	check_opt iconv       "Some Title Transliteration Behavior Reduced"
-    check_opt tee         "Some logging / transcript capture helpers will be unavailable."
+	check_opt tee         "Some logging / transcript capture helpers will be unavailable."
 
-	echo
-	echo -e "${CYAN}============================================================${NC}"
-    if ask_yes_no " = = > Show Install / Help Wall? (y/n or 1/2): "; then
-        echo
-        show_global_dependency_help_wall
-    fi
+	# ========================================================
+	# #MARKER: PIPX PATH VISIBILITY CHECK
+	# ========================================================
+	# PURPOSE:
+	# - Detect scenedetect installed via pipx but not visible in PATH
+	# - Prevent false "missing" state when tool actually exists
+	# ========================================================
+	if command -v pipx >/dev/null && \
+	   [[ -x "$HOME/.local/bin/scenedetect" ]] && \
+	   ! command -v scenedetect >/dev/null; then
 
-	echo
-	pause
-}
-
-# = = = = = = = = = = = = End of dep_check manual
-
-# Helper function for dependency checking
-check_opt() {
-	local dep="$1"
-	local note="$2"
-
-	if have_cmd "$dep"; then
-		echo -e "${GREEN}[ OK ]${NC} $dep"
-	else
-		echo -e "${YELLOW}[MISS]${NC} $dep  -> $note"
+		echo
+		echo -e "${YE}------------------------------------------------------------${NC}"
+		echo -e "${YEB} = = > scenedetect Installed But Not On PATH${NC}"
+		echo -e "${CYAN} = = > Run:${NC} ${GREEN}pipx ensurepath${NC}"
+		echo -e "${YE}------------------------------------------------------------${NC}"
 	fi
 }
+# = = = = = = = = = = = = End of dep_check manual
 
 # =========================
 # #MARKER: MAIN MENU (WORKFLOW ENTRYPOINT)
@@ -4426,7 +4681,9 @@ run_main_menu() {
     echo -e "${CYAN}------SUBTOX UNIFIED SUBTITLE + RENAME ENGINE -------------------------${NC}"
     echo -e "${RED}=======================================================================${NC}"
     echo
-    echo -e "${GREEN}        Main Menu = = = THE_FACTORY = = = Main Menu                     ${NC}"
+    echo -e "${RED}        Main Menu${NC}${BWHITE} = = = THE_FACTORY = = =${NC} ${CYAN}Main Menu${NC}"
+    echo -e "${RED}        Main Menu${NC}${BWHITE} = = = THE_FACTORY = = =${NC} ${CYAN}Main Menu${NC}"
+    echo -e "${RED}        Main Menu${NC}${BWHITE} = = = THE_FACTORY = = =${NC} ${CYAN}Main Menu${NC}"
     echo
 
     # ------------------ WORKING CONTEXT ------------------
@@ -9329,29 +9586,27 @@ run_clip_join_triage_menu() {
 #   Prepare Sources, GAPMAN, or BARFIX's other homes.
 #
 run_utility_menu() {
-	while true; do
+while true; do
 		clear
 		echo -e "${CYAN}================================================${NC}"
-		echo -e "${CYAN}         UTILITY / ADVANCED TOOLS               ${NC}"
+		echo -e "${CYAN}              UTILITY / ADVANCED TOOLS          ${NC}"
 		echo -e "${CYAN}================================================${NC}"
 		echo
-		echo -e "${YELLOW}"
-		echo "     1) Show Templates"
-		echo "     2) Show Target Files"
-		echo "     3) Diff Two Files"
-		echo "     4) REKEY Validity Check"
-		echo "     5) Keyframe Cut-Friendliness Check"
-		echo "     6) Triage Center / Clip Surgery Tools"
-		echo "     7) Inspect Dependency Status"
-		echo "     8) Twisted Color / Theme Engine"
-		echo "     9) Archie's Archival Array"
+		echo -e "${YELLOW}     1) Show Local Files${NC}"
+		echo -e "${YELLOW}     2) Show Local Video Files${NC}"
+		echo -e "${YELLOW}     3) Diff Two Local Files${NC}"
+		echo -e "${YELLOW}     4) REKEY Preference / Normalize-First Controls${NC}"
+		echo -e "${YELLOW}     5) Keyframe Probe${NC}"
+		echo -e "${YELLOW}     6) Clip / Join Triage${NC}"
+		echo -e "${YELLOW}     7) Video Truth Probe${NC}"
+		echo -e "${YELLOW}     8) Dependency Status${NC}"
+		echo -e "${YELLOW}     9) Twisted Color Menu${NC}"
+		echo -e "${YELLOW}    10) Archie's Archival Array${NC}"
 		echo
-		echo "     0.)Return  (or q)  =  Quit"
+		echo -e "${YELLOW}     0) Return${NC}"
 		echo
 
-		echo -e "${YELLOW}     Choice: ${NC}"
-		read -r util_choice
-		util_choice="${util_choice//[[:space:]]/}"
+		prompt_menu_choice " = = > Select Option [1-10 | 0=return]: " util_choice
 
 		if is_exit_token "$util_choice"; then
 			return 0
@@ -9359,33 +9614,28 @@ run_utility_menu() {
 
 		case "$util_choice" in
 			1)
-				echo
-				echo -e "${CYAN} = = > Templates:${NC}"
 				shopt -s nullglob
-				local -a t
-				if [[ -d intro_template ]]; then
-					t=(intro_template/intro_template*.mkv)
-				else
-					t=(intro_template*.mkv)
-				fi
+				local -a all_files=(*)
 				shopt -u nullglob
-				if ((${#t[@]}==0)); then
+
+				echo
+				if ((${#all_files[@]}==0)); then
 					echo -e "${RE} = = > None Found.${NC}"
 				else
-					printf "${CYAN}   - %s\n" "${t[@]}${NC}"
+					printf "${CYAN}   - %s${NC}\n" "${all_files[@]}"
 				fi
 				pause
 				;;
 			2)
-				echo
-				echo -e "${CYAN} = = > Video Targets In Current Folder:${NC}"
 				shopt -s nullglob nocaseglob
-				local -a v=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
+				local -a v=(*.{LRV,mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
 				shopt -u nullglob nocaseglob
+
+				echo
 				if ((${#v[@]}==0)); then
 					echo -e "${RE} = = > None Found.${NC}"
 				else
-					printf "${CYAN}   - %s\n" "${v[@]}${NC}"
+					printf "${CYAN}   - %s${NC}\n" "${v[@]}"
 				fi
 				pause
 				;;
@@ -9418,8 +9668,7 @@ run_utility_menu() {
 				pause
 				;;
 			4)
-                prepare_set_rekey_preference
-                #run_rekey_validity_check
+				prepare_set_rekey_preference
 				;;
 			5)
 				run_keyframe_probe_menu
@@ -9428,12 +9677,15 @@ run_utility_menu() {
 				run_clip_join_triage_menu
 				;;
 			7)
-				inspect_dependencies
+				run_video_truth_probe_menu
 				;;
 			8)
-				run_twisted_menu
+				inspect_dependencies
 				;;
 			9)
+				run_twisted_menu
+				;;
+			10)
 				run_archies_archival_array
 				;;
 			*)
@@ -10436,51 +10688,136 @@ run_with_progress() {
 # - Keep Quality/Settings FIXED.
 # - Throttle By Number Of Simultaneous Files, NOT By Lowering Encode Quality.
 # =========================
+
 normalize_cut_friendly_file() {
 	local in="$1"
 	local rekey_crf="${2:-$REKEY_CRF}"
-	local out="${3:-REKEY_$(basename "${in%.*}").mkv}"
-	local fps fps_calc
+	local out_override="${3:-}"
+	local quiet_progress="${4:-0}"
+	local out fps fps_calc
+
+	# ========================================================
+	# OUTPUT NAMING RULE
+	# --------------------------------------------------------
+	# PURPOSE:
+	# - Preserve the normal REKEY_<name>.mkv output by default
+	# - Allow rolling/secondary callers to override the output path
+	#   (example: .try2.mkv)
+	# - Allow throughput workers to keep the same normal output naming
+	#
+	# CALL SHAPES:
+	# - normalize_cut_friendly_file "$src" "$crf"
+	# - normalize_cut_friendly_file "$src" "$crf" "$custom_out"
+	# - normalize_cut_friendly_file "$src" "$crf" "$custom_out" "$quiet_progress"
+	# ========================================================
+	if [[ -n "$out_override" ]]; then
+		out="$out_override"
+	else
+		out="REKEY_$(basename "${in%.*}").mkv"
+	fi
 
 	# Skip only if existing rebuilt file is actually valid/readable.
 	if is_valid_video_file "$out"; then
-		echo -e "${YELLOW} = = > Skip Existing Rebuilt File:${NC} ${GREEN}$out${NC}" >&2
+		if (( quiet_progress == 0 )); then
+			echo -e "${YELLOW} = = > Skip Existing Rebuilt File:${NC} ${GREEN}$out${NC}"
+		fi
 		return 0
 	fi
 
 	# If a stale/corrupt partial file exists, remove it before rebuilding.
 	if [[ -f "$out" ]]; then
-		echo -e "${YELLOW} = = > Existing Rebuilt File Is Invalid. Removing Stale File:${NC} ${GREEN}$out${NC}" >&2
-		rm -f -- "$out"
+		if (( quiet_progress == 0 )); then
+			echo -e "${YELLOW} = = > Existing Rebuilt File Is Invalid. Removing Stale File:${NC} ${GREEN}$out${NC}"
+		fi
+		rm -f "$out"
 	fi
 
-	# Read source frame rate so GOP stays approximately 1 second
-	fps=$(ffprobe -v error -select_streams v:0 \
-		-show_entries stream=r_frame_rate \
-		-of default=noprint_wrappers=1:nokey=1 "$in" 2>/dev/null)
+	fps="$(ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate \
+		-of default=nokey=1:noprint_wrappers=1 "$in")"
 
-	fps_calc=$(echo "$fps" | awk -F'/' '{if ($2>0) printf "%.0f", $1/$2}')
-	[[ -z "$fps_calc" ]] && fps_calc=24
+	if [[ -z "$fps" || "$fps" == "0/0" ]]; then
+		fps_calc=24
+	else
+		fps_calc=$(awk -v fr="$fps" 'BEGIN{
+			split(fr,a,"/")
+			if (a[2] == 0 || a[2] == "") print 24
+			else printf "%.3f", a[1]/a[2]
+		}')
+	fi
 
-	echo -e "${CYAN} = = > Normalizing:${NC} ${GREEN}$in${NC}" >&2
-	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}" >&2
-	echo -e "${CYAN} = = > GOP target:${NC} ${YELLOW}~1 second (${fps_calc} frames)${NC}" >&2
-	echo -e "${CYAN} = = > REKEY CRF:${NC} ${YELLOW}$rekey_crf${NC}" >&2
-	echo -e "${CYAN} = = > Audio Policy:${NC} ${GREEN}copy-through${NC}" >&2
+	# ========================================================
+	# DISPLAY POLICY
+	# --------------------------------------------------------
+	# NORMAL / ADAPTIVE / SINGLE-FILE:
+	# - keep rich per-file display + spinner heartbeat
+	#
+	# THROUGHPUT / CONCURRENT:
+	# - suppress per-file chatter and spinner animation
+	# - parent batch runner becomes the main terminal narrator
+	#
+	# WHY:
+	# - Multiple simultaneous run_with_progress heartbeat lines all fight
+	#   over the same terminal row and create visual garbage.
+	# ========================================================
+	if (( quiet_progress == 0 )); then
+		echo -e "${CYAN} = = > Normalizing:${NC} ${GREEN}$in${NC}"
+		echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+		echo -e "${CYAN} = = > GOP target:${NC} ${YELLOW}~1 second${NC} (${fps_calc} fps)"
+		echo -e "${CYAN} = = > REKEY_CRF:${NC} ${YELLOW}$rekey_crf${NC}"
+		echo -e "${CYAN} = = > Audio Policy:${NC} ${YELLOW}copy-through${NC}"
 
-	if run_with_progress "Batch Normalize: $(basename "$in")" \
-		ffmpeg -hide_banner -loglevel error -nostdin -y -i "$in" \
-			-c:v libx264 -preset medium -crf "$rekey_crf" \
-			-g "$fps_calc" -keyint_min "$fps_calc" \
-			-sc_threshold 0 \
-			-c:a copy \
-			"$out"; then
+		# ========================================================
+		# 8-BIT PLAYBACK COMPATIBILITY RULE
+		# --------------------------------------------------------
+		# FORCE yuv420p here so REKEY outputs stay broadly compatible
+		# with ordinary player and hardware-decode paths.
+		# ========================================================
+		if run_with_progress "Batch Normalize: $(basename "$in")" \
+			ffmpeg -y -hide_banner -nostats -loglevel error \
+				-i "$in" \
+				-map 0 \
+				-c:v libx264 -preset medium -crf "$rekey_crf" \
+				-pix_fmt yuv420p \
+				-g "$fps_calc" -keyint_min "$fps_calc" -sc_threshold 0 \
+				-force_key_frames "expr:gte(t,n_forced*1)" \
+				-c:a copy \
+				-c:s copy \
+				"$out"; then
+			echo -e "${GREEN} = = > Rebuilt:${NC} ${GREEN}$out${NC}"
+			return 0
+		else
+			echo -e "${REB} = = > Normalize Failed:${NC} ${GREEN}$in${NC}"
+			rm -f "$out"
+			return 1
+		fi
+	fi
 
-		echo -e "${GR} = = > Normalized OK:${NC} ${GREEN}$out${NC}" >&2
+	# ========================================================
+	# QUIET THROUGHPUT PATH
+	# --------------------------------------------------------
+	# NO spinner
+	# NO per-file chatter
+	# Parent worker summary handles the user-facing feedback
+	# ========================================================
+	# ========================================================
+	# 8-BIT PLAYBACK COMPATIBILITY RULE
+	# --------------------------------------------------------
+	# FORCE yuv420p here too, so throughput mode does not drift
+	# away from the normal visible path.
+	# ========================================================
+	if ffmpeg -y -hide_banner -nostats -loglevel error \
+		-i "$in" \
+		-map 0 \
+		-c:v libx264 -preset medium -crf "$rekey_crf" \
+		-pix_fmt yuv420p \
+		-g "$fps_calc" -keyint_min "$fps_calc" -sc_threshold 0 \
+		-force_key_frames "expr:gte(t,n_forced*1)" \
+		-c:a copy \
+		-c:s copy \
+		"$out"; then
 		return 0
 	else
-		echo -e "${REB} = = > Normalize FAILED:${NC} ${GREEN}$in${NC}" >&2
-		rm -f -- "$out"
+		rm -f "$out"
 		return 1
 	fi
 }
@@ -12119,56 +12456,38 @@ run_intro_detection_menu() {
     done
 }
 
-# ============================================================
-#       DETECTION MODES MENUZ
-# ============================================================
-
-run_missions() {
-
-echo -e "${CYAN}  = = > Select-Detection-Mode:${NC}"
-echo -e "${YELLOW}"
-echo "     0)  = = >   Create / Rebuild intro_template.mkv"
-echo "     1)  = = >   Manual Duration Start Stop Times To intro_map.csv"
-echo "     2)  = = >   Multi Key Perceptual Match 2 intro_map.csv For GapMan"
-echo "     3)  = = >   GapMan Uses intro_map.csv To Cut-n-Gut Snip-n-Clip"
-echo "     4)  = = >   Op #2 With Drop 2 Black-Detect Multi-Pass Hybrid"
-echo "     5)  = = >   Build / Append  2 CSV For GapMan"
-echo "     6)  = = >   SUBtitles deTOX Filename and Meta"
-echo "     7)  = = >   Blackdetect Only No Multipass"
-echo "     8)  = = >   Batch Normalize RE-encode All Files For Clean Cuts"
-echo
-
-echo -e "${YELLOW}       = = > Mode [0-8]: ${NC}"
+# =================================================
+#       DETECTION MODES MENU CALLS
+# =================================================
+# LEGACY MENU DISPLAY REMOVED
+# - Old detection menu text removed for cleanliness
+# - MODE input still used for legacy routing
+# =================================================
+Old() {
+# MODE is still consumed by legacy routing below.
 read -r MODE
-echo
-
 if [[ "$MODE" == "0" ]]; then
     prompt_normalize_first_workflow
     create_template
     return 0
 fi
-
 if [[ "$MODE" == "5" ]]; then
     run_build_episodes
     return 0
 fi
-
 if [[ "$MODE" == "6" ]]; then
     run_subtox
     return 0
 fi
-
 if [[ "$MODE" == "3" ]]; then
     prompt_normalize_first_workflow
     run_gapman
     return 0
 fi
-
 if [[ "$MODE" == "8" ]]; then
 	run_batch_normalizer
 	return 0
 fi
-
 case "$MODE" in
   1)
     return 0
@@ -12177,38 +12496,37 @@ case "$MODE" in
     run_intro_detection_menu
     return 0
     ;;
+
+
+
   7)
     # =========================
     # #MARKER: DETECTION PROMPTS (BLACKDETECT ONLY)
     # =========================
-    echo -e "${YELLOW} = = > If You Chose Blackdetect Then Set Its Duration? (Default ${DEFAULT_BLACK_DURATION}): ${NC}"
+    echo -ne "${YELLOW} = = > If You Chose Blackdetect Then Set Its Duration? (Default ${DEFAULT_BLACK_DURATION}): "
     read -r BLACK_DUR
+    echo -e "${NC}"
     BLACK_DUR=${BLACK_DUR:-$DEFAULT_BLACK_DURATION}
 
-    echo -e "${YELLOW} = = > If You Chose Blackdetect Then Set Its Pixel Threshold? (Default ${DEFAULT_BLACK_PIXTH}): ${NC}"
+    echo -ne "${YELLOW} = = > If You Chose Blackdetect Then Set Its Pixel Threshold? (Default ${DEFAULT_BLACK_PIXTH}): "
     read -r BLACK_PIX
+    echo -e "${NC}"
     BLACK_PIX=${BLACK_PIX:-$DEFAULT_BLACK_PIXTH}
-    echo
 
+    echo
     return 0
     ;;
   *)
-    echo -e "${REB} = = > Invalid mode: $MODE${NC}"
-    exit 1
-    ;;
+ 	echo -e "${REB} = = > Invalid mode: $MODE${NC}"
+	pause
+	return 1
+	;;
 esac
-
 }
-
 # =========================
 # #MARKER: WRAPPER → MISSIONS ENTRYPOINT (ORDER MATTERS)
 # =========================
-
-# =========================
-# #MARKER: NEW ENTRYPOINT
-# =========================
 run_main_menu
-
 # =========================
 # #MARKER: MISSION SHORT-CIRCUIT RETURN
 # =========================
