@@ -227,7 +227,7 @@ Modes:
 - playback-only  
 - combined  
 
-**Outputs:** working_dir/BARFIX_file_name.mvk
+**Outputs:** working_dir/BARFIX_file_name.mkv
 
 ---
 
