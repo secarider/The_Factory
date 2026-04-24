@@ -9,6 +9,12 @@ THE_FACTORY automates complex, repetitive workflows such as intro detection, cle
 
 ## PURPOSE
 
+WHAT THE_FACTORY DOES NOT DO
+
+- Does not overwrite original files
+- Does not re-encode unless required
+- Does not guess or auto-correct without user confirmation
+
 THE_FACTORY exists to:
 
 - process full media sets (e.g., TV seasons) safely  
@@ -119,12 +125,12 @@ Processing a full TV season:
 Typical flow:
 
 - OEM_Backups  →  Copy Eligible Targets To `OEM dir` and Prefix the name with `OEM_filename` 
-- Check Sources suitability for clean cuts and if "Risky"
-- Allow `REKEY_rebuild` of files for perfect cuts and joins thanks to a 1 second keyframe rate
-- Everything comes out MKV no matter what it was going in That Is All. exception is OEM_backups they are whatever they were
+- Check source suitability for clean cuts and flag "risky" files
+- Optionally rebuild sources (REKEY) with ~1-second keyframes for reliable cuts and joins
+- All processed outputs are normalized to MKV format. Exception is OEM_backups they are whatever they were.
 - Build Template → create example of the intro reference, hopefully from `REKEY_ Sources`
 - Detect Intros → `This Is Magic Right Here Folks` IntroFind finds the intro and enters times into generated `intro_map.csv`  
-- Run GAPMAN → remove intros cleanly, make minor adjustments of cut times "if needed" with ( pre , post , overall drift, start of, end of ) intro cut padding
+- Run GAPMAN → remove intros cleanly, supports fine adjustment of cut timing when needed with ( pre , post , overall drift, start of, end of ) intro cut padding
 - Apply Title / Subtitle fixes and set what you see in the titlebar of your player not just filenames
 - Finalize outputs → cleanup and rename files, dump temps, originals, and decide what to do with protected OEM_backups, option to tar them up 
 
@@ -135,7 +141,7 @@ Typical flow:
 ### 1. Source Preparation (OEM Protection)
 
 - Creates protected backups of originals  
-- Applies prefix-based shielding to prevent reprocessing  
+- Applies prefix-based shielding to prevent files from being processed more than once  
 - Displays disk usage and warnings  
 
 **Outputs:** working_dir/OEM/OEM_file_name.*** these files are not modded at all (only renamed with prefix_) and remain whatever .ext they were to begin with.
