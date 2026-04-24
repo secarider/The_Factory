@@ -77,7 +77,7 @@ This enables:
   - `hh:mm:ss`
   - decimal (`2.20`)
 - Exit tokens:
-  - `0`
+  - `0.`
   - `q`
 
 ---
