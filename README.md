@@ -9,13 +9,13 @@ THE_FACTORY automates complex, repetitive workflows such as intro detection, cle
 
 ## PURPOSE
 
-WHAT THE_FACTORY DOES NOT DO
+### WHAT THE_FACTORY DOES NOT DO
 
 - Does not overwrite original files
 - Does not re-encode unless required
 - Does not guess or auto-correct without user confirmation
 
-THE_FACTORY exists to:
+### THE_FACTORY exists to:
 
 - process full media sets (e.g., TV seasons) safely  
 - automate intro detection and removal  
@@ -127,10 +127,10 @@ Typical flow:
 - OEM_Backups  →  Copy Eligible Targets To `OEM dir` and Prefix the name with `OEM_filename` 
 - Check source suitability for clean cuts and flag "risky" files
 - Optionally rebuild sources (REKEY) with ~1-second keyframes for reliable cuts and joins
-- All processed outputs are normalized to MKV format. Exception is OEM_backups they are whatever they were.
+- All processed outputs are normalized to MKV format. Exception: OEM backups remain in their original format.
 - Build Template → create example of the intro reference, hopefully from `REKEY_ Sources`
 - Detect Intros → `This Is Magic Right Here Folks` IntroFind finds the intro and enters times into generated `intro_map.csv`  
-- Run GAPMAN → remove intros cleanly, supports fine adjustment of cut timing when needed with ( pre , post , overall drift, start of, end of ) intro cut padding
+- Run GAPMAN → remove intros cleanly, supports fine adjustment of cut timing when needed with (pre, post, overall drift, start-of, end-of) intro cut padding
 - Apply Title / Subtitle fixes and set what you see in the titlebar of your player not just filenames
 - Finalize outputs → cleanup and rename files, dump temps, originals, and decide what to do with protected OEM_backups, option to tar them up 
 
@@ -167,7 +167,8 @@ When adaptive normalization logic is active, parallelism may be reduced so each 
 - Uses manual time selection for precision  
 - Normalizes output to MKV  
 
-Templates stored in: working_dir/intro_template
+Templates stored in:
+working_dir/intro_template/
 
 ---
 
