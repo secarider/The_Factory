@@ -204,7 +204,7 @@ Supports:
 - Extract internal subtitle tracks  
 - Rename using `episodes.csv` mapping  
 
-**Outputs:**
+**Outputs:** SUBTOX_file_name
 
 ---
 
@@ -221,7 +221,7 @@ Modes:
 - playback-only  
 - combined  
 
-**Outputs:**
+**Outputs:** BARFIX_file_name
 
 ---
 
@@ -239,13 +239,16 @@ Modes:
 
 ### 9. Manual Tools
 
-- Custom segment cutting  
-- Clip joining  
-- File inspection tools  
+- File Inspection Tools
 - ffprobe-based comparison
-- Archival_Array  exported as its own .sh @ https://github.com/secarider/Archies-Archival-Array/tree/main
+- Custom segment cutting
+- Clip joining: Exported, https://github.com/secarider/CHARLIES-CUSTOM-CUTS/tree/main
+- One-Off Clip Cutting (Brutal + Accurate) - Join Any Two Clips Together  
+- Archival_Array: Exported, https://github.com/secarider/Archies-Archival-Array/tree/main
+- Archival_Array: For dealing with dash/body/game cam dump folders and the hundreds of files they contain that you said you would sort
+- Archival_Array: We can strip (or not) the metadata, save that to the side, then squeeze the files down small and tarball em . 
 
-**Outputs:**
+**Outputs:** ARCHIVE_L1,2,3,or,4 Depending On Compression Level
 
 ---
 
