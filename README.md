@@ -242,7 +242,8 @@ Modes:
 - Custom segment cutting  
 - Clip joining  
 - File inspection tools  
-- ffprobe-based comparison  
+- ffprobe-based comparison
+- Archival_Array  exported as its own .sh @ https://github.com/secarider/Archies-Archival-Array/tree/main
 
 **Outputs:**
 
