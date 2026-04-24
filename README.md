@@ -161,7 +161,7 @@ When adaptive normalization logic is active, parallelism may be reduced so each 
 - Uses manual time selection for precision  
 - Normalizes output to MKV  
 
-Templates stored in:
+Templates stored in:working_dir/intro_template
 
 ---
 
