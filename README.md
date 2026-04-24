@@ -138,7 +138,7 @@ Typical flow:
 - Applies prefix-based shielding to prevent reprocessing  
 - Displays disk usage and warnings  
 
-**Outputs:**
+**Outputs:** working_dir/OEM/OEM_file_name.*** these files are not modded at all (only renamed with prefix_) and remain whatever .ext they were to begin with.
 
 ---
 
@@ -194,7 +194,7 @@ Supports:
 - pre-trim (logos)  
 - post-trim (credits)  
 
-**Outputs:** SUTURED_file_name.mkv
+**Outputs:** working_dir/SUTURED_file_name.mkv
 
 ---
 
@@ -204,7 +204,7 @@ Supports:
 - Extract internal subtitle tracks  
 - Rename using `episodes.csv` mapping  
 
-**Outputs:** SUBTOX_file_name
+**Outputs:** working_dir/SUBTOX_file_name.mkv
 
 ---
 
@@ -221,7 +221,7 @@ Modes:
 - playback-only  
 - combined  
 
-**Outputs:** BARFIX_file_name
+**Outputs:** working_dir/BARFIX_file_name.mvk
 
 ---
 
@@ -248,7 +248,7 @@ Modes:
 - Archival_Array: For dealing with dash/body/game cam dump folders and the hundreds of files they contain that you said you would sort
 - Archival_Array: We can strip (or not) the metadata, save that to the side, then squeeze the files down small and tarball em . 
 
-**Outputs:** ARCHIVE_L1,2,3,or,4 Depending On Compression Level
+**Outputs:** ARCHIVE_L1_file_name.mkv Depending On Compression Level L1,L2,L3,L4 
 
 ---
 
