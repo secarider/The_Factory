@@ -14,6 +14,7 @@ THE_FACTORY automates complex, repetitive workflows such as intro detection, cle
 - Does not overwrite original files
 - Does not re-encode unless required
 - Does not guess or auto-correct without user confirmation
+- Does not silently overwrite or discard data
 
 ### THE_FACTORY exists to:
 
