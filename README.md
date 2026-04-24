@@ -194,7 +194,7 @@ Supports:
 - pre-trim (logos)  
 - post-trim (credits)  
 
-**Outputs:**
+**Outputs:** SUTURED_file_name.mkv
 
 ---
 
