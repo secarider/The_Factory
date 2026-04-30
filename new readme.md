@@ -1,5 +1,7 @@
 # SMCUT — SmartCut-Based Intro Removal System
 
+inspired and powered by 'https://github.com/skeskinen/smartcut'
+
 ---
 
 ## Overview
