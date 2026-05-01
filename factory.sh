@@ -414,10 +414,10 @@ run_twisted_menu() {
 		echo -e "${YELLOW}     4) Show Current Color Preview${NC}"
 		echo -e "${YELLOW}     5) Reset To Classic${NC}"
 		echo
-		echo -e "${YELLOW}     0) Return${NC}"
+		echo -e "${YELLOW}     0.) Return${NC}"
 		echo
         echo -e "${YELLOW}"
-		read -r -p " = = > Select option [1-5 | 0=return]: " choice
+		read -r -p " = = > Select option [1-5 | 0.=return]: " choice
         echo -e "${NC}"
 
         if is_exit_token "$choice"; then
@@ -442,10 +442,10 @@ run_twisted_menu() {
 				echo -e "${WHITE}  4) ${CYAN}ice${NC}"
 				echo -e "${WHITE}  5) ${CYAN}twisted${NC}"
 				echo -e "${WHITE}  6) ${CYAN}mono${NC}"
-				echo -e "${WHITE}  0) Return${NC}"
+				echo -e "${WHITE}  0.) Return${NC}"
 				echo
 
-				read -r -p " = = > Select theme [1-6 | 0=return]: " theme_name
+				read -r -p " = = > Select theme [1-6 | 0.=return]: " theme_name
 				theme_name="${theme_name,,}"
 				theme_name="${theme_name//[[:space:]]/}"
 
@@ -456,7 +456,7 @@ run_twisted_menu() {
 					4) twisted theme ice ;;
 					5) twisted theme twisted ;;
 					6) twisted theme mono ;;
-					0|q)
+					0.|q|Q)
 						echo -e "${YE} = = > Theme selection canceled.${NC}"
 						pause
 						continue
@@ -503,6 +503,10 @@ run_twisted_menu() {
 # END OF COLOR SYSTEM / TWISTED THEME ENGINE ===================================
 
 # ------------------ DEFAULTS ------------------
+# ========================================================
+# ARCHIVE TEMP WORKDIR (SAFE WRITE AREA)
+# ========================================================
+ARCHIVE_TMPDIR=""
 DEFAULT_SCAN_START=30
 DEFAULT_HASH_DIFF=24
 DEFAULT_MAX_SCAN=601
@@ -555,6 +559,7 @@ REKEY_SHRINK_WARN_PERCENT=15
 TARGET_MAX_GROWTH=10
 TARGET_MAX_SHRINK=5
 REKEY_CRF=25
+ARRAY_MAX_JOBS=2
 
 # - Helpers
 
@@ -608,7 +613,6 @@ fadd() { echo "scale=3; ($1)+($2)" | bc; }
 fsub() { echo "scale=3; ($1)-($2)" | bc; }
 fmax0() { echo "scale=3; if(($1)<0) 0 else ($1)" | bc; }
 
-
 # =========================
 # #MARKER: TIME / PARSE HELPERS
 # =========================
@@ -636,23 +640,39 @@ format_seconds_hms() {
 	}'
 }
 
+# ========================================================
+# MARKER: GLOBAL ARRAY HEARTBEAT (PARENT-ONLY)
+# ========================================================
+archival_array_heartbeat() {
+
+	local interval=0.2
+	local tick=0
+	local spin='|/-\'
+	local spin_len=${#spin}
+
+	while true; do
+		sleep "$interval"
+
+		printf '\r\033[2K%b' "${YEB} = = = = = = = > ${NC}${YELLOW}${spin:tick%spin_len:1} Archival Array Running${YELLOW} ${spin:tick%spin_len:1}${NC}${YEB} < = = = = = = =${NC}"
+
+		((tick+=1)) || :
+	done
+}
 
 # =========================
 # #MARKER: IO / DISPLAY HELPERS
 # =========================
 
-
-
 ask_yes_no() {
-	local prompt="$1"
-	local ans
+    local prompt="$1"
+    local ans
 
-	echo -ne "${YELLOW}${prompt}"
+	echo -ne "${YELLOW}${prompt}${GREEN}"
 	read -r ans
 	echo -e "${NC}"
 
-	ans="${ans,,}"
-	ans="${ans//[[:space:]]/}"
+    ans="${ans,,}"
+    ans="${ans//[[:space:]]/}"
 
 	# ========================================================
 	# TEN-KEY FRIENDLY YES/NO RULE
@@ -669,17 +689,17 @@ ask_yes_no() {
 	# - Treat blank as safe default NO
 	# ========================================================
 
-	case "${ans:-2}" in
-		y|yes|1)
-			return 0
-			;;
-		n|no|2|"")
-			return 1
-			;;
-		*)
-			return 1
-			;;
-	esac
+    case "${ans:-2}" in
+        y|yes|1)
+            return 0
+            ;;
+        n|no|2|"")
+            return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 # =========================
@@ -726,7 +746,7 @@ prompt_read() {
 # - Avoid repeated parsing logic everywhere
 #
 # USAGE:
-#   prompt_menu_choice " = = > Choose [1-3 | 0=return]: " choice
+#   prompt_menu_choice " = = > Choose [1-3 | 0.=return]: " choice
 #
 prompt_menu_choice() {
 	local prompt="$1"
@@ -742,6 +762,167 @@ prompt_menu_choice() {
 	__input="${__input,,}"
 
 	printf -v "$__var_name" '%s' "$__input"
+}
+
+# ========================================================
+# #MARKER: FACTORY TARGET LIMITER / MANUAL FILE PICKER
+# ========================================================
+# PURPOSE:
+# - Let A Batch Run Use:
+#     1) Full Target List
+#     2) Manual Numbered File Picks
+#     3) First-N Smoke Test
+#
+# DESIGN:
+# - Accepts An Array Name By Reference
+# - Rewrites That Array In Place
+# - Keeps The Caller In Control Of What Files Are Eligible
+#
+# INPUT STYLE:
+# - Single File:       1
+# - Multiple Files:    1 4 7
+# - Comma Style:       1,4,7
+#
+# EXIT RULE:
+# - 0. or q cancels
+# - Plain 0 is NOT an exit token
+# ========================================================
+limit_targets_interactive() {
+	local -n _targets_ref=$1
+	local mode how_many total
+	local raw_choices choice clean_choice idx
+	local -a picked_targets=()
+	local -A seen_choice=()
+
+	total="${#_targets_ref[@]}"
+	(( total == 0 )) && return 0
+
+	echo -e "${CYAN} = = > Targets Found:${NC} ${YELLOW}$total${NC}"
+	echo -e "${CYAN} = = > Batch Selection Mode:${NC}"
+	echo -e "${CYAN}     1) Use Full Batch${NC}"
+	echo -e "${CYAN}     2) Pick Files Manually${NC}"
+	echo -e "${CYAN}     3) Limit To First N Files${NC}"
+	echo -e "${CYAN}     0.) Return / Cancel${NC}"
+	echo
+
+	echo -ne "${YELLOW} = = > Select option [1-3 | 0.=cancel | q] (Default: Full Batch):${GREEN}"
+	read -r mode
+	echo -e "${NC}"
+
+	mode="${mode//[[:space:]]/}"
+
+	if is_exit_token "$mode"; then
+		return 1
+	fi
+
+	case "${mode:-1}" in
+		1)
+			echo -e "${GREEN} = = > Using Full Batch:${NC} ${YELLOW}${#_targets_ref[@]} file(s)${NC}"
+			echo
+			return 0
+			;;
+
+		2)
+			echo
+			echo -e "${CYAN}================================================${NC}"
+			echo -e "${CYAN}             FACTORY MANUAL FILE PICKER         ${NC}"
+			echo -e "${CYAN}================================================${NC}"
+			echo
+
+			for idx in "${!_targets_ref[@]}"; do
+				printf '%b%5d)%b %b%s%b\n' \
+					"$YELLOW" "$((idx + 1))" "$NC" "$GREEN" "${_targets_ref[$idx]}" "$NC"
+			done
+
+			echo
+			echo -e "${CYAN} = = > Enter file number(s) to process.${NC}"
+			echo -e "${CYAN} = = > Examples:${NC} ${YELLOW}1${NC} ${CYAN}or${NC} ${YELLOW}1 4 7${NC} ${CYAN}or${NC} ${YELLOW}1,4,7${NC}"
+			echo -e "${CYAN} = = > Cancel:${NC} ${YELLOW}0.${NC} ${CYAN}or${NC} ${YELLOW}q${NC}"
+			echo
+
+			echo -ne "${YELLOW} = = > Pick File Number(s):${GREEN}"
+			read -r raw_choices
+			echo -e "${NC}"
+
+			raw_choices="${raw_choices//,/ }"
+
+			if is_exit_token "${raw_choices//[[:space:]]/}"; then
+				return 1
+			fi
+
+			for choice in $raw_choices; do
+				clean_choice="${choice//[[:space:]]/}"
+
+				if is_exit_token "$clean_choice"; then
+					return 1
+				fi
+
+				if [[ ! "$clean_choice" =~ ^[0-9]+$ ]]; then
+					echo -e "${YE} = = > Ignoring Invalid Picker Entry:${NC} ${YELLOW}$clean_choice${NC}"
+					continue
+				fi
+
+				if (( clean_choice < 1 || clean_choice > total )); then
+					echo -e "${YE} = = > Ignoring Out-Of-Range Entry:${NC} ${YELLOW}$clean_choice${NC}"
+					continue
+				fi
+
+				if [[ -n "${seen_choice[$clean_choice]:-}" ]]; then
+					echo -e "${YE} = = > Ignoring Duplicate Entry:${NC} ${YELLOW}$clean_choice${NC}"
+					continue
+				fi
+
+				seen_choice[$clean_choice]=1
+				picked_targets+=("${_targets_ref[$((clean_choice - 1))]}")
+			done
+
+			if (( ${#picked_targets[@]} == 0 )); then
+				echo -e "${REB} = = > No Valid File Selections Were Made.${NC}"
+				echo -e "${YELLOW} = = > Batch Selection Cancelled.${NC}"
+				echo
+				return 1
+			fi
+
+			_targets_ref=("${picked_targets[@]}")
+
+			echo
+			echo -e "${GREEN} = = > Manual Pick Accepted:${NC} ${YELLOW}${#_targets_ref[@]} file(s)${NC}"
+			echo
+			return 0
+			;;
+
+		3)
+			echo -ne "${YELLOW} = = > Enter How Many Files To Process:${GREEN}"
+			read -r how_many
+			echo -e "${NC}"
+
+			how_many="${how_many//[[:space:]]/}"
+
+			if is_exit_token "$how_many"; then
+				return 1
+			fi
+
+			if [[ "$how_many" =~ ^[0-9]+$ ]] && (( how_many > 0 )); then
+				if (( how_many < total )); then
+					_targets_ref=("${_targets_ref[@]:0:how_many}")
+				fi
+
+				echo -e "${GREEN} = = > Batch Limited To:${NC} ${YELLOW}${#_targets_ref[@]}${NC} file(s)"
+				echo
+				return 0
+			fi
+
+			echo -e "${YELLOW} = = > Invalid Count. Using Full Batch Instead.${NC}"
+			echo
+			return 0
+			;;
+
+		*)
+			echo -e "${YELLOW} = = > Invalid Selection. Using Full Batch Instead.${NC}"
+			echo
+			return 0
+			;;
+	esac
 }
 
 # =========================
@@ -794,6 +975,203 @@ format_bytes_human() {
 			printf "%.2f GB", b / 1073741824
 		}
 	}'
+}
+
+# ================================================================
+# MARKER: PERFORMANCE SCOREBOARD MENU
+# ================================================================
+performance_scoreboard_menu() {
+
+	echo -e "${CYAN}============================================================${NC}"
+	echo -e "${CYAN} = = > PERFORMANCE SCOREBOARD MENU${NC}"
+	echo -e "${CYAN}============================================================${NC}"
+	echo
+
+	while true; do
+
+		echo -e "${YELLOW}     1) View Full Scoreboard${NC}"
+		echo -e "${YELLOW}     2) View Top Scores${NC}"
+		echo -e "${YELLOW}     0.) Return to Main Menu${NC}"
+		echo
+
+		echo -ne "${CYAN}      = = > Select Option: "
+		read -r choice
+		echo -ne "${NC}"
+		choice="${choice,,}"
+
+		case "$choice" in
+			1)
+				show_performance_scoreboard
+				;;
+			2)
+				show_top_scores
+				;;
+			0.|q)
+				return
+				;;
+			*)
+				echo -e "${RED}Invalid selection.${NC}"
+				if ! ask_yes_no "Try again?"; then
+					return
+				fi
+				;;
+		esac
+
+		echo
+	done
+}
+
+# ================================================================
+# PERFORMANCE SCOREBOARD HELPERS
+# ================================================================
+# Anonymous, project-neutral timing logger.
+#
+# Purpose:
+#   - Record machine + job timing data to a CSV.
+#   - Compare throughput across different computers.
+#   - Avoid project-specific names so this block can be reused.
+#
+# CSV columns:
+#   timestamp,machine,cpu,ram_gb,tool,mode,profile,input_bytes,output_bytes,elapsed_sec,mb_per_sec,score_label
+# ================================================================
+
+PERF_SCOREBOARD_CSV="${PERF_SCOREBOARD_CSV:-performance_scoreboard.csv}"
+
+perf_machine_name() {
+	hostname 2>/dev/null || printf 'unknown'
+}
+
+perf_cpu_name() {
+	awk -F': ' '/model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null || printf 'unknown'
+}
+
+perf_ram_gb() {
+	awk '/MemTotal/ {printf "%.0f", $2/1024/1024}' /proc/meminfo 2>/dev/null || printf '0'
+}
+
+perf_csv_escape() {
+	local s="${1:-}"
+	s="${s//\"/\"\"}"
+	printf '"%s"' "$s"
+}
+
+perf_score_label() {
+	local mb_per_sec="${1:-0}"
+
+	awk -v r="$mb_per_sec" 'BEGIN {
+		if (r >= 20)      print "BLASTED";
+		else if (r >= 10) print "FAST";
+		else if (r >= 5)  print "RESPECTABLE";
+		else if (r >= 2)  print "WORKING";
+		else              print "DISMAL";
+	}'
+}
+
+perf_scoreboard_init() {
+	if [[ -f "$PERF_SCOREBOARD_CSV" ]]; then
+		return 0
+	fi
+
+	cat > "$PERF_SCOREBOARD_CSV" <<'EOF'
+time,host,ram,profile,in,out,sec,mbps,score
+"1994","486DX4","16M","L0","2.1G","1.1G","999999","0.00","MUSEUM"
+"2012","OLD_IRON","64G","L2","2.1G","1.1G","1200","1.83","WORKING"
+"2020","GARAGE","384G","L3","2.1G","1.1G","300","7.31","RESPECTABLE"
+"2026","BOSS","768G","L4","2.1G","1.1G","45","48.74","BLASTED"
+EOF
+}
+
+perf_scoreboard_log() {
+	local tool mode profile input_file output_file elapsed_sec
+
+	if [[ $# -eq 4 ]]; then
+		tool="ARCHIVAL"
+		mode="ENCODE"
+		input_file="${1:-}"
+		output_file="${2:-}"
+		profile="L${3:-UNKNOWN}"
+		elapsed_sec="${4:-0}"
+	else
+		tool="${1:-UNKNOWN}"
+		mode="${2:-UNKNOWN}"
+		profile="${3:-UNKNOWN}"
+		input_file="${4:-}"
+		output_file="${5:-}"
+		elapsed_sec="${6:-0}"
+	fi
+
+	local timestamp machine ram_gb ram_human
+	local input_bytes output_bytes input_human output_human
+	local elapsed_human mb_per_sec score_label
+
+	timestamp="$(date '+%Y-%m-%d_%H%M%S')"
+	machine="$(perf_machine_name)"
+	ram_gb="$(perf_ram_gb)"
+	ram_human="${ram_gb}G"
+
+	input_bytes="$(stat -c '%s' -- "$input_file" 2>/dev/null || printf '0')"
+	output_bytes="$(stat -c '%s' -- "$output_file" 2>/dev/null || printf '0')"
+
+	input_human="$(awk -v b="$input_bytes" 'BEGIN { if (b >= 1073741824) printf "%.1fG", b/1073741824; else printf "%.0fM", b/1048576 }')"
+	output_human="$(awk -v b="$output_bytes" 'BEGIN { if (b >= 1073741824) printf "%.1fG", b/1073741824; else printf "%.0fM", b/1048576 }')"
+
+	if declare -F format_seconds_hms >/dev/null 2>&1; then
+		elapsed_human="$(format_seconds_hms "$elapsed_sec")"
+	else
+		elapsed_human="${elapsed_sec}s"
+	fi
+
+	mb_per_sec="$(awk -v b="$input_bytes" -v s="$elapsed_sec" 'BEGIN {
+		if (s <= 0) print "0.00";
+		else printf "%.2f", (b / 1048576) / s;
+	}')"
+
+	score_label="$(perf_score_label "$mb_per_sec")"
+
+	perf_scoreboard_init
+
+	printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+		"$(perf_csv_escape "$timestamp")" \
+		"$(perf_csv_escape "$machine")" \
+		"$(perf_csv_escape "$ram_human")" \
+		"$(perf_csv_escape "$profile")" \
+		"$(perf_csv_escape "$input_human")" \
+		"$(perf_csv_escape "$output_human")" \
+		"$(perf_csv_escape "$elapsed_sec")" \
+		"$(perf_csv_escape "$mb_per_sec")" \
+		"$(perf_csv_escape "$score_label")" >> "$PERF_SCOREBOARD_CSV"
+}
+
+show_performance_scoreboard() {
+	local file="$PERF_SCOREBOARD_CSV"
+
+	if [[ ! -f "$file" ]]; then
+		echo -e "${RED}No scoreboard data found.${NC}"
+		return
+	fi
+
+	echo -e "${CYAN}============================================================${NC}"
+	echo -e "${CYAN} = = > PERFORMANCE SCOREBOARD${NC}"
+	echo -e "${CYAN}============================================================${NC}"
+	echo
+
+	column -s, -t < "$file" | less -S
+}
+
+show_top_scores() {
+	local file="$PERF_SCOREBOARD_CSV"
+
+	if [[ ! -f "$file" ]]; then
+		echo -e "${RED}No scoreboard data found.${NC}"
+		return
+	fi
+
+	echo -e "${YELLOW}--- TOP THROUGHPUT (MB/s) ---${NC}"
+
+	awk -F, 'NR>1 {gsub(/"/,""); print $8, $2, $4, $9}' "$file" \
+		| sort -nr \
+		| head -5 \
+		| awk '{printf "%-10s %-18s %-12s %-8s %-12s\n", $1, $2, $3, $4, $5}'
 }
 
 # start new rekey helpers all rekey related
@@ -1125,14 +1503,15 @@ rekey_choose_batch_execution_mode() {
 	echo -e "${CYAN}     1) Adaptive Mode   (Rolling Evaluation / Sequential)${NC}" >&2
 	echo -e "${YELLOW}     2) Throughput Mode (Concurrency Presets)${NC}" >&2
 	echo >&2
-	echo -e "${YELLOW}     0) Return${NC}" >&2
+	echo -e "${YELLOW}     0.) Return${NC}" >&2
 	echo >&2
 	echo -e "${CYAN} = = > Adaptive:${NC} ${YELLOW}Each Finished File Can Influence The Next CRF.${NC}" >&2
 	echo -e "${CYAN} = = > Throughput:${NC} ${YELLOW}Fixed Batch CRF, Faster Parallel Processing.${NC}" >&2
 	echo >&2
 
-	echo -ne "${YELLOW} = = > Choose Execution Mode [1-2 | 0=return]: ${NC}" >&2
+	echo -ne "${YELLOW} = = > Choose Execution Mode [1-2 | 0.=return]: ${GREEN}" >&2
 	read -r mode_choice # < dont change this one
+    echo -e "${NC}" >&2
 
 	if is_exit_token "$mode_choice"; then
 		return 1
@@ -1189,13 +1568,14 @@ rekey_choose_throughput_job_count() {
 	echo -e "${YELLOW}     2) Medium  (3 Jobs)${NC}" >&2
 	echo -e "${YELLOW}     3) Thrash  (Max Parallel / Custom)${NC}" >&2
 	echo >&2
-	echo -e "${YELLOW}     0) Return${NC}" >&2
+	echo -e "${YELLOW}     0.) Return${NC}" >&2
 	echo >&2
-	echo -e "${CYAN} = = > Host CPU Threads Seen:${NC} ${YELLOW}$cpu_count${NC}" >&2
+	echo -e "${CYAN} = = > Host CPU Threads Seen:${NC} ${GREEN}$cpu_count${NC}" >&2
 	echo >&2
 
-	echo -ne "${YELLOW} = = > Choose Load [1-3 | 0=return]: ${NC}" >&2
+	echo -ne "${YELLOW} = = > Choose Load [1-3 | 0.=return]: ${GREEN}" >&2
 	read -r load_choice
+	echo -e "${NC}" >&2
 
 	load_choice="${load_choice//[[:space:]]/}"
 	load_choice="${load_choice,,}"
@@ -1214,8 +1594,9 @@ rekey_choose_throughput_job_count() {
 			return 0
 			;;
 		3)
-			echo -ne "${YELLOW} = = > Enter Max Parallel Jobs [Default ${cpu_count}]: ${NC}" >&2
+			echo -ne "${YELLOW} = = > Enter Max Parallel Jobs [Default ${cpu_count}]: ${GREEN}" >&2
 			read -r custom_jobs
+			echo -e "${NC}" >&2
 
 			custom_jobs="${custom_jobs:-$cpu_count}"
 			custom_jobs="${custom_jobs//[[:space:]]/}"
@@ -1455,7 +1836,7 @@ run_batch_normalizer_throughput() {
 	echo -e "${CYAN}==========================================================${NC}"
 	echo -e "${CYAN}        THROUGHPUT MODE :: FIXED-CRF CONCURRENCY          ${NC}"
 	echo -e "${CYAN}==========================================================${NC}"
-	echo -e "${CYAN} = = > Mode:${NC} Parallel"
+	echo -e "${CYAN} = = > Mode:${YELLOW} Parallel${NC}"
 	echo -e "${CYAN} = = > Fixed Batch CRF:${NC} ${YELLOW}$batch_rekey_crf${NC}"
 	echo -e "${CYAN} = = > Max Parallel Jobs:${NC} ${YELLOW}$max_jobs${NC}"
 	echo -e "${CYAN} = = > Files In Scope:${NC} ${YELLOW}$total${NC}"
@@ -1467,7 +1848,7 @@ run_batch_normalizer_throughput() {
 		slot_id=$((idx + 1))
 		queued_count=$((idx + 1))
 
-		echo -e "${CYAN} = = > Queueing File $slot_id Of $total:${NC} ${GREEN}$f${NC}"
+		echo -e "${CYAN} = = > Processing File $slot_id Of $total:${NC} ${GREEN}$f${NC}"
 
 		run_batch_normalizer_throughput_worker "$f" "$batch_rekey_crf" "$status_dir" "$slot_id" &
 		((running_jobs+=1)) || :
@@ -1479,16 +1860,13 @@ run_batch_normalizer_throughput() {
 		# to finish before queueing more. Parent prints a
 		# periodic heartbeat only; workers stay quiet.
 		# ====================================================
-		while (( running_jobs >= max_jobs )); do
-			wait -n || :
-			((running_jobs-=1)) || :
-			((finished_count+=1)) || :
+		while (( running >= max_jobs )); do
+			sleep 2
 
-			now_ts="$(date +%s)"
-			if (( now_ts - last_status_ts >= status_interval )); then
-				echo -e "${YELLOW} = = > Thrash Mode Running...${NC} ${CYAN}${queued_count} queued | ${running_jobs} active | ${finished_count} finished | ${fail_count} failed${NC}"
-				last_status_ts="$now_ts"
-			fi
+			running="$(jobs -pr | wc -l)"
+			finished_count=$(( queued_count - running ))
+
+			printf '\r\033[2K%b' "${YEB} = = > ${NC}${YELLOW} Max-Jobs Array Running...${NC} ${CYAN}${queued_count} queued | ${running} active | ${finished_count} finished${NC}"
 		done
 	done
 
@@ -1499,16 +1877,17 @@ run_batch_normalizer_throughput() {
 	# background workers finish. Parent heartbeat continues.
 	# ========================================================
 	while (( running_jobs > 0 )); do
-		wait -n || :
-		((running_jobs-=1)) || :
-		((finished_count+=1)) || :
+		sleep 2
 
-		now_ts="$(date +%s)"
-		if (( now_ts - last_status_ts >= status_interval )); then
-			echo -e "${YELLOW} = = > Thrash Mode Running...${NC} ${CYAN}${queued_count} queued | ${running_jobs} active | ${finished_count} finished | ${fail_count} failed${NC}"
-			last_status_ts="$now_ts"
-		fi
+		running_jobs="$(jobs -pr | wc -l)"
+		finished_count=$(( queued_count - running_jobs ))
+
+		printf '\r\033[2K%b' "${YEB} = = >${NC}${REB} Thrash${NC}${YEB} Mode Running...${NC} ${CYAN}${queued_count} queued | ${running_jobs} active | ${finished_count} finished | ${fail_count} failed${NC}"
 	done
+
+	wait || :
+	printf '\r\033[2K' >&2
+	echo >&2
 
 	for status_file in "$status_dir"/*.status; do
 		[[ -f "$status_file" ]] || continue
@@ -2410,7 +2789,6 @@ run_video_truth_probe() {
 	echo -e "${CYAN}                VIDEO TRUTH PROBE               ${NC}"
 	echo -e "${CYAN}================================================${NC}"
 	echo -e "${CYAN} = = > File:${NC} ${GREEN}$f${NC}"
-	echo
 
 	# --------------------------------------------------------
 	# STREAM FACTS
@@ -2455,7 +2833,6 @@ run_video_truth_probe() {
 	echo -e "${CYAN}     Pixel Format:${NC} ${pix_color}${pix_fmt:-unknown}${NC}"
 	echo -e "${CYAN}     Resolution:${NC} ${GREEN}${width:-?}x${height:-?}${NC}"
 	echo -e "${CYAN}     Level:${NC} ${GREEN}${level:-unknown}${NC}"
-	echo
 
 	# --------------------------------------------------------
 	# QUICK HUMAN HINTS
@@ -2463,7 +2840,6 @@ run_video_truth_probe() {
 	if [[ "${profile,,}" == *"high 10"* ]] || [[ "${pix_fmt,,}" == *"10le"* ]] || [[ "${pix_fmt,,}" == *"p10"* ]]; then
 		echo -e "${YE} = = > Attention:${NC} ${YE}10-bit video path detected.${NC}"
 		echo -e "${YE} = = > Some players / GPU decode paths may garble this even when the file is valid.${NC}"
-		echo
 	fi
 
 	echo -e "${CYAN} = = > Playback Tests:${NC}"
@@ -2482,7 +2858,6 @@ run_video_truth_probe() {
 		echo -e "${REB} = = > ffplay Software-Decode Test: FAIL${NC}"
 	fi
 
-	echo
 	echo -e "${CYAN} = = > GPU / Decode Stack:${NC}"
 	if have_cmd vainfo; then
 		vainfo 2>/dev/null | sed -n '1,20p' || true
@@ -2490,14 +2865,11 @@ run_video_truth_probe() {
 		echo -e "${YELLOW} = = > vainfo Not Found.${NC}"
 	fi
 
-	echo
 	echo -e "${CYAN} = = > Interpretation:${NC}"
 	echo -e "${CYAN} If software decode works but another player does not:${NC}"
 	echo -e "${YE} = = > Likely hardware decode / player path issue, NOT a bad file.${NC}"
-	echo
 	echo -e "${CYAN} If both default and software decode fail:${NC}"
 	echo -e "${REB} = = > File, stream, or encode problem becomes more likely.${NC}"
-	echo
 
 	return 0
 }
@@ -4649,6 +5021,29 @@ inspect_dependencies() {
 		echo -e "${CYAN} = = > Run:${NC} ${GREEN}pipx ensurepath${NC}"
 		echo -e "${YE}------------------------------------------------------------${NC}"
 	fi
+	echo
+	if ask_yes_no " = = > Show Install / Help Wall? (y/n or 1/2): "; then
+		show_global_dependency_help_wall
+	fi
+
+	echo
+	echo -e "${CYAN}============================================================${NC}"
+	echo -e "${CYAN}        PLAYBACK / DIAGNOSTIC CAPABILITY        ${NC}"
+	echo -e "${CYAN}============================================================${NC}"
+
+	have_cmd ffplay && echo -e "${GR} = = > ffplay Available (Playback Testing)${NC}" \
+	                  || echo -e "${YE} = = > ffplay Missing (Cannot Test Playback)${NC}"
+
+	have_cmd vainfo && echo -e "${GR} = = > vainfo Available (GPU Decode Info)${NC}" \
+	                  || echo -e "${YE} = = > vainfo Missing (No HW Decode Visibility)${NC}"
+
+	have_cmd mpv && echo -e "${GR} = = > mpv Available (Alt Playback Engine)${NC}" \
+	               || echo -e "${YE} = = > mpv Missing${NC}"
+
+	echo
+	echo -e "${CYAN} = = > Use 'Video Truth Probe' For File-Level Diagnostics${NC}"
+	echo
+	pause
 }
 # = = = = = = = = = = = = End of dep_check manual
 
@@ -4673,17 +5068,18 @@ run_main_menu() {
   while true; do
     clear
 
-    echo -e "${RED}=======================================================================${NC}"
-    echo -e "${BWHITE}                      THE_FACTORY                                      ${NC}"
-    echo -e "${CYAN}-----THE UNIVERSAL VIDEO SANITIZER & TRIMMER & META TITLE FIXER--------${NC}"
-    echo -e "${RED}------Clip_Grab BitZ From VidZ Any Dir Drop_In Tool custom_cut.mkv-----${NC}"
-    echo -e "${BWHITE}-----IntroFind-Engine + Perceptual_Hash_Detection----------------------${NC}"
-    echo -e "${CYAN}------SUBTOX UNIFIED SUBTITLE + RENAME ENGINE -------------------------${NC}"
-    echo -e "${RED}=======================================================================${NC}"
+    echo -e "${RED}============================================================================${NC}"
+    echo -e "${BWHITE}                           THE_FACTORY${NC}"
+    echo -e "${CYAN}----------THE UNIVERSAL VIDEO SANITIZER & TRIMMER & META TITLE FIXER${NC}"
+    echo -e "${RED}-----------Clip_Grab BitZ From VidZ Any Dir Drop_In Tool custom_cut.mkv${NC}"
+    echo -e "${YEB}-------------IntroFind-v2.1- ${NC}${BWHITE}https://github.com/secarider/The_Factory${NC}"
+    echo -e "${YEB}--------Video Smartcut-v1.7- ${NC}${BWHITE}https://github.com/skeskinen/smartcut${NC}"
+    echo -e "${CYAN}------------------SUBTOX UNIFIED SUBTITLE + RENAME ENGINE${NC}"
+    echo -e "${RED}============================================================================${NC}"
     echo
-    echo -e "${RED}        Main Menu${NC}${BWHITE} = = = THE_FACTORY = = =${NC} ${CYAN}Main Menu${NC}"
-    echo -e "${RED}        Main Menu${NC}${BWHITE} = = = THE_FACTORY = = =${NC} ${CYAN}Main Menu${NC}"
-    echo -e "${RED}        Main Menu${NC}${BWHITE} = = = THE_FACTORY = = =${NC} ${CYAN}Main Menu${NC}"
+    echo -e "${RED}        Main Menu${NC}${BWHITE} = = = THE_FACTORY${NC} ${CYAN}        Main Menu${NC}"
+    echo -e "${RED}        Main Menu${NC}${BWHITE} = = = IntroFind-v2.1${NC} ${CYAN}     Main Menu${NC}"
+    echo -e "${RED}        Main Menu${NC}${BWHITE} = = = Video Smartcut-v1.7${NC} ${CYAN}Main Menu${NC}"
     echo
 
     # ------------------ WORKING CONTEXT ------------------
@@ -4722,8 +5118,9 @@ run_main_menu() {
     echo "     5) Titlez And Subtitlez"
     echo "     6) Utility / Advanced Tools"
     echo "     7) Cleanup / Finalize Folder"
+    echo "     8) View Performance Scoreboard"
     echo
-    echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
+    echo "     10-key exit > 0. (or q) Enter to quit"
     echo
 
 	prompt_menu_choice "     Choice: " MAIN_CHOICE
@@ -4780,7 +5177,9 @@ run_main_menu() {
       7)
         run_finalize_menu
         ;;
-
+      8)
+        performance_scoreboard_menu
+        ;;
       [Qq])
         echo -e "${YELLOW} = = > Exiting.${NC}"
         exit 0
@@ -4901,7 +5300,7 @@ run_barfix() {
     echo "     3) Title + Playback Defaults  (safe remux)"
     echo
 
-    echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
+    echo "     10-key exit > 0. (or q) Enter to quit"
     read -r -p "     Select BARFIX mode [1/2/3/q]: " BARFIX_MODE
     echo -e "${YELLOW}"
     if is_exit_token "$BARFIX_MODE"; then
@@ -5522,10 +5921,10 @@ run_subtox_recovery_rename() {
 		echo -e "${YELLOW}     1) Recover By Matching Surviving Filename Tail To episodes.csv${NC}"
 		echo -e "${YELLOW}     2) Recover By Front Number Tags${NC}"
 		echo
-		echo -e "${YELLOW}     0) Return${NC}"
+		echo -e "${YELLOW}     0.) Return${NC}"
 		echo
 		echo -e "${YELLOW}"
-		read -r -p " = = > Select option [1-2 | 0=return]: " recovery_choice
+		read -r -p " = = > Select option [1-2 | 0.=return]: " recovery_choice
 		echo -e "${NC}"
 
 		recovery_choice="${recovery_choice//[[:space:]]/}"
@@ -5671,9 +6070,9 @@ run_subtox_rename_menu() {
 		echo -e "${YELLOW}     3) Detox Existing File Names${NC}"
 		echo -e "${YELLOW}     4) CSV / Naming Authority Tools${NC}"
 		echo
-		echo -e "${YELLOW}     0) Return${NC}"
+		echo -e "${YELLOW}     0.) Return${NC}"
 		echo
-		echo -e "${YELLOW} = = > Select Option [1-4 | 0=return]: ${NC}"
+		echo -e "${YELLOW} = = > Select Option [1-4 | 0.=return]: ${NC}"
 		read -r rename_choice
 
 		rename_choice="${rename_choice//[[:space:]]/}"
@@ -5753,9 +6152,9 @@ run_subtox_csv_menu() {
 		echo -e "${YELLOW}     1) Build / Append episodes.csv Manually${NC}"
 		echo -e "${YELLOW}     2) Rebuild episodes.csv From Known Good Filenames${NC}"
 		echo
-		echo -e "${YELLOW}     0) Return${NC}"
+		echo -e "${YELLOW}     0.) Return${NC}"
 		echo
-		echo -e "${YELLOW} = = > Select Option [1-2 | 0=return]: ${NC}"
+		echo -e "${YELLOW} = = > Select Option [1-2 | 0.=return]: ${NC}"
 		read -r csv_choice
 
 		csv_choice="${csv_choice//[[:space:]]/}"
@@ -6009,106 +6408,63 @@ run_build_episodes() {
 
 
 # ============================================================
-# #MARKER: ARCHIE FILENAME SHORTENER
+# #MARKER: ARCHIE FILENAME BUILDER (PLAIN FIRST / COLLISION SAFE)
 # ============================================================
 # PURPOSE:
-# - Prevent absurdly long archival output names.
-# - Keep the tail of the original filename, because that is
-#   often where timestamps / clip identity live.
-# - Add a sequence number so shortened names stay unique.
+# - Prefer clean, human-readable filenames.
+# - Preserve original identity when already unique.
+# - Only add sequence number if collision occurs.
 #
-# OUTPUT EXAMPLE:
-#   ARCHIVE_L2_0001_2023_11_04_153012_clipA.mkv
+# DESIGN:
+# - First attempt: prefix + full (or trimmed) stem
+# - Fallback: add incrementing suffix ONLY if needed
+#
+# OUTPUT EXAMPLES:
+#   ARCHIVE_L2_MyUniqueFile.mkv
+#   ARCHIVE_L2_MyUniqueFile_0001.mkv   (only if collision)
 # ============================================================
 archival_make_output_name() {
 	local prefix="$1"
-	local seq="$2"
+	local seq="$2"      # (kept for compatibility, not primary)
 	local src="$3"
 
-	local base stem tail seq_pad
+	local base stem candidate out
+	local counter=1
 
 	base="$(basename "$src")"
 	stem="${base%.*}"
 
 	# --------------------------------------------------------
-	# LONG-NAME CONTROL
-	# Keep only the tail end of very long stems, because that
-	# is usually where the useful timestamp / clip identity is.
+	# OPTIONAL LENGTH CONTROL (keep your tail logic if desired)
 	# --------------------------------------------------------
-	if (( ${#stem} > 12 )); then
-		tail="${stem: -12}"
-	else
-		tail="$stem"
+	if (( ${#stem} > 64 )); then
+		stem="${stem: -64}"
 	fi
 
-	printf -v seq_pad "%04d" "$seq"
-	printf '%s%s_%s.mkv\n' "$prefix" "$seq_pad" "$tail"
-}
+	# --------------------------------------------------------
+	# FIRST ATTEMPT (NO NUMBER)
+	# --------------------------------------------------------
+	out="${prefix}${stem}.mkv"
 
-# ============================================================
-# #MARKER: ARCHIE BATCH LIMIT PROMPT
-# ============================================================
-# PURPOSE:
-# - Let the user decide whether to process all targets or only
-#   the first N in the current batch.
-# ============================================================
-archival_limit_targets_interactive() {
-	local -n _targets_ref=$1
-	local mode how_many
-	local total
-
-	total="${#_targets_ref[@]}"
-
-	if (( total == 0 )); then
+	if [[ ! -e "$out" ]]; then
+		printf '%s\n' "$out"
 		return 0
 	fi
 
-	echo -e "${CYAN} = = > Batch Size Control:${NC}"
-	echo -e "${CYAN}     1) Process All Targets (${total})${NC}"
-	echo -e "${CYAN}     2) Process First N Targets${NC}"
-	echo
-	echo -e "${YELLOW} = = > Select [1/2] (Default: 1): ${NC}"
-	read -r mode
-	mode="${mode:-1}"
-	mode="${mode//[[:space:]]/}"
+	# --------------------------------------------------------
+	# COLLISION FALLBACK (NUMBERED)
+	# --------------------------------------------------------
+	while :; do
+		printf -v suffix "%04d" "$counter"
+		candidate="${prefix}${stem}_${suffix}.mkv"
 
-	case "$mode" in
-		1)
-			echo -e "${GREEN} = = > Using Full Batch:${NC} ${total} file(s)"
-			echo
+		if [[ ! -e "$candidate" ]]; then
+			printf '%s\n' "$candidate"
 			return 0
-			;;
-		2)
-			echo -e "${YELLOW} = = > How Many Files In This Batch? (1-${total}): ${NC}"
-			read -r how_many
-			how_many="${how_many//[[:space:]]/}"
+		fi
 
-			if ! [[ "$how_many" =~ ^[0-9]+$ ]]; then
-				echo -e "${YELLOW} = = > Invalid Batch Count. Using Full Batch Instead.${NC}"
-				echo
-				return 0
-			fi
-
-			if (( how_many < 1 )); then
-				echo -e "${YELLOW} = = > Batch Count Too Small. Using Full Batch Instead.${NC}"
-				echo
-				return 0
-			fi
-
-			if (( how_many < total )); then
-				_targets_ref=("${_targets_ref[@]:0:how_many}")
-			fi
-
-			echo -e "${GREEN} = = > Batch Limited To:${NC} ${#_targets_ref[@]} file(s)"
-			echo
-			return 0
-			;;
-		*)
-			echo -e "${YELLOW} = = > Invalid Selection. Using Full Batch Instead.${NC}"
-			echo
-			return 0
-			;;
-	esac
+		((counter++))
+	done
 }
 
 # ============================================================
@@ -6165,9 +6521,9 @@ archival_print_targets() {
 	shift
 	local items=("$@")
 
-	echo -e "${CYAN} = = > ${title}:${NC} ${#items[@]}"
+	echo -e "${CYAN} = = > ${title}: ${GREEN}${#items[@]}"
 	if ((${#items[@]} > 0)); then
-		printf "${CYAN}   - ${NC}%s\n" "${items[@]}"
+		printf "${GREEN}   - %s\n" "${items[@]}${NC}"
 	fi
 	echo
 }
@@ -6252,13 +6608,109 @@ archival_build_tarball() {
 	run_with_progress "Building Archival Tarball..." tar -cf "$tar_name" "${files[@]}"
 }
 
+# ================================================================
+# MARKER: ARCHIVAL PROCESS ONE TARGET
+# ================================================================
+archival_process_one_target() {
+
+	local f="$1"
+	local out pair src_from_pair out_from_pair
+	local perf_start_ts perf_end_ts perf_elapsed_sec
+	local orig_size new_size
+
+	out="$(archival_make_output_name "$prefix" "$((success_count + fail_count + no_gain_count + 1))" "$f")"
+	if [[ -f "$out" ]] && ! is_valid_video_file "$out"; then
+		rm -f -- "$out"
+	fi
+
+	echo -e "${CYAN} = = > Archiving:${NC} ${GREEN} $f${NC}"
+	echo -e "${CYAN} = = > Output Name:${NC} ${YELLOW} $out${NC}"
+
+	perf_start_ts="$(date +%s)"
+
+	if run_with_progress "Archival Array: $(basename "$f")" archival_encode_one_file "$level" "$f" "$out"; then
+		perf_end_ts="$(date +%s)"
+		perf_elapsed_sec=$((perf_end_ts - perf_start_ts))
+
+		perf_scoreboard_log "$f" "$out" "$level" "$perf_elapsed_sec"
+
+		orig_size=$(stat -c%s "$f")
+		new_size=$(stat -c%s "$out")
+
+		if (( new_size >= orig_size )); then
+			echo -e "${YELLOW} = = > No Size Gain. Removing Archival Copy:${NC} ${CYAN}$out${NC}"
+			echo -e "${YELLOW} = = > Original Size:${NC} $orig_size bytes"
+			echo -e "${YELLOW} = = > New Size:${NC} $new_size bytes"
+			rm -f -- "$out"
+			((no_gain_count+=1)) || :
+		else
+			echo -e "${GR} = = > Created:${NC} ${CYAN}$out${NC}"
+			echo -e "${GREEN} = = > Size Reduced From:${NC} $orig_size ${GREEN}to${NC} $new_size bytes"
+			outputs+=("$out")
+			source_output_pairs+=("$f|$out")
+			((success_count+=1)) || :
+		fi
+	else
+		echo -e "${REB} = = > Failed:${NC} $f"
+		((fail_count+=1)) || :
+	fi
+
+	echo
+}
+
+# ================================================================
+# MARKER: ARCHIVAL PROCESS ONE TARGET (RESULT MODE)
+# ================================================================
+archival_process_one_target_result() {
+
+	local f="$1"
+	local result_file="$2"
+
+	local out tmp_out
+	local perf_start_ts perf_end_ts perf_elapsed_sec
+	local orig_size new_size
+
+	out="$(archival_make_output_name "$prefix" "$((success_count + fail_count + no_gain_count + 1))" "$f")"
+	tmp_out="$ARCHIVE_TMPDIR/$(basename "$out")"
+
+	if [[ -f "$out" ]] && ! is_valid_video_file "$out"; then
+		rm -f -- "$out"
+	fi
+
+	perf_start_ts="$(date +%s)"
+
+	echo -e "${CYAN} = = > Archiving:${NC} ${GREEN}$f${NC}"
+	if archival_encode_one_file "$level" "$f" "$tmp_out"; then
+		mv -f -- "$tmp_out" "$out"
+
+		perf_end_ts="$(date +%s)"
+		perf_elapsed_sec=$((perf_end_ts - perf_start_ts))
+
+		perf_scoreboard_log "$f" "$out" "$level" "$perf_elapsed_sec"
+
+		orig_size=$(stat -c%s "$f")
+		new_size=$(stat -c%s "$out")
+
+		if (( new_size >= orig_size )); then
+			rm -f -- "$out"
+			echo "NO_GAIN|$f|$out" >> "$result_file"
+		else
+			echo "SUCCESS|$f|$out" >> "$result_file"
+		fi
+	else
+		rm -f -- "$tmp_out"
+		echo "FAIL|$f|" >> "$result_file"
+	fi
+}
+
 run_archies_archival_array() {
-	local level choice prefix tar_name
-	local orig_size new_size deleted_originals
+	local level prefix tar_name
+	local orig_size new_size
 	local -a targets=()
 	local -a outputs=()
 	local -a source_output_pairs=()
 	local f out pair src_from_pair out_from_pair
+	local perf_start_ts perf_end_ts perf_elapsed_sec
 	local success_count=0
 	local fail_count=0
 	local no_gain_count=0
@@ -6283,7 +6735,51 @@ run_archies_archival_array() {
 	echo
 
 	mapfile -t targets < <(archival_collect_targets)
-	archival_limit_targets_interactive targets
+	if ! limit_targets_interactive targets; then
+		echo -e "${YELLOW} = = > Archival Batch Selection Cancelled.${NC}"
+		echo
+		pause
+		return 0
+	fi
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}      = = > Archival Run Mode${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW}     1) Consecutive (Safe / One At A Time)${NC}"
+	echo -e "${YELLOW}     2) Limited Parallel Jobs${NC}"
+	echo -e "${YELLOW}     3) Thrash (Use CPU Thread Count)${NC}"
+	echo -e "${YELLOW}     0.) Return${NC}"
+	echo
+
+	echo -ne "${CYAN}      = = > Select Mode:${GREEN}"
+	read -r run_mode
+	echo -ne "${NC}"
+
+	if is_exit_token "$run_mode"; then
+		return
+	fi
+
+	local max_jobs=1
+
+	case "$run_mode" in
+		1)
+			max_jobs=1
+			;;
+		2)
+			echo -ne "${YELLOW} = = > Enter Max Parallel Jobs:${GREEN}"
+			read -r max_jobs
+			echo -ne "${NC}"
+			;;
+		3)
+			max_jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+			;;
+		*)
+			echo -e "${RED}Invalid selection.${NC}"
+			return
+			;;
+	esac
 
 	if ((${#targets[@]} == 0)); then
 		echo -e "${YELLOW} = = > No Eligible Source Videos Found In Current Folder.${NC}"
@@ -6295,7 +6791,7 @@ run_archies_archival_array() {
 	archival_print_targets "Eligible Archival Targets" "${targets[@]}"
 
 	echo -e "${YELLOW}"
-	read -r -p " = = > Choose Archival Level [1-4]: " level
+	read -r -p " = = > Choose Archival Level [1-4]:${GREEN}" level
 	echo -e "${NC}"
 
 	level="${level//[[:space:]]/}"
@@ -6313,8 +6809,8 @@ run_archies_archival_array() {
 	prefix="$(archival_get_prefix_for_level "$level")"
 
 	echo
-	echo -e "${CYAN} = = > Selected Level:${NC} $level"
-	echo -e "${CYAN} = = > Output Prefix:${NC} ${YELLOW}$prefix${NC}"
+	echo -e "${CYAN} = = > Selected Level: ${GREEN}$level ${NC}"
+	echo -e "${CYAN} = = > Output Prefix: ${GREEN}$prefix${NC}"
 	echo
 
 	if ! ask_yes_no " = = > Start Archival Encode Pass Now? (y/n or 1/2): "; then
@@ -6330,48 +6826,56 @@ run_archies_archival_array() {
 	echo -e "${CYAN}================================================${NC}"
 	echo
 
+	ARCHIVE_TMPDIR="$(mktemp -d)"
+	# ----------------------------------------------------
+	# PERFORMANCE SCOREBOARD INIT
+	# ----------------------------------------------------
+	# Initializes CSV/log target and writes header if needed.
+	# Safe to call once per run before encode loop begins.
+	# ----------------------------------------------------
+	perf_scoreboard_init
+
+	result_file="$(mktemp)"
+	pids=()
+	running=0
+	archival_array_heartbeat &
+	heartbeat_pid=$!
+
 	for f in "${targets[@]}"; do
-		out="$(archival_make_output_name "$prefix" "$((success_count + fail_count + no_gain_count + 1))" "$f")"
+		archival_process_one_target_result "$f" "$result_file" &
 
-		echo -e "${CYAN} = = > Archiving:${NC} $f"
-		echo -e "${CYAN} = = > Output Name:${NC} ${YELLOW}$out${NC}"
+		pids+=($!)
+		((running+=1)) || :
 
-		if run_with_progress "Archival Array: $(basename "$f")" archival_encode_one_file "$level" "$f" "$out"; then
-
-			# ----------------------------------------------------
-			# SIZE-CHECK SAFETY GATE
-			# ----------------------------------------------------
-			# PURPOSE:
-			# - Keep only outputs that actually improved storage use.
-			# - If an encode comes out larger or equal, kill it now.
-			#
-			# IMPORTANT:
-			# - This is not a hard encoder failure.
-			# - It is a NO-GAIN RESULT and gets its own counter.
-			# ----------------------------------------------------
-			orig_size=$(stat -c%s "$f")
-			new_size=$(stat -c%s "$out")
-
-			if (( new_size >= orig_size )); then
-				echo -e "${YELLOW} = = > No Size Gain. Removing Archival Copy:${NC} ${CYAN}$out${NC}"
-				echo -e "${YELLOW} = = > Original Size:${NC} $orig_size bytes"
-				echo -e "${YELLOW} = = > New Size:${NC} $new_size bytes"
-				rm -f -- "$out"
-				((no_gain_count+=1)) || :
-			else
-				echo -e "${GR} = = > Created:${NC} ${CYAN}$out${NC}"
-				echo -e "${GREEN} = = > Size Reduced From:${NC} $orig_size ${GREEN}to${NC} $new_size bytes"
-				outputs+=("$out")
-				source_output_pairs+=("$f|$out")
-				((success_count+=1)) || :
-			fi
-		else
-			echo -e "${REB} = = > Failed:${NC} $f"
-			((fail_count+=1)) || :
+		if (( running >= max_jobs )); then
+			wait -n || :
+			((running-=1)) || :
 		fi
-
-		echo
 	done
+
+	wait
+	kill "$heartbeat_pid" 2>/dev/null || :
+	wait "$heartbeat_pid" 2>/dev/null || :
+	printf '\r\033[2K' >&2
+	echo >&2
+
+	while IFS='|' read -r status src out; do
+		case "$status" in
+			SUCCESS)
+				outputs+=("$out")
+				source_output_pairs+=("$src|$out")
+				((success_count+=1)) || :
+				;;
+			NO_GAIN)
+				((no_gain_count+=1)) || :
+				;;
+			FAIL)
+				((fail_count+=1)) || :
+				;;
+		esac
+	done < "$result_file"
+
+	rm -f "$result_file"
 
 	echo -e "${CYAN}================================================${NC}"
 	echo -e "${CYAN}              ARCHIVAL ENCODE SUMMARY           ${NC}"
@@ -7510,7 +8014,7 @@ cleanup_finalize_sutured_replacements() {
 		echo "     7) Safe Cleanup Pass"
 		echo "     8) Archive CSV + Referenced Templates Only"
 		echo
-		echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
+		echo "     10-key exit > 0. (or q) Enter to quit"
 		echo
 
 		read -r -p "     Choice: " cleanup_choice
@@ -7975,10 +8479,6 @@ inspect_run_keyframe_probe() {
 			# TEN-KEY EXIT HOOK
 			# ========================================================
 			if is_exit_token "$pick"; then
-				return 0
-			fi
-
-			if [[ "$pick" == "q" || "$pick" == "Q" || "$pick" == "0" ]]; then
 				echo -e "${YELLOW} = = > Keyframe Check Cancelled.${NC}"
 				pause
 				return 0
@@ -8026,7 +8526,7 @@ run_inspect() {
         echo "     5) Working Notes/Explain Current Workflow State"
         echo "     6) Help File, Stuff To Read, Best Practices"
         echo
-        echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
+        echo "     10-key exit > 0. (or q) Enter to quit"
         echo
 
         read -r -p "     Choice: " inspect_choice
@@ -8297,7 +8797,7 @@ prepare_set_rekey_preference() {
     echo "     3) Use Guided Normalize-First Prompt"
     echo "     4) Do All-Over REKEY Auth System Refresh"
     echo
-    echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
+    echo "     10-key exit > 0. (or q) Enter to quit"
     echo
 
     read -r -p "     Choice: " pref_choice
@@ -8345,15 +8845,12 @@ prepare_set_rekey_preference() {
 
 prepare_run_batch_normalizer_wrapper() {
     clear
-    echo -e "${CYAN}================================================${NC}"
-    echo -e "${CYAN}      PREPARE SOURCES :: BATCH NORMALIZER       ${NC}"
-    echo -e "${CYAN}================================================${NC}"
-    echo
-    echo -e "${CYAN} This Rebuilds Eligible Source Videos Into REKEY_*.mkv Outputs.${NC}"
-    echo -e "${YEB} = = > Be Mindful Of Free Space Before Starting.${NC}"
-    echo -e "${YEB} = = > This Will Double Folder Space.${NC}"
-    echo
-    pause
+    echo -e "     ${CYAN}================================================${NC}"
+    echo -e "     ${CYAN}      PREPARE SOURCES :: BATCH NORMALIZER       ${NC}"
+    echo -e "     ${CYAN}================================================${NC}"
+    echo -e "     ${CYAN} This Rebuilds Eligible Source Videos Into REKEY_*.mkv Outputs.${NC}"
+    echo -e "     ${YEB} = = >${NC}${YELLOW}Be Mindful Of Free Space Before Starting.${NC}${YEB}< = = ${NC}"
+    echo -e "     ${YEB} = = >${NC}${YELLOW}This Will Double Folder Space.${NC}${YEB}< = = ${NC}"
     run_batch_normalizer
 }
 
@@ -8427,7 +8924,7 @@ run_prepare_sources() {
         echo "     5) BARFIX Title + Playback Tools"
         echo "     6) Combined Prep Pass"
         echo
-        echo "     10key exit > 0.Enter to Quit   (or q) to Quit${NC}"
+        echo "     10-key exit > 0. (or q) Enter to quit${NC}"
         echo
 
 		prompt_menu_choice "      Choice: " prep_choice
@@ -8488,7 +8985,7 @@ run_title_subtitle_menu() {
         echo "     1) Subtox, FileNames, Subtitlez"
         echo "     2) BAR / Fix-Title-Bar-Display / File-Name + Playback Tools"
         echo
-        echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
+        echo "     10-key exit > 0. (or q) Enter to quit"
         echo
 
         read -r -p "     Choice: " ts_choice
@@ -8539,7 +9036,7 @@ run_subtitlez_menu() {
         echo "     2) Pack external.srt"
         echo "     3) Extract Internal Subtitles"
         echo
-        echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
+        echo "     10-key exit > 0. (or q) Enter to quit"
         echo
 
         read -r -p "     Choice: " subtitle_choice
@@ -8593,7 +9090,7 @@ run_title_playback_menu() {
         echo "     1) BARFIX Title + Playback Tools"
         echo "     2) Rename / Detox Tools"
         echo
-        echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
+        echo "     10-key exit > 0. (or q) Enter to quit"
         echo
 
         read -r -p "     Choice: " title_choice
@@ -8683,6 +9180,205 @@ run_subtox_rename() {
 }
 
 
+# ================================================================
+# #MARKER: SMC BANNER HELPERS
+# ================================================================
+smc_banner() {
+	local title="$1"
+
+	echo
+	echo -e "${CYAN}============================================================${NC}"
+	echo -e "${CYAN} = = > $title${NC}"
+	echo -e "${CYAN}============================================================${NC}"
+	echo
+}
+
+smc_phase_banner() {
+	local title="$1"
+
+	echo
+	echo -e "${CYAN}------------------------------------------------------------${NC}"
+	echo -e "${CYAN} = = > $title${NC}"
+	echo -e "${CYAN}------------------------------------------------------------${NC}"
+	echo
+}
+
+#=========================
+#MARKER: SMARTCUT UNIFIED ENGINE
+#=========================
+
+smartcut_from_csv() {
+	local csv="intro_map.csv"
+
+	# rolling defaults (persist across calls in same session)
+	TIP_TRIM_SECONDS="${TIP_TRIM_SECONDS:-0}"
+	TAIL_TRIM_SECONDS="${TAIL_TRIM_SECONDS:-72}"
+	local tip_offset="${TIP_OFFSET_SECONDS:-0}"
+
+	[[ ! -f "$csv" ]] && {
+		echo -e "${REB} = = > intro_map.csv not found.${NC}"
+		return 1
+	}
+
+	have_smartcut || {
+		echo -e "${REB} = = > No SmartCut engine found.${NC}"
+		pause
+		return 1
+	}
+
+	smc_banner "SMC SMARTCUT SURGERY BATCH"
+
+	# show current defaults
+	echo -e "${CYAN} = = > Current Tip Snip:${NC} ${YELLOW}${TIP_TRIM_SECONDS}s${NC}"
+	echo -e "${CYAN} = = > Current Tail Tuck:${NC} ${YELLOW}${TAIL_TRIM_SECONDS}s${NC}"
+	echo
+
+	# input with "enter = keep last"
+	local input
+
+	prompt_read " = = > Tip Snip Seconds (enter = keep ${TIP_TRIM_SECONDS}): " input
+	if is_exit_token "$input"; then
+		echo -e "${YELLOW} = = > Batch Cancelled.${NC}"
+		return 0
+	fi
+	[[ -n "$input" ]] && TIP_TRIM_SECONDS="$input"
+
+	prompt_read " = = > Tail Tuck Seconds (enter = keep ${TAIL_TRIM_SECONDS}): " input
+	if is_exit_token "$input"; then
+		echo -e "${YELLOW} = = > Batch Cancelled.${NC}"
+		return 0
+	fi
+	[[ -n "$input" ]] && TAIL_TRIM_SECONDS="$input"
+
+	smc_phase_banner "CUT PLAN"
+	echo -e "${CYAN} = = > Tip Snip:${NC}  ${YELLOW}${TIP_TRIM_SECONDS}s${NC}"
+	echo -e "${CYAN} = = > Tail Tuck:${NC} ${YELLOW}${TAIL_TRIM_SECONDS}s${NC}"
+	echo -e "${CYAN} = = > CSV Source:${NC} ${GREEN}$csv${NC}"
+	echo
+
+	while IFS=, read -r file start end _; do
+		[[ -z "$file" ]] && continue
+		[[ "$file" == filename* ]] && continue
+
+		local adj_start adj_end cut_args out
+
+		adj_start=$(awk -v s="$start" -v o="$tip_offset" 'BEGIN{printf "%.3f", s+o}')
+		adj_end=$(awk -v e="$end" -v o="$tip_offset" 'BEGIN{printf "%.3f", e+o}')
+
+		cut_args="$adj_start,$adj_end"
+
+		if awk -v t="$TIP_TRIM_SECONDS" 'BEGIN{exit !(t > 0)}'; then
+			cut_args="0,$TIP_TRIM_SECONDS,$cut_args"
+		fi
+
+		if awk -v t="$TAIL_TRIM_SECONDS" 'BEGIN{exit !(t > 0)}'; then
+			cut_args="$cut_args,-$TAIL_TRIM_SECONDS,end"
+		fi
+
+		out="SMC_${file}"
+
+		smc_phase_banner "SURGERY TARGET"
+		echo -e "${CYAN} = = > Source:${NC} ${GREEN}$file${NC}"
+		echo -e "${CYAN} = = > Cut Plan:${NC} ${YELLOW}$cut_args${NC}"
+		echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+		echo
+
+		"$SMC_BIN" \
+			"$file" \
+			"$out" \
+			--cut "$cut_args"
+
+		if [[ $? -eq 0 ]]; then
+			echo -e "${GR} = = > SMC SURGERY COMPLETE:${NC} ${GREEN}$out${NC}"
+		else
+			echo -e "${REB} = = > SMC SURGERY FAILED:${NC} ${GREEN}$file${NC}"
+		fi
+
+		echo
+	done < "$csv"
+}
+
+# ========================================================
+# #MARKER: SMARTCUT ENGINE DETECTION
+# commercial product SmartMediaCutter-2.3.4-x86_64.AppImage 186mb
+# that is what we have renamed smc.app and keep a copy right here In The Working Folder
+# ========================================================
+# PURPOSE:
+# - Locate The SmartCut Engine Used By SMCUT.
+# - Video Smartcut-MIT License is the daddy of SmartMediaCutter
+# - find out here > github.com/skeskinen/smartcut
+# - Prefer The pipx-installed smartcut command.
+# - Fall Back To A Local smc.app SmartMediaCutter If Carried In The Working or TOOLBOX Folder.
+#
+# OUTPUT:
+# - Sets SMC_BIN
+# - Returns 0 If A Usable Engine Is Found
+# - Returns 1 If Not Found
+# ========================================================
+have_smartcut() {
+	SMC_BIN=""
+
+	if have_cmd smartcut; then
+		SMC_BIN="smartcut"
+		return 0
+	fi
+
+	if [[ -x "./smc.app" ]]; then
+		SMC_BIN="./smc.app"
+		return 0
+	fi
+
+	if [[ -x "$HOME/TOOLBOX_NOT_INTRO/smc.app" ]]; then
+		SMC_BIN="$HOME/TOOLBOX_NOT_INTRO/smc.app"
+		return 0
+	fi
+
+	return 1
+}
+
+run_smartcut_menu() {
+
+    have_smartcut || {
+        echo -e "${REB} = = > No SmartCut engine found.${NC}"
+		echo -e "${CYAN} = = > Install:${NC} ${YELLOW}pipx install smartcut${NC}"
+        pause
+        return 1
+    }
+
+    echo -e "${CYAN}============================================================${NC}"
+    echo -e "${CYAN} = = > SMARTCUT CONTROL PANEL${NC}"
+    echo -e "${CYAN}============================================================${NC}"
+    echo
+
+    echo -e "${CYAN}     1) Run SmartCut (CSV-driven)${NC}"
+    echo -e "${CYAN}     2) Set Tail Trim Seconds ${NC}[${YELLOW}${TAIL_TRIM_SECONDS:-51}${NC}]"
+    echo -e "${CYAN}     3) Set Tip Offset Seconds ${NC}[${YELLOW}${TIP_OFFSET_SECONDS:-0}${NC}]"
+    echo -e "${CYAN}     0.) Return${NC}"
+    echo
+
+    prompt_menu_choice " = = > Select Option [1-3 | 0.=return]: " choice
+
+    case "$choice" in
+        1)
+            smartcut_from_csv
+            ;;
+        2)
+            prompt_read " = = > Enter Tail Trim Seconds: " TAIL_TRIM_SECONDS
+            ;;
+        3)
+            prompt_read " = = > Enter Tip Offset Seconds: " TIP_OFFSET_SECONDS
+            ;;
+        0.)
+            return 0
+            ;;
+        *)
+            echo -e "${REB} = = > Invalid Option${NC}"
+            ;;
+    esac
+
+    pause
+}
+
 # =========================
 # #MARKER: GAPMAN WORKFLOW MENU
 # =========================
@@ -8704,8 +9400,9 @@ run_gapman_menu() {
         echo "     3) Manual Map-Assisted Cuts"
         echo "     4) Global Trim / Pad Controls"
         echo "     5) Join Two Clips Into One Episode"
+        echo "     6) SmartCut / SMCUT Tools"
         echo
-        echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
+        echo "     10-key exit > 0. (or q) Enter to quit"
         echo
 
         read -r -p "     Choice: " gapman_choice
@@ -8754,8 +9451,16 @@ run_gapman_menu() {
 				echo -e "${YELLOW} = = > Press ENTER To Prepare Pilot Run...${NC}"
                 read -r
 
+				if [[ ! -f "intro_map.csv" ]]; then
+					echo -e "${REB} = = > Pilot Run Cannot Start:${NC}${YELLOW} intro_map.csv not found.${NC}"
+					echo -e "${YELLOW} = = > Build Or provide intro_map.csv First, Then Run Pilot Mode.${NC}"
+					echo
+					pause
+					return 0
+				fi
+
 				# ========================================================
-				# BACKUP ORIGINAL MAP
+				# BACKUP ORIGINAL MAP intro_map.csv If Found By The Above Look For Command
 				# ========================================================
 				ORIG_MAP="$INTRO_MAP"
 				BACKUP_MAP="GOOD_intro_map.csv"
@@ -8886,6 +9591,9 @@ run_gapman_menu() {
                 ;;
             5)
                 run_join_two_clips
+                ;;
+            6)
+                run_smartcut_menu
                 ;;
             [Qq])
                 return 0
@@ -9603,10 +10311,10 @@ while true; do
 		echo -e "${YELLOW}     9) Twisted Color Menu${NC}"
 		echo -e "${YELLOW}    10) Archie's Archival Array${NC}"
 		echo
-		echo -e "${YELLOW}     0) Return${NC}"
+		echo -e "${YELLOW}     0.) Return${NC}"
 		echo
 
-		prompt_menu_choice " = = > Select Option [1-10 | 0=return]: " util_choice
+		prompt_menu_choice " = = > Select Option [1-10 | 0.=return]: " util_choice
 
 		if is_exit_token "$util_choice"; then
 			return 0
@@ -9671,7 +10379,7 @@ while true; do
 				prepare_set_rekey_preference
 				;;
 			5)
-				run_keyframe_probe_menu
+				inspect_run_keyframe_probe
 				;;
 			6)
 				run_clip_join_triage_menu
@@ -10533,27 +11241,37 @@ create_template() {
 # =========================================================
 # MARKER: RUN WITH PROGRESS (GENERIC LONG-RUN WRAPPER)
 # =========================================================
-# PURPOSE:LONG-RUN COMMAND PROGRESS HELPER
+# PURPOSE:
 # - Show Visible Life-Sign Output During Long-Running File Operations.
-#   Wrap a long-running command and provide a visible heartbeat
-# - Prevent The Script From Looking Frozen During Quiet Ffmpeg Work.
-#   so the user knows the system is alive and working. we dont need a ctrl-c right now
+# - Prevent The Script From Looking Frozen During Quiet Ffmpeg / Tar Work.
+# - Wrap A Long-Running Command And Return Its Exit Code Unchanged.
 #
 # DESIGN GOALS:
-# - Runs The Target Command In Background.
-# - Prints A Simple Heartbeat Until The Command Exits.
-# - Returns The Original Command's Exit Code Unchanged.
-#   - Non-intrusive (does NOT interfere with command output)
-#   - Works with ANY command (generic wrapper)
-#   - Provides:
-#       • task label (repeated)
-#       • animated spinner (visual movement)
-#       • elapsed time (confidence indicator)
-#   - Keep STDOUT clean
-#   - Show one-time banner first
-#   - Redraw a single live status line on STDERR
-#   - Avoid ugly wrapping / smear when labels are long
-#   - Leave the terminal on a clean new line when done
+# - Runs The Target Command In The Background.
+# - Prints A One-Time Banner First.
+# - Redraws One Live Status Line On STDERR.
+# - Keeps STDOUT Clean For Command Substitution / Piped Output.
+# - Avoids Ugly Wrapping / Smearing On Narrow Terminals.
+# - Leaves The Terminal On A Clean New Line When Done.
+#
+# LIVE DISPLAY PROVIDES:
+# - Task Label.
+# - Animated Spinner.
+# - Wave-Style Working Motion.
+# - Elapsed Seconds.
+# - Optional File Index Context.
+# - Optional Rolling Average + Approx ETA After Enough Files Finish.
+#
+# ETA POLICY:
+# - No ETA For First 2 Completed Files.
+# - ETA Starts After 3 Completed Files.
+# - ETA Is Approximate Because File Size / Codec / CRF / Resolution Vary.
+#
+# PORTABILITY:
+# - Defensively Initializes Progress Globals If Missing.
+# - Falls Back To Raw Seconds If format_seconds_hms() Is Not Present.
+# - Safe To Copy Into Another Script Without Top-Level Defaults.
+#
 # USAGE:
 #   run_with_progress "Label Here..." command arg1 arg2 ...
 #
@@ -10561,65 +11279,98 @@ create_template() {
 #   run_with_progress "Building OEM Archive..." tar -czf archive.tar ./OEM
 #
 # NOTES:
-#   - Best used for QUIET long-running commands (tar, scans, batch ops)
-#   - Avoid wrapping commands that already emit live progress (ffmpeg w/ stats)
-#   - Output is sent to STDERR so it does not pollute pipelines
-# IMPORTANT:
+# - Best Used For Quiet Long-Running Commands.
+# - Avoid Wrapping Commands That Already Emit Their Own Live Progress.
 # - All Progress Text Goes To STDERR.
-# - This Keeps STDOUT Clean For Functions That Are Used Inside:
-#     var="$(some_function)"
-# - In Those Cases, STDOUT Must Remain Reserved For The True Return Value
-#   (Such As A File Path), While Progress Still Remains Visible On Screen.
 #
-# WHY THIS VERSION:
-#   Long labels can wrap on narrower terminal widths, which makes
-#   a carriage-return heartbeat look like repeated printed lines.
-#   This version trims the live line to fit the terminal, keeps the
-#   first banner line, and then uses a shorter status line for redraws.
+# IMPORTANT:
+# - STDOUT Must Stay Reserved For True Return Values.
+# - This Matters For Helpers Used Like:
+#     var="$(some_function)"
+#
 # HOUSE RULE:
-#   Feedback is king — user should NEVER wonder if the script is stuck.
+# - Feedback Is King — User Should Never Wonder If The Script Is Stuck.
 # =========================================================
+
 run_with_progress() {
 	local label="$1"
 	shift
 
 	# --------------------------------------------------------
-	# INITIAL USER FEEDBACK (one-time banner line)
+	# VISUAL ELEMENTS (spinner + wave animation)
 	# --------------------------------------------------------
-	echo -e "${CYAN} = = > ${label}${NC}" >&2
-
-	# --------------------------------------------------------
-	# LAUNCH COMMAND IN BACKGROUND
-	# --------------------------------------------------------
-	"$@" &
-	local cmd_pid=$!
-
-	# --------------------------------------------------------
-	# TRACKING / VISUAL ELEMENTS
-	# --------------------------------------------------------
-	local cmd_status=0
-	local start_ts now elapsed
 	local spin='|/-\'
-	local i=0
-	local frame
+	local wave=(
+		".    "
+		"..   "
+		"...  "
+		".... "
+		"....."
+		" ...."
+		"  ..."
+		"   .."
+		"    ."
+	)
+
+	local s=0
+	local w=0
+	local spin_len=${#spin}
+	local wave_len=${#wave[@]}
+
+	# --------------------------------------------------------
+	# RUNTIME STATE
+	# --------------------------------------------------------
+	local cmd_pid
+	local cmd_status=0
+	local start_ts now_ts elapsed
+	local avg_seconds=0
+	local eta_seconds=0
+	local remaining_files=0
+	local avg_human=""
+	local eta_human=""
+	local progress_note=""
+
+	# --------------------------------------------------------
+	# TERMINAL WIDTH CONTROL (prevents wrap/visual glitching)
+	# --------------------------------------------------------
 	local cols max_label
 	local live_label
 	local live_line
-	local plain_prefix plain_suffix
-
-	start_ts=$(date +%s)
 
 	# --------------------------------------------------------
-	# TERMINAL WIDTH GUARD
-	# Keep the heartbeat line short enough to overwrite cleanly.
+	# PORTABLE DEFENSIVE DEFAULTS
+	# --------------------------------------------------------
+	# PURPOSE:
+	# - Allows this function to be copied anywhere safely
+	# - Prevents set -u crashes if globals are not defined
+	# - Falls back to zero-state tracking automatically
+	# --------------------------------------------------------
+	PROGRESS_DONE_COUNT="${PROGRESS_DONE_COUNT:-0}"
+	PROGRESS_TOTAL_SECONDS="${PROGRESS_TOTAL_SECONDS:-0}"
+	PROGRESS_TOTAL_FILES="${PROGRESS_TOTAL_FILES:-0}"
+	PROGRESS_CURRENT_INDEX="${PROGRESS_CURRENT_INDEX:-0}"
+	PROGRESS_LAST_ELAPSED="${PROGRESS_LAST_ELAPSED:-0}"
+
+	# --------------------------------------------------------
+	# INITIAL USER FEEDBACK (one-time banner)
+	# --------------------------------------------------------
+	echo -e "${CYAN} = = > ${label}${NC}" >&2
+
+	start_ts="$(date +%s)"
+
+	# --------------------------------------------------------
+	# LAUNCH TARGET COMMAND IN BACKGROUND
+	# --------------------------------------------------------
+	"$@" &
+	cmd_pid=$!
+
+	# --------------------------------------------------------
+	# TERMINAL WIDTH SAFETY
 	# --------------------------------------------------------
 	cols="${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}"
 	(( cols < 40 )) && cols=80
 
-	plain_prefix=" = = > "
-	plain_suffix="- PLEASE-STAND-BY - [00000s]"
-
-	max_label=$(( cols - ${#plain_prefix} - ${#plain_suffix} - 4 ))
+	max_label=$(( cols - 70 ))
 	(( max_label < 12 )) && max_label=12
 
 	if (( ${#label} > max_label )); then
@@ -10629,21 +11380,81 @@ run_with_progress() {
 	fi
 
 	# --------------------------------------------------------
-	# HEARTBEAT LOOP
-	# Runs until command exits
+	# HEARTBEAT LOOP (runs until command exits)
 	# --------------------------------------------------------
 	while kill -0 "$cmd_pid" 2>/dev/null; do
-		now=$(date +%s)
-		elapsed=$((now - start_ts))
-		frame="${spin:i%${#spin}:1}"
+		now_ts="$(date +%s)"
+		elapsed=$(( now_ts - start_ts ))
+		(( elapsed < 0 )) && elapsed=0
 
-		live_line=" = = > ${live_label} ${frame}- PLEASE-STAND-BY - [${elapsed}s]"
+		progress_note=""
 
-		# Print one in-place status line only
-		printf '\r\033[2K%s%s%s' "${YELLOW}" "$live_line" "${NC}" >&2
 
-		sleep 1
-		((i+=1))
+# ========================================================
+# ARCHIE ROLLING PROGRESS / ETA STATE
+# ========================================================
+# PURPOSE:
+# - Give The Yellow "Please Stand By" Line Real Context
+# - Track Per-File Elapsed Seconds
+# - Build A Rolling Average After A Few Completed Files
+# - Show A Rough ETA For Remaining Files
+#
+# IMPORTANT:
+# - ETA is intentionally approximate
+# - Different files can vary wildly by:
+#     duration / resolution / codec / level / audio mode
+# - So we do NOT show ETA immediately
+# - We wait until enough files have completed to form a clue
+#
+# RULE:
+# - No ETA for first 2 completed files
+# - Start showing ETA after 3 completed files
+# ========================================================
+
+		if (( PROGRESS_TOTAL_FILES > 0 )); then
+			if (( PROGRESS_DONE_COUNT >= 3 )); then
+				avg_seconds=$(( PROGRESS_TOTAL_SECONDS / PROGRESS_DONE_COUNT ))
+				remaining_files=$(( PROGRESS_TOTAL_FILES - PROGRESS_DONE_COUNT ))
+
+				if (( remaining_files < 0 )); then
+					remaining_files=0
+				fi
+
+				eta_seconds=$(( avg_seconds * remaining_files ))
+
+				# ----------------------------------------------------
+				# HUMAN READABLE TIME (fallback if helper missing)
+				# ----------------------------------------------------
+				if declare -F format_seconds_hms >/dev/null 2>&1; then
+					avg_human="$(format_seconds_hms "$avg_seconds")"
+					eta_human="$(format_seconds_hms "$eta_seconds")"
+				else
+					avg_human="${avg_seconds}s"
+					eta_human="${eta_seconds}s"
+				fi
+
+				progress_note=" file ${PROGRESS_CURRENT_INDEX}/${PROGRESS_TOTAL_FILES} avg ${avg_human} eta ${eta_human}"
+			elif (( PROGRESS_DONE_COUNT > 0 )); then
+				progress_note=" file ${PROGRESS_CURRENT_INDEX}/${PROGRESS_TOTAL_FILES} gathering timing data..."
+			else
+				progress_note=" file ${PROGRESS_CURRENT_INDEX}/${PROGRESS_TOTAL_FILES}"
+			fi
+		fi
+
+		# --------------------------------------------------------
+		# BUILD SINGLE-LINE STATUS DISPLAY
+		# --------------------------------------------------------
+		live_line=" = = > ${live_label} [${spin:s:1}] ${wave[w]}-WORKING-${wave[w]} [${elapsed}s]${progress_note}"
+
+		# --------------------------------------------------------
+		# PRINT IN-PLACE (no scrolling)
+		# --------------------------------------------------------
+		printf '\r\033[2K%b%s%b' "${YELLOW}" "$live_line" "${NC}" >&2
+
+		s=$(( (s + 1) % spin_len ))
+		w=$(( (w + 1) % wave_len ))
+
+		sleep 0.20
 	done
 
 	# --------------------------------------------------------
@@ -10652,15 +11463,34 @@ run_with_progress() {
 	wait "$cmd_pid"
 	cmd_status=$?
 
+		if (( cmd_status == 130 || cmd_status == 143 || cmd_status == 255 )); then
+			printf '\r\033[2K' >&2
+			echo >&2
+
+			if declare -F on_abort >/dev/null 2>&1; then
+				on_abort
+			fi
+
+			exit "$cmd_status"
+		fi
+
 	# --------------------------------------------------------
-	# CLEAN LINE + LEAVE CURSOR ON FRESH NEW LINE
+	# FINAL TIME ACCOUNTING
+	# --------------------------------------------------------
+	now_ts="$(date +%s)"
+	elapsed=$(( now_ts - start_ts ))
+	(( elapsed < 0 )) && elapsed=0
+
+	PROGRESS_LAST_ELAPSED="$elapsed"
+	PROGRESS_TOTAL_SECONDS=$(( PROGRESS_TOTAL_SECONDS + elapsed ))
+	PROGRESS_DONE_COUNT=$(( PROGRESS_DONE_COUNT + 1 ))
+
+	# --------------------------------------------------------
+	# CLEAN LINE + MOVE TO FRESH LINE
 	# --------------------------------------------------------
 	printf '\r\033[2K' >&2
 	echo >&2
 
-	# --------------------------------------------------------
-	# RETURN ORIGINAL COMMAND STATUS
-	# --------------------------------------------------------
 	return "$cmd_status"
 }
 
@@ -11267,34 +12097,20 @@ run_batch_normalizer() {
 	local max_jobs
 	local -a norm_sources
 
-	clear
-	echo -e "${CYAN}==========================================================${NC}"
-	echo -e "${CYAN}      BATCH NORMALIZER :: CUT-FRIENDLY REKEY BUILDER      ${NC}"
-	echo -e "${CYAN}==========================================================${NC}"
-	echo
-    echo -e "${CYAN}------------------------------------------------------------------------${NC}"
-	echo -e "${YELLOW}WARNING: Originals Are Kept Untouched And Outputs Are Added Beside Them.${NC}"
-    echo -e "${CYAN}------------------------------------------------------------------------${NC}"
-	echo -e "${YELLOW}WARNING: Folder Size WILL DOUBLE During Normalization.= = = = = = = = = ${NC}"
-    echo -e "${CYAN}------------------------------------------------------------------------${NC}"
-	echo -e "${YELLOW}WARNING: If You Later Also Create SUTURED Outputs, WORKING SIZE WILL= = ${NC}"
-    echo -e "${CYAN}------------------------------------------------------------------------${NC}"
-	echo -e "${YELLOW}WARNING: TRIPLE THE ORIGINAL FOLDER SIZE. = = = = = = = = = = = = = = = ${NC}"
-    echo -e "${CYAN}------------------------------------------------------------------------${NC}"
-	echo -e "${REB}WARNING: = = = = = = = > Check Your Disk Space WARNING = = = = = = = = = = ${NC}"
-    echo -e "${CYAN}------------------------------------------------------------------------${NC}"
-	echo -e "${CYAN} = = > This Step Is Intended To Make Later Cuts Clean And Reliable.     ${NC}"
-    echo -e "${CYAN}------------------------------------------------------------------------${NC}"
-	echo -e "${CYAN} = = > Tight 1 Second KeyFrameZ Make For Accurtate CutZ.----------------${NC}"
-    echo -e "${CYAN}------------------------------------------------------------------------${NC}"
-	echo -e "${CYAN} = = > If Your Here Twice Thats OK, It Will Skip All Already Done And---${NC}"
-    echo -e "${CYAN}------------------------------------------------------------------------${NC}"
-	echo -e "${CYAN} = = > Still Set The Flag For Rekey Favorability During This Session----${NC}"
-    echo -e "${CYAN}------------------------------------------------------------------------${NC}"
+	echo -e "     ${CYAN}==========================================================${NC}"
+	echo -e "     ${CYAN}      BATCH NORMALIZER :: CUT-FRIENDLY REKEY BUILDER      ${NC}"
+	echo -e "     ${CYAN}==========================================================${NC}"
+	echo -e "     ${YELLOW}WARNING: Originals Are Kept Untouched And Outputs Are Added Beside Them.${NC}"
+	echo -e "     ${YELLOW}WARNING: Folder Size WILL DOUBLE During Normalization.= = = = = = = = = ${NC}"
+	echo -e "     ${YELLOW}WARNING: If You Later Also Create SUTURED Outputs, WORKING SIZE WILL= = ${NC}"
+	echo -e "     ${YELLOW}WARNING: TRIPLE THE ORIGINAL FOLDER SIZE. = = = = = = = = = = = = = = = ${NC}"
+	echo -e "     ${REB}WARNING: = = = = = = = >${NC}${YELLOW}Check Your Disk Space WARNING${NC}${REB} < = = = = = = = = ${NC}"
+	echo -e "     ${CYAN}= = > If Your Here Twice Thats OK, It Will Skip All Already Done And---${NC}"
+	echo -e "     ${CYAN}= = > Still Set The Flag For Rekey Favorability During This Session----${NC}"
 	echo
 
-	if ! ask_yes_no " = = > Continue Into Source Scan? (y/n or 1/2): "; then
-		echo -e "${YELLOW} = = > Batch Normalizer Canceled.${NC}"
+	if ! ask_yes_no "     = = > Did You Read That Up There ? (y/n or 1/2): "; then
+		echo -e "${YELLOW}     = = > Batch Normalizer Canceled.${NC}"
 		pause
 		return 0
 	fi
@@ -11353,13 +12169,12 @@ run_batch_normalizer() {
 		return 0
 	fi
 
-	echo
+	clear
 	echo -e "${CYAN}==========================================================${NC}"
 	echo -e "${CYAN}          BATCH NORMALIZER :: EXECUTION CONFIRM           ${NC}"
 	echo -e "${CYAN}==========================================================${NC}"
 	echo -e "${CYAN} = = > Selected Mode:${NC} ${YELLOW}$execution_mode${NC}"
 	echo -e "${CYAN} = = > Files In Scope:${NC} ${YELLOW}${#norm_sources[@]}${NC}"
-	echo
 
 	case "$execution_mode" in
 		ADAPTIVE)
@@ -11380,10 +12195,8 @@ run_batch_normalizer() {
 			;;
 
 		THROUGHPUT)
-			echo -e "${CYAN} = = > Throughput Mode Selected.${NC}"
 			echo -e "${CYAN} = = > Fixed Batch CRF Will Be Used For This Pass.${NC}"
-			echo -e "${CYAN} = = > Light / Medium / Thrash Concurrency Is Available Here.${NC}"
-			echo
+			echo -e "${CYAN} = = > ${GREEN}Light ${YELLOW}Medium ${RED}Thrash ${CYAN}Concurrency Is Available Here.${NC}"
 
 			if ! max_jobs="$(rekey_choose_throughput_job_count)"; then
 				echo
@@ -11393,7 +12206,7 @@ run_batch_normalizer() {
 			fi
 
 			echo
-			echo -e "${CYAN} = = > Max Parallel Jobs Selected:${NC} ${YELLOW}$max_jobs${NC}"
+			echo -e "${CYAN} = = > Max Parallel Jobs Selected:${NC} ${GREEN}$max_jobs${NC}"
 			echo
 
 			if ! ask_yes_no " = = > Start Throughput Mode Batch Now? (y/n or 1/2): "; then
@@ -11720,6 +12533,17 @@ else
   FILES=("${FILTERED[@]}")
 fi
 
+# ========================================================
+# #MARKER: APPLY TARGET LIMITER / MANUAL PICKER
+# ========================================================
+if [[ "${PILOT_MODE:-0}" != "1" ]]; then
+	if ! limit_targets_interactive FILES; then
+		echo -e "${YELLOW} = = > Factory Batch Selection Cancelled.${NC}"
+		pause
+		return 0
+	fi
+fi
+
 TOTAL=${#FILES[@]}
 if [[ "$TOTAL" -eq 0 ]]; then
   echo -e "${RE} = = > No Targets Found In This Folder / Map.${NC}"
@@ -11810,6 +12634,11 @@ cleanup() { rm -rf "$TMPDIR"; }
 on_abort() {
 	echo -e "\n${REB} = = > ABORTED. Cleaning Temp...${NC}"
 
+	if [[ -n "${ARCHIVE_TMPDIR:-}" && -d "$ARCHIVE_TMPDIR" ]]; then
+		rm -rf -- "$ARCHIVE_TMPDIR"
+		echo -e "${GREEN} = = > Removed Archive Temp Workspace.${NC}"
+	fi
+
 	# ========================================================
 	# EMERGENCY PILOT RESTORE
 	# --------------------------------------------------------
@@ -11842,7 +12671,7 @@ on_abort() {
 		if [[ -f "GOOD_intro_map.csv" ]]; then
 			rm -f -- "intro_map.csv"
 			mv -f -- "GOOD_intro_map.csv" "intro_map.csv"
-			echo -e "${GREEN} = = > Restored:${NC} intro_map.csv"
+			echo -e "${GREEN} = = > Restored: intro_map.csv${NC}"
 		else
 			echo -e "${YELLOW} = = > No GOOD_intro_map.csv Found (Nothing To Restore).${NC}"
 		fi
@@ -12345,7 +13174,7 @@ run_intro_detection_menu() {
         echo "     3) Hybrid detection Same As Above With Black Detect FallBack (pHash + Blackdetect)"
         echo "     7) Blackdetect Only"
         echo
-        echo "     10key exit > 0.Enter to Quit   (or q) to Quit"
+        echo "     10-key exit > 0. (or q) Enter to quit"
         echo
 
 		echo -e "${YELLOW}     Choice: ${NC}"
@@ -12496,9 +13325,6 @@ case "$MODE" in
     run_intro_detection_menu
     return 0
     ;;
-
-
-
   7)
     # =========================
     # #MARKER: DETECTION PROMPTS (BLACKDETECT ONLY)
@@ -12507,12 +13333,10 @@ case "$MODE" in
     read -r BLACK_DUR
     echo -e "${NC}"
     BLACK_DUR=${BLACK_DUR:-$DEFAULT_BLACK_DURATION}
-
     echo -ne "${YELLOW} = = > If You Chose Blackdetect Then Set Its Pixel Threshold? (Default ${DEFAULT_BLACK_PIXTH}): "
     read -r BLACK_PIX
     echo -e "${NC}"
     BLACK_PIX=${BLACK_PIX:-$DEFAULT_BLACK_PIXTH}
-
     echo
     return 0
     ;;
@@ -12553,7 +13377,6 @@ esac
 # ============================================================
 #  FILE PROCESSING
 # ============================================================
-
 # Build Eligible Working Targets For Legacy IntroFind Processing.
 # Keep Discovery Tighter Than The Old Broad Grab So The Workflow Does Not
 # Accidentally Sweep Up Every Generated/Helper File In The Directory.
