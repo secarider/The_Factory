@@ -1,6 +1,95 @@
 ![The_Factory Logo](TheFactory.png)
 # THE_FACTORY
 
+# SMCUT — SmartCut-Based Intro Removal System
+
+inspired and powered by 'https://github.com/skeskinen/smartcut'
+
+---
+
+## Overview
+
+**SMCUT** is a lightweight, modern replacement pipeline for intro removal and episode trimming.
+
+It replaces large portions of the legacy Factory workflow with a simpler, faster model:
+
+```
+IntroFind (pHash) → intro_map.csv → SmartCut batch → SMC_* outputs
+```
+
+This approach eliminates the need for global re-encoding, keyframe normalization, and concat-based stitching.
+
+---
+
+## Core Philosophy
+
+### Old Model (Factory)
+
+```
+Normalize (REKEY) → Ensure Keyframes → Cut → Stitch → Verify
+```
+
+### New Model (SMCUT)
+
+```
+Detect → Cut (SmartCut handles seams)
+```
+
+---
+
+## Key Advantages
+
+* No full-file re-encode required
+* No GOP/keyframe dependency issues
+* Seamless cuts via localized re-encoding
+* Faster batch processing
+* Simpler architecture
+* CSV-driven automation
+
+---
+
+## Components
+
+### 1. IntroFind (pHash Engine)
+
+* Scans video files using perceptual hashing
+* Matches against templates in `intro_template/`
+* Writes results to `intro_map.csv`
+
+**Output format:**
+
+```
+filename,start,end,start_hms,end_hms,template_used,diff
+```
+
+---
+
+### 2. intro_map.csv
+
+Acts as the central instruction file for batch cutting.
+
+Example:
+
+```
+Star_Trek_TNG_S05E03_Ensign_Ro.mkv,128,234,00:02:08,00:03:54,intro_template.mkv,10
+```
+
+Only the first three columns are required for cutting:
+
+```
+filename,start,end
+```
+
+---
+
+### 3. SmartCut Engine
+
+Uses either:
+
+* `smartcut` (pipx installed), or
+* `smc.app` (AppImage)
+
+Old readme from here down 
 A terminal-driven video processing pipeline designed for non-destructive, batch-safe, intro-aware media preparation.
 
 THE_FACTORY automates complex, repetitive workflows such as intro detection, clean cutting, subtitle handling, metadata repair, and batch normalization—while preserving original files at every stage.
