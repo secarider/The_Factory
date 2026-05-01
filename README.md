@@ -89,7 +89,7 @@ Uses either:
 * `smartcut` (pipx installed), or
 * `smc.app` (AppImage)
 
-Old readme from here down 
+'Old readme from here down' 
 A terminal-driven video processing pipeline designed for non-destructive, batch-safe, intro-aware media preparation.
 
 THE_FACTORY automates complex, repetitive workflows such as intro detection, clean cutting, subtitle handling, metadata repair, and batch normalization—while preserving original files at every stage.
