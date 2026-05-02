@@ -850,7 +850,23 @@ limit_targets_interactive() {
 				return 1
 			fi
 
-			for choice in $raw_choices; do
+			# ========================================================
+			# #MARKER: MANUAL PICKER SPLIT FIX
+			# ========================================================
+			# Global IFS is newline/tab only, so force space-splitting here.
+			# Allows:
+			#   1
+			#   1 4 7
+			#   1,4,7
+			# ========================================================
+			local -a choice_list=()
+			local old_ifs="$IFS"
+
+			IFS=' '
+			read -r -a choice_list <<< "$raw_choices"
+			IFS="$old_ifs"
+
+			for choice in "${choice_list[@]}"; do
 				clean_choice="${choice//[[:space:]]/}"
 
 				if is_exit_token "$clean_choice"; then
