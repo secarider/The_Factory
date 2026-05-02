@@ -93,7 +93,7 @@ filename,start,end
 Uses either:
 
 * `smartcut` (pipx installed), or
-* `smc.app` (AppImage)
+* `smc.app` (AppImage) SmartMediaCutter-2.3.4-x86_64.AppImage
 
 `Old readme from here down`
 
