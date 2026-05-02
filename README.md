@@ -3,7 +3,10 @@
 
 # SMCUT — SmartCut-Based Intro Removal System
 
-inspired and powered by 'https://github.com/skeskinen/smartcut'
+inspired by `https://github.com/mifi/lossless-cut`
+The Factory Runs On SmartCut
+inspired and powered by `https://github.com/skeskinen/smartcut`
+
 
 ---
 
