@@ -416,8 +416,8 @@ run_twisted_menu() {
 		echo
 		echo -e "${YELLOW}     0.) Return${NC}"
 		echo
-        echo -e "${YELLOW}"
-		read -r -p " = = > Select option [1-5 | 0.=return]: " choice
+        echo -ne "${YELLOW}"
+		read -r -p " = = > Select option [1-5 | 0.=return]: ${NC}${GREEN}" choice
         echo -e "${NC}"
 
         if is_exit_token "$choice"; then
@@ -667,7 +667,7 @@ ask_yes_no() {
     local prompt="$1"
     local ans
 
-	echo -ne "${YELLOW}${prompt}${GREEN}"
+	echo -ne "${YELLOW}${prompt}${NC}${GREEN}"
 	read -r ans
 	echo -e "${NC}"
 
@@ -729,7 +729,7 @@ prompt_read() {
 	local __var_name="$2"
 	local __input
 
-	echo -ne "${YELLOW}${prompt}"
+	echo -ne "${YELLOW}${prompt}${NC}${GREEN}"
 	read -r __input
 	echo -e "${NC}"
 
@@ -753,7 +753,7 @@ prompt_menu_choice() {
 	local __var_name="$2"
 	local __input
 
-	echo -ne "${YELLOW}${prompt}"
+	echo -ne "${YELLOW}${prompt}${NC}${GREEN}"
 	read -r __input
 	echo -e "${NC}"
 
@@ -805,7 +805,7 @@ limit_targets_interactive() {
 	echo -e "${CYAN}     0.) Return / Cancel${NC}"
 	echo
 
-	echo -ne "${YELLOW} = = > Select option [1-3 | 0.=cancel | q] (Default: Full Batch):${GREEN}"
+	echo -ne "${YELLOW} = = > Select option [1-3 | 0.=cancel | q] (Default: Full Batch):${NC}${GREEN}"
 	read -r mode
 	echo -e "${NC}"
 
@@ -840,7 +840,7 @@ limit_targets_interactive() {
 			echo -e "${CYAN} = = > Cancel:${NC} ${YELLOW}0.${NC} ${CYAN}or${NC} ${YELLOW}q${NC}"
 			echo
 
-			echo -ne "${YELLOW} = = > Pick File Number(s):${GREEN}"
+			echo -ne "${YELLOW} = = > Pick File Number(s):${NC}${GREEN}"
 			read -r raw_choices
 			echo -e "${NC}"
 
@@ -892,7 +892,7 @@ limit_targets_interactive() {
 			;;
 
 		3)
-			echo -ne "${YELLOW} = = > Enter How Many Files To Process:${GREEN}"
+			echo -ne "${YELLOW} = = > Enter How Many Files To Process:${NC}${GREEN}"
 			read -r how_many
 			echo -e "${NC}"
 
@@ -1509,7 +1509,7 @@ rekey_choose_batch_execution_mode() {
 	echo -e "${CYAN} = = > Throughput:${NC} ${YELLOW}Fixed Batch CRF, Faster Parallel Processing.${NC}" >&2
 	echo >&2
 
-	echo -ne "${YELLOW} = = > Choose Execution Mode [1-2 | 0.=return]: ${GREEN}" >&2
+	echo -ne "${YELLOW} = = > Choose Execution Mode [1-2 | 0.=return]: ${NC}${GREEN}" >&2
 	read -r mode_choice # < dont change this one
     echo -e "${NC}" >&2
 
@@ -1573,7 +1573,7 @@ rekey_choose_throughput_job_count() {
 	echo -e "${CYAN} = = > Host CPU Threads Seen:${NC} ${GREEN}$cpu_count${NC}" >&2
 	echo >&2
 
-	echo -ne "${YELLOW} = = > Choose Load [1-3 | 0.=return]: ${GREEN}" >&2
+	echo -ne "${YELLOW} = = > Choose Load [1-3 | 0.=return]: ${NC}${GREEN}" >&2
 	read -r load_choice
 	echo -e "${NC}" >&2
 
@@ -1594,7 +1594,7 @@ rekey_choose_throughput_job_count() {
 			return 0
 			;;
 		3)
-			echo -ne "${YELLOW} = = > Enter Max Parallel Jobs [Default ${cpu_count}]: ${GREEN}" >&2
+			echo -ne "${YELLOW} = = > Enter Max Parallel Jobs [Default ${cpu_count}]: ${NC}${GREEN}" >&2
 			read -r custom_jobs
 			echo -e "${NC}" >&2
 
@@ -4028,7 +4028,7 @@ ui_show_folder_state_snapshot() {
 	for f in "${all_videos[@]}"; do
 		[[ -f "$f" ]] || continue
 		case "${f^^}" in
-			OEM_*|REKEY_*|SUTURED_*|PILOT_SUTURED_*|BARFIX_*|SUBPACKED_*)
+			OEM_*|SMC_*|REKEY_*|SUTURED_*|PILOT_SUTURED_*|BARFIX_*|SUBPACKED_*)
 				continue
 				;;
 		esac
@@ -4080,7 +4080,7 @@ ui_show_cleanup_target_snapshot() {
 	echo -e "${CYAN} = = > Temp / junk targets:${NC} ${#temp_targets[@]}"
 	echo -e "${CYAN} = = > Template targets:${NC} ${#template_targets[@]}"
 	echo -e "${CYAN} = = > Detection map / CSV targets:${NC} ${#detect_targets[@]}"
-	echo -e "${CYAN} = = > Finished SUTURED outputs:${NC} ${#sutured_targets[@]}"
+	echo -e "${CYAN} = = > Finished SMC / SUTURED outputs:${NC} ${#sutured_targets[@]}"
 }
 
 
@@ -5071,15 +5071,11 @@ run_main_menu() {
     echo -e "${RED}============================================================================${NC}"
     echo -e "${BWHITE}                           THE_FACTORY${NC}"
     echo -e "${CYAN}----------THE UNIVERSAL VIDEO SANITIZER & TRIMMER & META TITLE FIXER${NC}"
-    echo -e "${RED}-----------Clip_Grab BitZ From VidZ Any Dir Drop_In Tool custom_cut.mkv${NC}"
     echo -e "${YEB}-------------IntroFind-v2.1- ${NC}${BWHITE}https://github.com/secarider/The_Factory${NC}"
     echo -e "${YEB}--------Video Smartcut-v1.7- ${NC}${BWHITE}https://github.com/skeskinen/smartcut${NC}"
+    echo -e "${BWHITE}                           THE_FACTORY${NC}"
     echo -e "${CYAN}------------------SUBTOX UNIFIED SUBTITLE + RENAME ENGINE${NC}"
     echo -e "${RED}============================================================================${NC}"
-    echo
-    echo -e "${RED}        Main Menu${NC}${BWHITE} = = = THE_FACTORY${NC} ${CYAN}        Main Menu${NC}"
-    echo -e "${RED}        Main Menu${NC}${BWHITE} = = = IntroFind-v2.1${NC} ${CYAN}     Main Menu${NC}"
-    echo -e "${RED}        Main Menu${NC}${BWHITE} = = = Video Smartcut-v1.7${NC} ${CYAN}Main Menu${NC}"
     echo
 
     # ------------------ WORKING CONTEXT ------------------
@@ -5301,8 +5297,8 @@ run_barfix() {
     echo
 
     echo "     10-key exit > 0. (or q) Enter to quit"
-    read -r -p "     Select BARFIX mode [1/2/3/q]: " BARFIX_MODE
-    echo -e "${YELLOW}"
+    read -r -p "     Select BARFIX mode [1/2/3/q]: ${NC}${GREEN}" BARFIX_MODE
+    echo -e "${NC}"
     if is_exit_token "$BARFIX_MODE"; then
         return 0
     fi
@@ -5316,8 +5312,9 @@ run_barfix() {
     local SEG=""
     if [[ "$BARFIX_MODE" == "1" || "$BARFIX_MODE" == "3" ]]; then
 
-      echo -e "${YELLOW} Start TITLE At Which Underscore Segment? (1-based, e.g. 3): ${NC}"
+      echo -ne "${YELLOW} Start TITLE At Which Underscore Segment? (1-based, e.g. 3):${NC}${GREEN}"
       read -r SEG
+	  echo -e "${NC}"
       if [[ -z "${SEG:-}" || ! "$SEG" =~ ^[0-9]+$ || "$SEG" -lt 1 ]]; then
         echo -e "${REB} = = > Invalid Segment Number.${NC}"
         pause
@@ -5370,25 +5367,35 @@ run_barfix() {
         ;;
     esac
 
-    echo
-    echo -e "${YELLOW} = = > Preview:${NC}"
-    for f in "${targets[@]}"; do
-      if [[ "$BARFIX_MODE" == "1" || "$BARFIX_MODE" == "3" ]]; then
-        local t
-        t="$(make_title_from_filename "$f" "$SEG")"
-        printf "  %s  ->  %s\n" "$f" "$t"
-      else
-        printf "  %s\n" "$f"
-      fi
-    done
+	echo
+	echo -e "${CYAN}=====================================================${NC}"
+	echo -e "${CYAN}          BARFIX TITLE / PLAYBACK PREVIEW             ${NC}"
+	echo -e "${CYAN}=====================================================${NC}"
+	echo
 
-    echo
+	if [[ "$BARFIX_MODE" == "1" || "$BARFIX_MODE" == "3" ]]; then
+		echo -e "${CYAN} = = > Title Segment Start:${NC} ${YELLOW}$SEG${NC}"
+		echo
+	fi
 
-      if ! ask_yes_no " = = > Proceed? (y/n or 1/2): "; then
-      	echo -e "${REB} = = > Aborted.${NC}"
-      	pause
-      	return 0
-      fi
+	for f in "${targets[@]}"; do
+		if [[ "$BARFIX_MODE" == "1" || "$BARFIX_MODE" == "3" ]]; then
+			local t
+			t="$(make_title_from_filename "$f" "$SEG")"
+			printf '  %b%s%b  ->  %b%s%b\n' \
+				"$GREEN" "$f" "$NC" \
+				"$YELLOW" "$t" "$NC"
+		else
+			printf '  %b%s%b\n' "$GREEN" "$f" "$NC"
+		fi
+	done
+
+	echo
+	if ! ask_yes_no " = = > Proceed With BARFIX? (y/n or 1/2): "; then
+		echo -e "${REB} = = > Aborted.${NC}"
+		pause
+		return 0
+	fi
 
     echo
     local total=${#targets[@]}
@@ -5401,7 +5408,7 @@ run_barfix() {
 
       ext="${f##*.}"
 
-      echo -e "${YELLOW}YELLOW[$current / $total]${NC} Fixing: $f"
+      echo -e "${YELLOW}[$current / $total]${NC} ${CYAN}Fixing:${NC} ${GREEN}$f${NC}"
 
       if [[ "$BARFIX_MODE" == "1" || "$BARFIX_MODE" == "3" ]]; then
         t="$(make_title_from_filename "$f" "$SEG")"
@@ -5924,7 +5931,7 @@ run_subtox_recovery_rename() {
 		echo -e "${YELLOW}     0.) Return${NC}"
 		echo
 		echo -e "${YELLOW}"
-		read -r -p " = = > Select option [1-2 | 0.=return]: " recovery_choice
+		read -r -p " = = > Select option [1-2 | 0.=return]: ${NC}${GREEN}" recovery_choice
 		echo -e "${NC}"
 
 		recovery_choice="${recovery_choice//[[:space:]]/}"
@@ -6791,7 +6798,7 @@ run_archies_archival_array() {
 	archival_print_targets "Eligible Archival Targets" "${targets[@]}"
 
 	echo -e "${YELLOW}"
-	read -r -p " = = > Choose Archival Level [1-4]:${GREEN}" level
+	read -r -p " = = > Choose Archival Level [1-4]:${NC}${GREEN}" level
 	echo -e "${NC}"
 
 	level="${level//[[:space:]]/}"
@@ -6958,6 +6965,26 @@ run_archies_archival_array() {
 	pause
 }
 
+# ================================================================
+# #MARKER: FINAL PRODUCT RESOLVER
+# ================================================================
+resolve_final_output() {
+	local base="$1"
+
+	local smc="SMC_${base}"
+	local sut="SUTURED_${base}"
+
+	if [[ -f "$smc" ]]; then
+		echo "$smc"
+		return 0
+	elif [[ -f "$sut" ]]; then
+		echo "$sut"
+		return 0
+	else
+		return 1
+	fi
+}
+
 # =========================
 # #MARKER: FINALIZE / CLEANUP MENU
 # =========================
@@ -7060,7 +7087,10 @@ run_finalize_menu() {
 			_hb_temp
 			_norm_tmp
 			_rekey_tmp
+			x265_2pass.log
+			x265_2pass.log.cutree
 			*.log
+			*.log.cutree
 			ffmpeg2pass-0.log
 			ffmpeg2pass-0.log.mbtree
 			custom_cut*.mkv
@@ -7347,7 +7377,7 @@ cleanup_detection_maps() {
 		echo
 		echo " = = > It does NOT remove:"
 		echo " = = >  - OEM backup material"
-		echo " = = >  - finished SUTURED outputs"
+		echo " = = >  - finished SMC / SUTURED outputs"
 		echo
 
 		if ! ask_yes_no " = = > Run Safe Cleanup Pass Now? (y/n or 1/2): "; then
@@ -7372,31 +7402,37 @@ cleanup_detection_maps() {
 		pause
 	}
 
-	cleanup_collect_sutured_targets() {
-		shopt -s nullglob nocaseglob
-		local -a sutured=(SUTURED_*.mkv)
-		shopt -u nullglob nocaseglob
+cleanup_collect_final_targets() {
+	shopt -s nullglob nocaseglob
+	local -a targets=(SMC_* SUTURED_*.mkv)
+	shopt -u nullglob nocaseglob
 
-		local f
-		for f in "${sutured[@]}"; do
-			[[ -f "$f" ]] || continue
-			printf '%s\n' "$f"
-		done
-	}
+	local f
+	for f in "${targets[@]}"; do
+		[[ -f "$f" ]] || continue
+		printf '%s\n' "$f"
+	done
+}
 
-	cleanup_final_name_from_sutured() {
-		local file="$1"
-		local custom_prefix="${2:-}"
-		local rest
+cleanup_collect_sutured_targets() {
+	cleanup_collect_final_targets
+}
 
-		rest="${file#SUTURED_}"
+cleanup_final_name_from_sutured() {
+	local file="$1"
+	local custom_prefix="${2:-}"
+	local rest
 
-		if [[ -n "$custom_prefix" ]]; then
-			printf '%s\n' "${custom_prefix}${rest}"
-		else
-			printf '%s\n' "$rest"
-		fi
-	}
+	rest="$file"
+	rest="${rest#SMC_}"
+	rest="${rest#SUTURED_}"
+
+	if [[ -n "$custom_prefix" ]]; then
+		printf '%s\n' "${custom_prefix}${rest}"
+	else
+		printf '%s\n' "$rest"
+	fi
+}
 
 	cleanup_collect_replaceable_originals() {
 		local custom_prefix="${1:-}"
@@ -7508,11 +7544,11 @@ cleanup_verify_OEM_parity_for_sutured_targets() {
 	echo -e "${CYAN}       FINALIZE :: OEM PARITY SAFETY CHECK      ${NC}"
 	echo -e "${CYAN}================================================${NC}"
 	echo
-	echo -e "${YELLOW} = = > Verifying That Every Finished SUTURED File Has A Matching OEM Backup...${NC}"
+	echo -e "${YELLOW} = = > Verifying That Every Finished SMC / SUTURED File Has A Matching OEM Backup...${NC}"
 	echo
 
 	if (( ${#sutured_targets[@]} == 0 )); then
-		echo -e "${YELLOW} = = > No SUTURED Targets Found. Nothing To Verify.${NC}"
+		echo -e "${YELLOW} = = > No SMC / SUTURED Targets Found. Nothing To Verify.${NC}"
 		echo
 		return 1
 	fi
@@ -7542,11 +7578,13 @@ cleanup_verify_OEM_parity_for_sutured_targets() {
 	for sutured_file in "${sutured_targets[@]}"; do
 		[[ -f "$sutured_file" ]] || continue
 
-		base_name="${sutured_file#SUTURED_}"
+		base_name="$sutured_file"
+		base_name="${base_name#SMC_}"
+		base_name="${base_name#SUTURED_}"
 		stem="${base_name%.*}"
 		matched_OEM=""
 
-		echo -e "${CYAN} = = > SUTURED Target:${NC} $sutured_file"
+		echo -e "${CYAN} = = > SMC / SUTURED Target:${NC} $sutured_file"
 		echo -e "${CYAN} = = > Expected OEM Stem:${NC} ./OEM/OEM_${stem}.*"
 
 		shopt -s nullglob
@@ -7574,13 +7612,13 @@ cleanup_verify_OEM_parity_for_sutured_targets() {
 		echo
 	done
 
-	echo -e "${CYAN} = = > Finished SUTURED Targets:${NC} ${#sutured_targets[@]}"
+	echo -e "${CYAN} = = > Finished SMC / SUTURED Targets:${NC} ${#sutured_targets[@]}"
 	echo -e "${CYAN} = = > Missing OEM Counterparts:${NC} ${#missing_OEM[@]}"
 	echo
 
 	if (( ${#missing_OEM[@]} == 0 )); then
 		echo -e "${GREEN} = = > OEM Parity Check: PASS${NC}"
-		echo -e "${GREEN} = = > Every Finished SUTURED File Has A Matching OEM Backup In ./OEM.${NC}"
+		echo -e "${GREEN} = = > Every Finished SMC / SUTURED File Has A Matching OEM Backup In ./OEM.${NC}"
 		echo
 		return 0
 	fi
@@ -7620,7 +7658,7 @@ cleanup_archive_OEM_folder() {
 
 	# ----- COLLECT CSV FILES ---------------------------------
 	# Glob is safe; if none exist, array will be empty
-	csv_files=( *.csv )
+	csv_files=( *.csv *.log *.log.cutree x265_2pass.log x265_2pass.log.cutree )
 
 	# ----- COLLECT TEMPLATE FILES FROM INTRO MAP -------------
 	# Only include files that actually exist
@@ -7876,29 +7914,29 @@ cleanup_finalize_sutured_replacements() {
 	show_space_overview
 
 	echo -e "${CYAN}================================================${NC}"
-	echo -e "${CYAN}      FINALIZE FINISHED SUTURED REPLACEMENTS    ${NC}"
+	echo -e "${CYAN}      FINALIZE FINISHED SMC_/SUTURED_ REPLACEMENTS    ${NC}"
 	echo -e "${CYAN}================================================${NC}"
 	echo
-	echo -e "${YELLOW} = = > This Finalizer Treats SUTURED Files As The Goal.${NC}"
+	echo -e "${YELLOW} = = > This Finalizer Treats SMC_/SUTURED_ Files As The Goal.${NC}"
 	echo -e "${YELLOW} = = > OEM Material Is Backup/Archive Material.${NC}"
 	echo -e "${YELLOW} = = > Working-Dir Originals May Be Deleted Only By Confirmation.${NC}"
 	echo
 
 	mapfile -t _tmp_sutured_check < <(cleanup_collect_sutured_targets)
 	if (( ${#_tmp_sutured_check[@]} == 0 )); then
-		echo -e "${YELLOW} = = > No SUTURED Files Found. Nothing To Finalize.${NC}"
+		echo -e "${YELLOW} = = > No SMC_/SUTURED_ Files Found. Nothing To Finalize.${NC}"
 		echo
 		pause
 		return 0
 	fi
 	unset _tmp_sutured_check
 
-	echo -e "${YELLOW}"
-	echo -e "${CYAN} = = > Rename Mode For Finished SUTURED Outputs:${NC}"
-	echo "     1) Remove SUTURED_ Prefix Entirely"
-	echo "     2) Replace SUTURED_ With My Custom Prefix"
 	echo
-	read -r -p "     Choice: " reply
+	echo -e "${CYAN}     = = > Rename Mode For Finished SMC_/SUTURED_ Outputs:${NC}"
+	echo -e "${YELLOW}      1) Remove SMC_/SUTURED_ Prefix Entirely${NC}"
+	echo -e "${YELLOW}      2) Replace SMC_/SUTURED_ With My Custom Prefix"
+	echo
+	read -r -p "     Choice: ${NC}${GREEN}" reply
 	echo -e "${NC}"
 	echo
 
@@ -8010,14 +8048,14 @@ cleanup_finalize_sutured_replacements() {
 		echo "     3) Remove Working Template Artifacts (intro_template/*)"
 		echo "     4) Remove PILOT_SUTURED_* Outputs"
 		echo "     5) Remove Detection Map / CSV Artifacts"
-		echo "     6) Finalize Finished SUTURED Replacements"
+		echo "     6) Finalize Finished SMC / SUTURED Replacements"
 		echo "     7) Safe Cleanup Pass"
 		echo "     8) Archive CSV + Referenced Templates Only"
 		echo
 		echo "     10-key exit > 0. (or q) Enter to quit"
 		echo
 
-		read -r -p "     Choice: " cleanup_choice
+		read -r -p "     Choice: ${NC}${GREEN}" cleanup_choice
 		echo -e "${NC}"
 		cleanup_choice="${cleanup_choice//[[:space:]]/}"
 
@@ -8061,7 +8099,7 @@ cleanup_finalize_sutured_replacements() {
 
             	tarname="csv_templates_$(date +%Y%m%d_%H%M%S).tar.gz"
 
-            	csv_files=( *.csv )
+            	csv_files=( *.csv *.log *.log.cutree x265_2pass.log x265_2pass.log.cutree )
 
             	map_templates=()
             	while IFS= read -r t; do
@@ -8085,7 +8123,6 @@ cleanup_finalize_sutured_replacements() {
 		esac
 	done
 }
-
 
 # ============================================================
 #  CORE FUNCTIONS
@@ -8374,12 +8411,14 @@ inspect_show_file_groups() {
 	# - REKEY_ files are normalized cut-friendly rebuilds.
 	# - SUTURED_ files are GAPMAN outputs.
 	# - BARFIX_ files are title/playback remux outputs.
+	# - SMC_* files are smart media cut equal to SUTURED_
 	#
 	shopt -s nullglob nocaseglob
 	local -a all_videos=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
 	local -a OEM_files=(./OEM/OEM_*)
 	local -a rekey_files=(REKEY_*.mkv)
 	local -a sutured_files=(SUTURED_*.mkv)
+	local -a sutured_files=(SMC_*)
 	local -a barfix_files=(BARFIX_*.mkv)
 	local -a subpacked_files=(SUBPACKED_*)
 	shopt -u nullglob nocaseglob
@@ -8392,6 +8431,7 @@ inspect_show_file_groups() {
 	for f in "${all_videos[@]}"; do
 		[[ "$f" =~ ^OEM_ ]] && continue
 		[[ "$f" =~ ^REKEY_ ]] && continue
+		[[ "$f" =~ ^SMC_ ]] && continue
 		[[ "$f" =~ ^(SUTURED_|PILOT_SUTURED_) ]] && continue
 		[[ "$f" =~ ^BARFIX_ ]] && continue
 		[[ "$f" =~ ^SUBPACKED_ ]] && continue
@@ -8403,7 +8443,7 @@ inspect_show_file_groups() {
 	inspect_print_group "Likely source / working targets" "${plain_targets[@]}"
 	inspect_print_group "OEM backups" "${OEM_files[@]}"
 	inspect_print_group "REKEY normalized files" "${rekey_files[@]}"
-	inspect_print_group "SUTURED outputs" "${sutured_files[@]}"
+	inspect_print_group "Finished outputs" "${final_files[@]}"
 	inspect_print_group "BARFIX outputs" "${barfix_files[@]}"
 	inspect_print_group "SUBPACKED outputs" "${subpacked_files[@]}"
 
@@ -8529,7 +8569,7 @@ run_inspect() {
         echo "     10-key exit > 0. (or q) Enter to quit"
         echo
 
-        read -r -p "     Choice: " inspect_choice
+        read -r -p "     Choice: ${NC}${GREEN}" inspect_choice
         echo -e "${NC}"
         inspect_choice="${inspect_choice//[[:space:]]/}"
 
@@ -8645,6 +8685,7 @@ prepare_collect_source_candidates() {
 		[[ "$f" =~ ^SUBPACKED_ ]] && continue
 		[[ "$f" == intro_template* ]] && continue
 		[[ "$f" == custom_cut* ]] && continue
+		[[ "$f" =~ ^SMC_ ]] && continue
 		printf '%s\n' "$f"
 	done
 }
@@ -8800,7 +8841,7 @@ prepare_set_rekey_preference() {
     echo "     10-key exit > 0. (or q) Enter to quit"
     echo
 
-    read -r -p "     Choice: " pref_choice
+    read -r -p "     Choice: ${NC}${GREEN}" pref_choice
     echo -e "${NC}"
     pref_choice="${pref_choice//[[:space:]]/}"
 
@@ -8988,7 +9029,7 @@ run_title_subtitle_menu() {
         echo "     10-key exit > 0. (or q) Enter to quit"
         echo
 
-        read -r -p "     Choice: " ts_choice
+        read -r -p "     Choice: ${NC}${GREEN}" ts_choice
         echo -e "${NC}"
         ts_choice="${ts_choice//[[:space:]]/}"
 
@@ -9039,7 +9080,7 @@ run_subtitlez_menu() {
         echo "     10-key exit > 0. (or q) Enter to quit"
         echo
 
-        read -r -p "     Choice: " subtitle_choice
+        read -r -p "     Choice: ${NC}${GREEN}" subtitle_choice
         echo -e "${NC}"
         subtitle_choice="${subtitle_choice//[[:space:]]/}"
 
@@ -9093,7 +9134,7 @@ run_title_playback_menu() {
         echo "     10-key exit > 0. (or q) Enter to quit"
         echo
 
-        read -r -p "     Choice: " title_choice
+        read -r -p "     Choice: ${NC}${GREEN}" title_choice
         echo -e "${NC}"
         title_choice="${title_choice//[[:space:]]/}"
 
@@ -9212,13 +9253,19 @@ smartcut_from_csv() {
 
 	# rolling defaults (persist across calls in same session)
 	TIP_TRIM_SECONDS="${TIP_TRIM_SECONDS:-0}"
-	TAIL_TRIM_SECONDS="${TAIL_TRIM_SECONDS:-72}"
+	TAIL_TRIM_SECONDS="${TAIL_TRIM_SECONDS:-51}"
 	local tip_offset="${TIP_OFFSET_SECONDS:-0}"
+	local intro_pad_before="${INTRO_PAD_BEFORE_SECONDS:-0}"
+	local intro_pad_after="${INTRO_PAD_AFTER_SECONDS:-0}"
 
-	[[ ! -f "$csv" ]] && {
-		echo -e "${REB} = = > intro_map.csv not found.${NC}"
-		return 1
-	}
+	local csv_mode=1
+
+	if [[ ! -f "$csv" ]]; then
+		csv_mode=0
+		echo -e "${YE} = = > intro_map.csv not found.${NC}"
+		echo -e "${CYAN} = = > Running SMC Tip/Tail Only Mode.${NC}"
+		echo
+	fi
 
 	have_smartcut || {
 		echo -e "${REB} = = > No SmartCut engine found.${NC}"
@@ -9226,7 +9273,7 @@ smartcut_from_csv() {
 		return 1
 	}
 
-	smc_banner "SMC SMARTCUT SURGERY BATCH"
+	smc_banner "SMC / SMARTCUT SURGERY BATCH"
 
 	# show current defaults
 	echo -e "${CYAN} = = > Current Tip Snip:${NC} ${YELLOW}${TIP_TRIM_SECONDS}s${NC}"
@@ -9251,19 +9298,138 @@ smartcut_from_csv() {
 	[[ -n "$input" ]] && TAIL_TRIM_SECONDS="$input"
 
 	smc_phase_banner "CUT PLAN"
+	echo -e "${CYAN} = = > CSV Source:${NC} ${GREEN}$csv${NC}"
 	echo -e "${CYAN} = = > Tip Snip:${NC}  ${YELLOW}${TIP_TRIM_SECONDS}s${NC}"
 	echo -e "${CYAN} = = > Tail Tuck:${NC} ${YELLOW}${TAIL_TRIM_SECONDS}s${NC}"
-	echo -e "${CYAN} = = > CSV Source:${NC} ${GREEN}$csv${NC}"
+	echo -e "${CYAN} = = > Global Offset:${NC} ${YELLOW}${tip_offset}s${NC}"
+	echo -e "${CYAN} = = > Intro Pre-Pad:${NC} ${YELLOW}${intro_pad_before}s${NC}"
+	echo -e "${CYAN} = = > Intro Post-Pad:${NC} ${YELLOW}${intro_pad_after}s${NC}"
 	echo
 
-	while IFS=, read -r file start end _; do
-		[[ -z "$file" ]] && continue
-		[[ "$file" == filename* ]] && continue
+	local pilot_mode max_files processed=0
+
+	echo -e "${CYAN} = = > SmartCut Run Scope:${NC}"
+	echo -e "${CYAN}     1) Pilot First File${NC}"
+	echo -e "${CYAN}     2) Pilot First 3 Files${NC}"
+	echo -e "${CYAN}     3) Full Batch${NC}"
+	echo
+
+	prompt_menu_choice " = = > Select Scope [1-3 | default=1]: " pilot_mode
+
+	case "${pilot_mode:-1}" in
+		1) max_files=1 ;;
+		2) max_files=3 ;;
+		3) max_files=0 ;;
+		*)
+			echo -e "${YE} = = > Invalid Scope. Using Pilot First File.${NC}"
+			max_files=1
+			;;
+	esac
+# end of start of
+
+local -a manual_targets=()
+
+if (( csv_mode == 0 )); then
+	shopt -s nullglob nocaseglob
+	manual_targets=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,wmv,xvid})
+	shopt -u nocaseglob
+
+	local f
+	local -a filtered=()
+	for f in "${manual_targets[@]}"; do
+		[[ "$f" =~ ^SMC_ ]] && continue
+		[[ "$f" =~ ^SUTURED_ ]] && continue
+		[[ "$f" =~ ^BARFIX_ ]] && continue
+		[[ "$f" =~ ^REKEY_ ]] && continue
+		filtered+=("$f")
+	done
+
+	manual_targets=("${filtered[@]}")
+
+	if (( ${#manual_targets[@]} == 0 )); then
+		echo -e "${REB} = = > No eligible video files found.${NC}"
+		pause
+		return 1
+	fi
+
+	if ! limit_targets_interactive manual_targets; then
+		echo -e "${YELLOW} = = > SMC Tip/Tail Mode Cancelled.${NC}"
+		return 0
+	fi
+
+	for file in "${manual_targets[@]}"; do
+		cut_args=""
+
+		if awk -v t="$TIP_TRIM_SECONDS" 'BEGIN{exit !(t > 0)}'; then
+			cut_args="0,$TIP_TRIM_SECONDS"
+		fi
+
+		if awk -v t="$TAIL_TRIM_SECONDS" 'BEGIN{exit !(t > 0)}'; then
+			if [[ -n "$cut_args" ]]; then
+				cut_args="$cut_args,-$TAIL_TRIM_SECONDS,end"
+			else
+				cut_args="-$TAIL_TRIM_SECONDS,end"
+			fi
+		fi
+
+		if [[ -z "$cut_args" ]]; then
+			echo -e "${YE} = = > No Tip Or Tail Cut Requested. Skipping:${NC} $file"
+			continue
+		fi
+
+		out="SMC_${file}"
+
+		smc_phase_banner "TIP / TAIL TARGET"
+		echo -e "${CYAN} = = > Source:${NC} ${GREEN}$file${NC}"
+		echo -e "${CYAN} = = > Cut Plan:${NC} ${YELLOW}$cut_args${NC}"
+		echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+		echo
+
+		rm -f -- "$out"
+
+		"$SMC_BIN" "$file" "$out" --cut "$cut_args"
+
+		if [[ $? -eq 0 ]]; then
+			echo -e "${GR} = = > SMC TIP/TAIL COMPLETE:${NC} ${GREEN}$out${NC}"
+		else
+			echo -e "${REB} = = > SMC TIP/TAIL FAILED:${NC} ${GREEN}$file${NC}"
+		fi
+	done
+
+	return 0
+fi
+
+# is this the top of the loop ?
+
+		while IFS=, read -r file start end _; do
+
+			[[ -z "$file" ]] && continue
+			[[ "$file" == filename* ]] && continue
+
+		# ================================================================
+		# #MARKER: SMC PILOT LIMITER
+		# ================================================================
+		((processed+=1)) || :
+
+		if (( max_files > 0 && processed > max_files )); then
+			echo -e "${YELLOW} = = > Pilot Limit Reached (${max_files} file(s)).${NC}"
+			break
+		fi
+
 
 		local adj_start adj_end cut_args out
 
-		adj_start=$(awk -v s="$start" -v o="$tip_offset" 'BEGIN{printf "%.3f", s+o}')
-		adj_end=$(awk -v e="$end" -v o="$tip_offset" 'BEGIN{printf "%.3f", e+o}')
+		adj_start=$(awk -v s="$start" -v o="$tip_offset" -v p="$intro_pad_before" 'BEGIN{
+			v=s+o-p
+			if (v < 0) v=0
+			printf "%.3f", v
+		}')
+
+		adj_end=$(awk -v e="$end" -v o="$tip_offset" -v p="$intro_pad_after" 'BEGIN{
+			v=e+o+p
+			if (v < 0) v=0
+			printf "%.3f", v
+		}')
 
 		cut_args="$adj_start,$adj_end"
 
@@ -9281,6 +9447,7 @@ smartcut_from_csv() {
 		echo -e "${CYAN} = = > Source:${NC} ${GREEN}$file${NC}"
 		echo -e "${CYAN} = = > Cut Plan:${NC} ${YELLOW}$cut_args${NC}"
 		echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+		echo -e "${YE} = = > Existing SMC_ outputs with matching names will be overwritten.${NC}"
 		echo
 
 		"$SMC_BIN" \
@@ -9337,46 +9504,72 @@ have_smartcut() {
 }
 
 run_smartcut_menu() {
+	local choice
 
-    have_smartcut || {
-        echo -e "${REB} = = > No SmartCut engine found.${NC}"
+	have_smartcut || {
+		echo -e "${REB} = = > No SmartCut engine found.${NC}"
 		echo -e "${CYAN} = = > Install:${NC} ${YELLOW}pipx install smartcut${NC}"
-        pause
-        return 1
-    }
+		pause
+		return 1
+	}
 
-    echo -e "${CYAN}============================================================${NC}"
-    echo -e "${CYAN} = = > SMARTCUT CONTROL PANEL${NC}"
-    echo -e "${CYAN}============================================================${NC}"
-    echo
+	# ================================================================
+	# #MARKER: SMC DEFAULT SEEDS
+	# ================================================================
+	TIP_TRIM_SECONDS="${TIP_TRIM_SECONDS:-0}"
+	TAIL_TRIM_SECONDS="${TAIL_TRIM_SECONDS:-51}"
+	TIP_OFFSET_SECONDS="${TIP_OFFSET_SECONDS:-0}"
+	INTRO_PAD_BEFORE_SECONDS="${INTRO_PAD_BEFORE_SECONDS:-0}"
+	INTRO_PAD_AFTER_SECONDS="${INTRO_PAD_AFTER_SECONDS:-0}"
 
-    echo -e "${CYAN}     1) Run SmartCut (CSV-driven)${NC}"
-    echo -e "${CYAN}     2) Set Tail Trim Seconds ${NC}[${YELLOW}${TAIL_TRIM_SECONDS:-51}${NC}]"
-    echo -e "${CYAN}     3) Set Tip Offset Seconds ${NC}[${YELLOW}${TIP_OFFSET_SECONDS:-0}${NC}]"
-    echo -e "${CYAN}     0.) Return${NC}"
-    echo
+	while true; do
+		#clear
+		echo -e "${CYAN}============================================================${NC}"
+		echo -e "${CYAN} = = > SMARTCUT CONTROL PANEL${NC}"
+		echo -e "${CYAN}============================================================${NC}"
+		echo
 
-    prompt_menu_choice " = = > Select Option [1-3 | 0.=return]: " choice
+		echo -e "${CYAN}     1) Run SmartCut (CSV-driven)${NC}"
+		echo -e "${CYAN}     2) Set Tip Snip Seconds: Remove From Beginning Of Video${NC}[${YELLOW}${TIP_TRIM_SECONDS}${NC}]"
+		echo -e "${CYAN}     3) Set Tail Tuck Seconds: Remove From End Of Video${NC}[${YELLOW}${TAIL_TRIM_SECONDS}${NC}]"
+		echo -e "${CYAN}     4) Set Intro Offset Seconds: Shift Entire Intro Window +or-${NC}[${YELLOW}${TIP_OFFSET_SECONDS}${NC}]"
+		echo -e "${CYAN}     5) Set Intro Pre-Pad Seconds: Pad Beginning Of Intro Cut +or-${NC}[${YELLOW}${INTRO_PAD_BEFORE_SECONDS}${NC}]"
+		echo -e "${CYAN}     6) Set Intro Post-Pad Seconds: Pad Ending Of Intro Cut +or-${NC}[${YELLOW}${INTRO_PAD_AFTER_SECONDS}${NC}]"
+		echo
+		echo -e "${CYAN}     0.) Return${NC}"
+		echo
 
-    case "$choice" in
-        1)
-            smartcut_from_csv
-            ;;
-        2)
-            prompt_read " = = > Enter Tail Trim Seconds: " TAIL_TRIM_SECONDS
-            ;;
-        3)
-            prompt_read " = = > Enter Tip Offset Seconds: " TIP_OFFSET_SECONDS
-            ;;
-        0.)
-            return 0
-            ;;
-        *)
-            echo -e "${REB} = = > Invalid Option${NC}"
-            ;;
-    esac
+		prompt_menu_choice " = = > Select Option [1-6 | 0.=return]: " choice
 
-    pause
+		case "$choice" in
+			1)
+				smartcut_from_csv
+				pause
+				;;
+			2)
+				prompt_read " = = > Enter Tip Snip (Remove From Beginning Of Video): " TIP_TRIM_SECONDS
+				;;
+			3)
+				prompt_read " = = > Enter Tail Tuck (Remove From End Of Video): " TAIL_TRIM_SECONDS
+				;;
+			4)
+				prompt_read " = = > Enter Intro Global Offset (Shift Entire Intro Window +or- ): " TIP_OFFSET_SECONDS
+				;;
+			5)
+				prompt_read " = = > Enter Intro Pre-Pad (Pad Beginning Of Intro Cut +or-) : " INTRO_PAD_BEFORE_SECONDS
+				;;
+			6)
+				prompt_read " = = > Enter Intro Post-Pad (Pad Ending Of Intro Cut +or-): " INTRO_PAD_AFTER_SECONDS
+				;;
+			0.)
+				return 0
+				;;
+			*)
+				echo -e "${REB} = = > Invalid Option${NC}"
+				pause
+				;;
+		esac
+	done
 }
 
 # =========================
@@ -9399,13 +9592,13 @@ run_gapman_menu() {
         echo "     2) Full Batch From intro_map.csv"
         echo "     3) Manual Map-Assisted Cuts"
         echo "     4) Global Trim / Pad Controls"
-        echo "     5) Join Two Clips Into One Episode"
+        echo "     5) Join Two Clips Into One"
         echo "     6) SmartCut / SMCUT Tools"
         echo
         echo "     10-key exit > 0. (or q) Enter to quit"
         echo
 
-        read -r -p "     Choice: " gapman_choice
+        read -r -p "     Choice: ${NC}${GREEN}" gapman_choice
         echo -e "${NC}"
         gapman_choice="${gapman_choice//[[:space:]]/}"
 
@@ -9502,7 +9695,7 @@ run_gapman_menu() {
 					echo -e "${CYAN} = = > Starting Pilot Run...${NC}"
 					echo
 
-					prompt_normalize_first_workflow
+					#prompt_normalize_first_workflow
                     PILOT_MODE=1
 					run_gapman
 
@@ -9577,16 +9770,16 @@ run_gapman_menu() {
 				done
 				;;
             2)
-                prompt_normalize_first_workflow # reserved for future rusty
+                #prompt_normalize_first_workflow # reserved for future rusty
                 PILOT_MODE=0
                 run_gapman
                 ;;
             3)
-                prompt_normalize_first_workflow # reserved for future rusty
+                #prompt_normalize_first_workflow # reserved for future rusty
                 run_gapman
                 ;;
             4)
-                prompt_normalize_first_workflow # reserved for future rusty
+                #prompt_normalize_first_workflow # reserved for future rusty
                 run_gapman
                 ;;
             5)
@@ -9754,7 +9947,7 @@ triage_choose_single_working_file() {
 		echo -e "${YELLOW}    0.) Return${NC}" >&2
 		echo >&2
 
-		echo -ne "${YELLOW}     Choice: " >&2
+		echo -ne "${YELLOW}     Choice: ${NC}${GREEN}" >&2
 		read -r choice
 		echo -e "${NC}" >&2
 
@@ -9826,7 +10019,7 @@ triage_choose_single_source_file() {
 		echo -e "${YELLOW}    0.) Return${NC}" >&2
 		echo >&2
 
-		echo -ne "${YELLOW}     Choice: " >&2
+		echo -ne "${YELLOW}     Choice: ${NC}${GREEN}" >&2
 		read -r choice
 		echo -e "${NC}" >&2
 
@@ -9966,6 +10159,7 @@ run_one_file_normalize_to_mkv_tool() {
 		[[ "$f" =~ ^REKEY_ ]] && continue
 		[[ "$f" =~ ^(SUTURED_|PILOT_SUTURED_) ]] && continue
 		[[ "$f" =~ ^BARFIX_ ]] && continue
+		[[ "$f" =~ ^SMC_ ]] && continue
 		filtered+=("$f")
 	done
 
@@ -10216,7 +10410,7 @@ run_clip_join_triage_menu() {
 		echo -e "${CYAN}================================================${NC}"
 		echo
 		echo -e "${YELLOW}     1) Clip_Grab BitZ From VidZ${NC}"
-		echo -e "${YELLOW}     2) Join Two Clips Into One Episode${NC}"
+		echo -e "${YELLOW}     2) Join Two Clips Into One${NC}"
 		echo -e "${YELLOW}     3) Tip Snip        (Trim Beginning)${NC}"
 		echo -e "${YELLOW}     4) Tail Tuck       (Trim Ending)${NC}"
 		echo -e "${YELLOW}     5) One-File Normalize To MKV / Playback Defaults${NC}"
@@ -10929,6 +11123,7 @@ create_template() {
 		[[ "$f" =~ ^(SUTURED_|PILOT_SUTURED_) ]] && continue
 		[[ "$f" =~ ^BARFIX_ ]] && continue
 		[[ "$f" =~ ^intro_template ]] && continue
+		[[ "$f" =~ ^SMC_ ]] && continue
 		filtered_sources+=("$f")
 	done
 
@@ -11686,6 +11881,7 @@ run_custom_cut() {
         [[ "$f" =~ ^REKEY_ ]] && continue
         [[ "$f" =~ ^(SUTURED_|PILOT_SUTURED_) ]] && continue
         [[ "$f" =~ ^BARFIX_ ]] && continue
+		[[ "$f" =~ ^SMC_ ]] && continue
         filtered_sources+=("$f")
     done
 
@@ -12526,6 +12722,7 @@ else
     [[ "$f" =~ ^${DEFAULT_SUTURE_PREFIX} ]] && continue
     [[ "$f" =~ ^PILOT_${DEFAULT_SUTURE_PREFIX} ]] && continue
     [[ "$f" =~ ^REKEY_ ]] && continue
+	[[ "$f" =~ ^SMC_ ]] && continue
     [[ "$f" =~ ^BARFIX_ ]] && continue
     [[ "$f" =~ ^intro_template ]] && continue
     FILTERED+=("$f")
@@ -13190,7 +13387,7 @@ run_intro_detection_menu() {
 
         case "$det_choice" in
             0)
-                prompt_normalize_first_workflow
+                #prompt_normalize_first_workflow
                 create_template
                 ;;
 
@@ -13218,7 +13415,7 @@ run_intro_detection_menu() {
                 ANCHOR_SECONDS=${ANCHOR_SECONDS:-3,5,7}
 
                 echo
-                prompt_normalize_first_workflow
+                #prompt_normalize_first_workflow
                 return 10
                 ;;
 
@@ -13254,7 +13451,7 @@ run_intro_detection_menu() {
                 BLACK_PIX=${BLACK_PIX:-$DEFAULT_BLACK_PIXTH}
 
                 echo
-                prompt_normalize_first_workflow
+                #prompt_normalize_first_workflow
                 return 10
                 ;;
 
@@ -13296,7 +13493,7 @@ Old() {
 # MODE is still consumed by legacy routing below.
 read -r MODE
 if [[ "$MODE" == "0" ]]; then
-    prompt_normalize_first_workflow
+    #prompt_normalize_first_workflow
     create_template
     return 0
 fi
@@ -13309,7 +13506,7 @@ if [[ "$MODE" == "6" ]]; then
     return 0
 fi
 if [[ "$MODE" == "3" ]]; then
-    prompt_normalize_first_workflow
+    #prompt_normalize_first_workflow
     run_gapman
     return 0
 fi
@@ -13329,11 +13526,11 @@ case "$MODE" in
     # =========================
     # #MARKER: DETECTION PROMPTS (BLACKDETECT ONLY)
     # =========================
-    echo -ne "${YELLOW} = = > If You Chose Blackdetect Then Set Its Duration? (Default ${DEFAULT_BLACK_DURATION}): "
+    echo -ne "${YELLOW} = = > If You Chose Blackdetect Then Set Its Duration? (Default ${DEFAULT_BLACK_DURATION}): ${NC}${GREEN}"
     read -r BLACK_DUR
     echo -e "${NC}"
     BLACK_DUR=${BLACK_DUR:-$DEFAULT_BLACK_DURATION}
-    echo -ne "${YELLOW} = = > If You Chose Blackdetect Then Set Its Pixel Threshold? (Default ${DEFAULT_BLACK_PIXTH}): "
+    echo -ne "${YELLOW} = = > If You Chose Blackdetect Then Set Its Pixel Threshold? (Default ${DEFAULT_BLACK_PIXTH}): ${NC}${GREEN}"
     read -r BLACK_PIX
     echo -e "${NC}"
     BLACK_PIX=${BLACK_PIX:-$DEFAULT_BLACK_PIXTH}
@@ -13400,7 +13597,7 @@ for f in "${all_files[@]}"; do
     [[ "$f" =~ ^BARFIX_ ]] && continue
     [[ "$f" =~ ^(SUTURED_|PILOT_SUTURED_) ]] && continue
     [[ "$f" =~ ^REKEY_ ]] && continue
-    [[ "$f" =~ ^OEM_ ]] && continue
+	[[ "$f" =~ ^SMC_ ]] && continue
     [[ "$f" =~ ^OEM_ ]] && continue
     files+=("$f")
 done
