@@ -95,7 +95,7 @@ Uses either:
 * `smartcut` (pipx installed), or
 * `smc.app` (AppImage) SmartMediaCutter-2.3.4-x86_64.AppImage
 
-`Old readme from here down`
+## OLD README FROM HERE DOWN STILL IMPORTANT STUFF AND USEFULL BUT SMARTCUT MAKES ABOUT HALF OF FACTORY UN-NEEDED - - - - - - - - - - - -
 
 A terminal-driven video processing pipeline designed for non-destructive, batch-safe, intro-aware media preparation.
 
