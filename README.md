@@ -15,501 +15,216 @@ Inspired by `https://github.com/mifi/lossless-cut`
 
 ## Overview
 
-**SMCUT** is a lightweight, modern replacement pipeline for intro removal and episode trimming.
-
-It replaces large portions of the legacy Factory workflow with a simpler, faster model:
-
-```
-IntroFind (pHash) → intro_map.csv → SmartCut batch → SMC_* outputs
-```
-
-This approach eliminates the need for global re-encoding, keyframe normalization, and concat-based stitching.
-
----
-
-## Core Philosophy
-
-### Old Model (Factory)
-
-```
-Normalize (REKEY) → Ensure Keyframes → Cut → Stitch → Verify
-```
-
-### New Model (SMCUT)
-
-```
-Detect → Cut (SmartCut handles seams)
-```
-
----
-
-## Key Advantages
-
-* No full-file re-encode required
-* No GOP/keyframe dependency issues
-* Seamless cuts via localized re-encoding
-* Faster batch processing
-* Simpler architecture
-* CSV-driven automation
-
----
-
-## Components
-
-### 1. IntroFind (pHash Engine)
-
-* Scans video files using perceptual hashing
-* Matches against templates in `intro_template/`
-* Writes results to `intro_map.csv`
-
-**Output format:**
-
-```
-filename,start,end,start_hms,end_hms,template_used,diff
-```
-
----
-
-### 2. intro_map.csv
-
-Acts as the central instruction file for batch cutting.
-
-Example:
-
-```
-Star_Trek_TNG_S05E03_Ensign_Ro.mkv,128,234,00:02:08,00:03:54,intro_template.mkv,10
-```
-
-Only the first three columns are required for cutting:
-
-```
-filename,start,end
-```
-
----
-
-### 3. SmartCut Engine
-
-Uses either:
-
-* `smartcut` (pipx installed), or
-* `smc.app` (AppImage) SmartMediaCutter-2.3.4-x86_64.AppImage
-
-🔹 OUTRO DETECTION + SMARTCUT (SMC) WORKFLOW
-Overview
-
-Factory now supports automatic outro (credits) detection using the same perceptual hash engine as IntroFind.
-
-This enables a full episode trim in one pass:
-
-[ optional tip snip ] +
-remove intro +
-keep main content +
-remove outro (credits)
-
-All without manual timing or guesswork.
-
-🔹 Trigger Conditions (IMPORTANT)
-
-Outro detection is auto-enabled only when:
-
-intro_template/outro.mkv exists
-
-If outro.mkv is NOT present:
-
-→ IntroFind runs normally (intro only)
-→ SmartCut performs intro removal + optional tail tuck
-
-If outro.mkv IS present:
-
-→ IntroFind runs (intro detection)
-→ OutroFind runs automatically (end-window scan)
-→ outro_map.csv is generated
-→ SmartCut uses BOTH intro_map.csv AND outro_map.csv
-🔹 How Outro Detection Works
-
-Factory does NOT invent a new engine.
-
-Instead it reuses IntroFind with a different scan window:
-
-Scan Start = file_duration - OUTRO_SCAN_BACK_SECONDS (default: 240)
-Scan Limit = file_duration
-Template   = intro_template/outro.mkv
-
-So detection occurs only in the last ~4 minutes of the file.
-
-🔹 Outro Template Requirements
-
-Unlike intro templates:
-
-intro_template.mkv → full intro length (e.g. 106s)
-
-Outro templates should be:
-
-SHORT (recommended: 10–30 seconds)
-
-Why:
-
-We only need a unique visual/audio signature to FIND the start of credits.
-We do NOT use template duration for cutting.
-🔹 Cut Behavior (CRITICAL DIFFERENCE)
-Intro:
-cut intro_start → intro_end (uses template duration)
-Outro:
-cut outro_start → END OF FILE
-
-SmartCut uses:
-
---cut "intro_start,intro_end,outro_start,end"
-
-The outro_end value is informational only.
-
-🔹 New SmartCut (SMC) System
-Replacement for GAPMAN
-OLD: GAPMAN (CSV concat / stream copy)
-NEW: SMC (SmartCut engine)
-
-SMC advantages:
-
-✔ Keyframe-aware cutting (no large timing drift)
-✔ Minimal re-encode only when needed
-✔ No concat stage required
-✔ Handles intro + outro in one command
-✔ More accurate on imperfect sources
-🔹 Why GAPMAN Is No Longer Preferred
-
-GAPMAN relies on:
-
-- strict keyframe alignment
-- normalized GOP structure
-- concat stitching
-
-Which leads to:
-
-✖ 6–10 second timing drift on bad sources
-✖ fragile behavior across mixed encodes
-✖ extra pipeline complexity
-
-SMC replaces this with:
-
-✔ adaptive micro re-encode at cut boundaries
-✔ accurate frame-level cuts
-✔ simpler pipeline
-🔹 SmartCut Pipeline (Current)
-1) IntroFind → intro_map.csv
-2) OutroFind (if outro.mkv exists) → outro_map.csv
-3) SmartCut reads BOTH maps
-4) Builds unified cut plan:
-   intro_start,intro_end,outro_start,end
-5) Produces SMC_<file>
-🔹 Optional Controls
-
-Available in SmartCut menu:
-
-Tip Snip Seconds        → trims from beginning
-Tail Tuck Seconds      → trims from end (fallback if no outro)
-Intro Pre/Post Pads    → fine tune intro cut
-Outro Pre-Pad          → adjust outro start earlier/later
-Global Offset          → shifts intro window
-🔹 Fallback Behavior
-
-If OutroFind fails or is not present:
-
-SMC falls back to:
-intro removal + tail tuck (fixed seconds)
-🔹 Key Design Philosophy
-Reuse proven tools instead of building new ones.
-
-OutroFind is not a new system:
-
-It is IntroFind applied to the end of the file.
-🔹 Bottom Line
-If you have outro.mkv → full automatic episode trimming
-If you don’t → intro-only trimming still works
-
-SMC is now the primary cutting engine going forward.
-
-## OLD README FROM HERE DOWN STILL IMPORTANT STUFF AND USEFUL BUT SMARTCUT MAKES ABOUT HALF OF FACTORY UN-NEEDED - - - - - - - - - - - -
-## GAPMAN IS OLD METHOD NOW BE SURE TO READ ALL THIS STUFF SO YOU CAN TELL, THE DIFFERENCE AS THEY ALL STILL LIVE TOGETHER - - - - - - - 
-
-A terminal-driven video processing pipeline designed for non-destructive, batch-safe, intro-aware media preparation.
-
-THE_FACTORY automates complex, repetitive workflows such as intro detection, clean cutting, subtitle handling, metadata repair, and batch normalization—while preserving original files at every stage.
-
----
-
-## PURPOSE
-
-### WHAT THE_FACTORY DOES NOT DO
-
-- Does not overwrite original files
-- Does not re-encode unless required
-- Does not guess or auto-correct without user confirmation
-- Does not silently overwrite or discard data
-
-### THE_FACTORY exists to:
-
-- process full media sets (e.g., TV seasons) safely  
-- automate intro detection and removal  
-- normalize sources for reliable downstream operations  
-- maintain continuity across runs using file-based state  
-
----
-
-## CORE DESIGN
-
-### Non-Destructive Workflow
-
-- Original files are never modified directly  
-- OEM backups are created and protected  
-- All processing occurs on derived files  
-
----
-
-### Pipeline-Based Processing
-
-THE_FACTORY is structured as a staged pipeline:
-
-Each stage builds on the previous, ensuring consistent and predictable results.
-
----
-
-### File-Based State Tracking
-
-THE_FACTORY uses persistent CSV files to maintain continuity:
-
-- `intro_map.csv` — detected intro boundaries  
-- `episodes.csv` — episode naming and mapping  
-- `info.csv` — processing cache and REKEY validation  
-
-This enables:
-- resume-safe operation  
-- caching of expensive operations  
-- consistent file identity across runs  
-
----
-
-## KEY DESIGN PRINCIPLES
-
-### Stream-Copy First
-
-- Prefer stream copy wherever possible  
-- Avoid re-encoding unless required  
-- Preserve quality and maximize speed  
-
----
-
-### Human-Readable Feedback
-
-- Color-coded terminal output  
-- Clear status indicators  
-- Verbose progress and diagnostics  
-
----
-
-### Safe Interaction Model
-
-- 10-key friendly input  
-- Time formats supported:
-  - seconds (`120`)
-  - `hh:mm:ss`
-  - decimal (`2.20`)
-- Exit tokens:
-  - `0.`
-  - `q`
-
----
-
-### Dependency Awareness
-
-- Built-in dependency checks  
-- Clear reporting of missing tools  
-- Optional enhancements supported  
-
----
-
-## REQUIREMENTS
-
-### Core
-
-- ffmpeg / ffprobe  
-- bc  
-- awk / sed / grep  
-- coreutils  
-
-### Optional
-
-- mkvtoolnix (`mkvpropedit`)  
-- python3  
-- pipx  
-- scenedetect (OpenCV backend)  
-
----
-
-## TYPICAL USE CASE
-
-Processing a full TV season:
-
-1. Place `factory.sh` inside the episode folder  
-2. Launch the script  
-3. Follow guided pipeline stages  
-
-Typical flow:
-
-- OEM_Backups  →  Copy Eligible Targets To `OEM dir` and Prefix the name with `OEM_filename` 
-- Check source suitability for clean cuts and flag "risky" files
-- Optionally rebuild sources (REKEY) with ~1-second keyframes for reliable cuts and joins
-- All processed outputs are normalized to MKV format. Exception: OEM backups remain in their original format.
-- Build Template → create example of the intro reference, hopefully from `REKEY_ Sources`
-- Detect Intros → `This Is Magic Right Here Folks` IntroFind finds the intro and enters times into generated `intro_map.csv`  
-- Run GAPMAN → remove intros cleanly, supports fine adjustment of cut timing when needed with (pre, post, overall drift, start-of, end-of) intro cut padding
-- Apply Title / Subtitle fixes and set what you see in the titlebar of your player not just filenames
-- Finalize outputs → cleanup and rename files, dump temps, originals, and decide what to do with protected OEM_backups, option to tar them up 
-
----
-
-## WHAT THE_FACTORY DOES
-
-### 1. Source Preparation (OEM Protection)
-
-- Creates protected backups of originals  
-- Applies prefix-based shielding to prevent files from being processed more than once  
-- Displays disk usage and warnings  
-
-**Outputs:** working_dir/OEM/OEM_file_name.*** these files are not modded at all (only renamed with prefix_) and remain whatever .ext they were to begin with.
-
----
-
-### 2. Batch Normalizer (REKEY Pipeline)
-
-- Converts sources into cut-friendly format  
-- Enforces controlled GOP structure (~1s keyframes)  
-- Aligns encoding for safe downstream operations  
-- Uses rolling output evaluation to detect unexpected growth or shrink behavior  
-- Can adapt CRF strategy based on real file results during a batch  
-
-Throughput is safety-driven rather than purely speed-driven.  
-When adaptive normalization logic is active, parallelism may be reduced so each completed file can inform later decisions.
-
----
-
-### 3. Template Builder
-
-- Extracts clean intro templates from sources  
-- Uses manual time selection for precision  
-- Normalizes output to MKV  
-
-Templates stored in:
-working_dir/intro_template/
-
----
-
-### 4. Intro Detection (IntroFind Engine)
-
-- Uses perceptual hashing (pHash)  
-- Multi-anchor matching (e.g., 3s, 5s, 7s)  
-- Scans timeline for best match  
+COMPLETE WORKFLOW (MODERN FACTORY)
+STEP 0 — (OPTIONAL) SIZE REDUCTION / PRE-PROCESS
+Archival Array (Archie)
+
+Use Archival Array when:
+
+Files are too large
+You want storage reduction first
+You have messy dump folders (dashcam / bulk media)
+
+Capabilities:
+
+Multi-level compression (L1–L4)
+Keeps only smaller outputs
+Optional tarball archiving
+Smart filename shortening (for chaotic folders)
+Can be disabled for episode workflows
+
+Outputs:
+
+ARCHIVE_Lx_<file>.mkv
+
+Use Cases:
+
+Scenario	Recommendation
+Raw dump folder	Enable smart shortening
+TV episodes	Disable shortening
+Storage reduction	Run BEFORE Factory
+Archive finished work	Run AFTER Factory
+STEP 1 — ORGANIZE & RENAME (episodes.csv)
+Why This Matters
+
+Consistent naming is critical for:
+
+Matching CSV operations
+Subtitle alignment
+Metadata correctness
+Automation reliability
+episodes.csv Format
+S03E01,The Best of Both Worlds
+S03E02,Family
+Resulting Filename
+S03E01_The_Best_of_Both_Worlds.mkv
+Why Underscores?
+Shell-safe
+No quoting issues
+Cross-platform stable
+Clean parsing in scripts
+Why SxxExx?
+Absolute episode identity
+Sorting correctness
+Metadata alignment
+Required for automation consistency
+STEP 2 — TEMPLATE SETUP
+
+Create:
+
+intro_template/intro_template.mkv
+
+Optional (for full automation):
+
+intro_template/outro.mkv
+Template Rules
+Type	Length	Purpose
+Intro	Full intro	Defines cut duration
+Outro	10–30 sec	Detects start of credits
+STEP 3 — INTRO + OUTRO DETECTION
+Engine: IntroFind (pHash)
 
 Produces:
 
-- `intro_map.csv` (start/end per episode)
+intro_map.csv
+outro_map.csv (if outro.mkv exists)
+Detection Logic
 
-Displays:
+Intro
 
-- confidence scoring  
-- ranked candidates  
-- diagnostic insight  
+Scans early portion of file
+Matches template
+Outputs exact start/end
 
----
+Outro
 
-### 5. GAPMAN (Intro Removal Engine)
+Scans last ~4 minutes
+Finds start of credits
+Cuts to end of file
+Trigger Condition
 
-- CSV-driven batch processing  
-- Removes intros using stream-copy concat  
+Outro detection activates ONLY if:
 
-Supports:
+intro_template/outro.mkv exists
+STEP 4 — SMARTCUT EXECUTION
 
-- global offset adjustment  
-- pre-trim (logos)  
-- post-trim (credits)  
+SmartCut reads:
 
-**Outputs:** working_dir/SUTURED_file_name.mkv
+intro_map.csv
++ outro_map.csv (if present)
+Cut Plan
+intro_start → intro_end
+outro_start → END
+Example
+--cut "128,234,1800,end"
+Output
+SMC_<original_filename>.mkv
+Optional Controls
+Control	Purpose
+Tip Snip	Remove seconds from start
+Tail Tuck	Fallback if no outro
+Intro Pads	Fine tune intro
+Outro Pre-Pad	Adjust credits start
+Global Offset	Shift detection
+Fallback Behavior
 
----
+If no outro:
 
-### 6. Subtitle Processing (SUBTOX)
+Intro removal + Tail Tuck
+STEP 5 — TITLE / METADATA / PLAYBACK FIX (BARFIX)
+What BARFIX Does
+Sets player-visible title
+Sets default audio track
+Disables/enables subtitles
+Cleans metadata inconsistencies
+Example Result
 
-- Pack external `.srt` into video  
-- Extract internal subtitle tracks  
-- Rename using `episodes.csv` mapping  
+Filename:
 
-**Outputs:** working_dir/SUBTOX_file_name.mkv
+S03E01_The_Best_of_Both_Worlds.mkv
 
----
+Title Bar (Player View):
 
-### 7. Metadata & Playback Fix (BARFIX)
+Star Trek TNG - S03E01 - The Best of Both Worlds
+Why This Matters
+Plex / Jellyfin compatibility
+Clean playback experience
+Consistent library appearance
+STEP 6 — SUBTITLES (SUBTOX)
 
-- Fix title metadata (player-visible titles)  
-- Set playback defaults:
-  - preferred audio (English if available)  
-  - subtitles disabled by default  
+Capabilities:
 
-Modes:
+Embed .srt into video
+Extract internal subtitles
+Align with episodes.csv
+Output
+SUBTOX_<file>.mkv
+STEP 7 — FINALIZATION
+Promote SMC outputs to final
+Clean temp files
+Handle OEM backups:
 
-- metadata-only  
-- playback-only  
-- combined  
+Options:
 
-**Outputs:** working_dir/BARFIX_file_name.mkv
+Keep
+Delete
+Archive (tar)
+FILE PREFIX SYSTEM
+Prefix	Meaning
+SMC_	SmartCut output
+ARCHIVE_	Compressed files
+SUBTOX_	Subtitle processed
+BARFIX_	Metadata fixed
+OEM_	Original protected copy
+KEY ADVANTAGES OF MODERN FACTORY
+Compared to Old Workflow
+Feature	Old	SmartCut
+Full Re-encode	Required	Not required
+Keyframe Dependency	Strict	None
+Drift Issues	Common	Eliminated
+Complexity	High	Low
+Speed	Slow	Fast
+DESIGN PRINCIPLES
+Non-destructive (originals preserved)
+CSV-driven automation
+Deterministic results
+Batch-safe processing
+Minimal re-encoding philosophy
+WHAT CAN BE RETIRED (ROADMAP INSIGHT)
 
----
+Based on current workflow:
 
-### 8. Cleanup / Finalization
+No Longer Core
+Full REKEY normalization (optional only)
+Keyframe gating systems
+Concat-based stitching (GAPMAN)
+Heavy preprocessing stages
+Still Valuable
+IntroFind (core detection engine)
+CSV systems
+BARFIX / SUBTOX
+Archival Array
+RECOMMENDED FLOW (SUMMARY)
+[Optional] Archival Array (reduce size)
 
-- Promotes `SUTURED_` files to final outputs  
-- Handles OEM backups:
-  - archive  
-  - delete  
-  - retain  
-- Removes temporary artifacts  
-- Marks completed directories  
+→ episodes.csv rename
+→ create templates
+→ IntroFind (+OutroFind)
+→ SmartCut (SMC)
+→ BARFIX
+→ SUBTOX
+→ Finalize
+→ [Optional] Archive outputs
+BOTTOM LINE
 
----
+If you:
 
-### 9. Manual Tools
+Have outro.mkv → fully automated episode trimming
+Do not → intro removal still works
 
-- File Inspection Tools
-- ffprobe-based comparison
-- Custom segment cutting
-- Clip joining: Exported, https://github.com/secarider/CHARLIES-CUSTOM-CUTS/tree/main
-- One-Off Clip Cutting (Brutal + Accurate) - Join Any Two Clips Together  
-- Archival_Array: Exported, https://github.com/secarider/Archies-Archival-Array/tree/main
-- Archival_Array: For dealing with dash/body/game cam dump folders and the hundreds of files they contain that you said you would sort
-- Archival_Array: We can strip (or not) the metadata, save that to the side, then squeeze the files down small and tarball em . 
+SmartCut delivers:
 
-**Outputs:** ARCHIVE_L1_file_name.mkv Depending On Compression Level L1,L2,L3,L4 
-
----
-
-## FILE NAMING & NORMALIZATION
-
-- Enforces underscore-based naming  
-- Aligns with `SxxExx` conventions  
-- Supports user-selected title segment offsets  
-- Removes illegal or problematic characters  
-
----
-
-## PHILOSOPHY
-
-THE_FACTORY is designed to be:
-
-- non-destructive  
-- deterministic  
-- scalable  
-- interruption-safe  
-- transparent  
-
-> Complex work, made repeatable.  
-> Destructive operations, made deliberate.  
-> Results you can trust.
+Cleaner cuts
+Faster processing
+Simpler workflow
+More reliable results
