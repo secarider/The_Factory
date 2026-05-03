@@ -315,4 +315,139 @@ It achieves equivalent visual results with drastically reduced complexity and pr
 ---
 
 End of document.
+additional text.
+
+🔹 OUTRO DETECTION + SMARTCUT (SMC) WORKFLOW
+Overview
+
+Factory now supports automatic outro (credits) detection using the same perceptual hash engine as IntroFind.
+
+This enables a full episode trim in one pass:
+
+[ optional tip snip ] +
+remove intro +
+keep main content +
+remove outro (credits)
+
+All without manual timing or guesswork.
+
+🔹 Trigger Conditions (IMPORTANT)
+
+Outro detection is auto-enabled only when:
+
+intro_template/outro.mkv exists
+
+If outro.mkv is NOT present:
+
+→ IntroFind runs normally (intro only)
+→ SmartCut performs intro removal + optional tail tuck
+
+If outro.mkv IS present:
+
+→ IntroFind runs (intro detection)
+→ OutroFind runs automatically (end-window scan)
+→ outro_map.csv is generated
+→ SmartCut uses BOTH intro_map.csv AND outro_map.csv
+🔹 How Outro Detection Works
+
+Factory does NOT invent a new engine.
+
+Instead it reuses IntroFind with a different scan window:
+
+Scan Start = file_duration - OUTRO_SCAN_BACK_SECONDS (default: 240)
+Scan Limit = file_duration
+Template   = intro_template/outro.mkv
+
+So detection occurs only in the last ~4 minutes of the file.
+
+🔹 Outro Template Requirements
+
+Unlike intro templates:
+
+intro_template.mkv → full intro length (e.g. 106s)
+
+Outro templates should be:
+
+SHORT (recommended: 10–30 seconds)
+
+Why:
+
+We only need a unique visual/audio signature to FIND the start of credits.
+We do NOT use template duration for cutting.
+🔹 Cut Behavior (CRITICAL DIFFERENCE)
+Intro:
+cut intro_start → intro_end (uses template duration)
+Outro:
+cut outro_start → END OF FILE
+
+SmartCut uses:
+
+--cut "intro_start,intro_end,outro_start,end"
+
+The outro_end value is informational only.
+
+🔹 New SmartCut (SMC) System
+Replacement for GAPMAN
+OLD: GAPMAN (CSV concat / stream copy)
+NEW: SMC (SmartCut engine)
+
+SMC advantages:
+
+✔ Keyframe-aware cutting (no large timing drift)
+✔ Minimal re-encode only when needed
+✔ No concat stage required
+✔ Handles intro + outro in one command
+✔ More accurate on imperfect sources
+🔹 Why GAPMAN Is No Longer Preferred
+
+GAPMAN relies on:
+
+- strict keyframe alignment
+- normalized GOP structure
+- concat stitching
+
+Which leads to:
+
+✖ 6–10 second timing drift on bad sources
+✖ fragile behavior across mixed encodes
+✖ extra pipeline complexity
+
+SMC replaces this with:
+
+✔ adaptive micro re-encode at cut boundaries
+✔ accurate frame-level cuts
+✔ simpler pipeline
+🔹 SmartCut Pipeline (Current)
+1) IntroFind → intro_map.csv
+2) OutroFind (if outro.mkv exists) → outro_map.csv
+3) SmartCut reads BOTH maps
+4) Builds unified cut plan:
+   intro_start,intro_end,outro_start,end
+5) Produces SMC_<file>
+🔹 Optional Controls
+
+Available in SmartCut menu:
+
+Tip Snip Seconds        → trims from beginning
+Tail Tuck Seconds      → trims from end (fallback if no outro)
+Intro Pre/Post Pads    → fine tune intro cut
+Outro Pre-Pad          → adjust outro start earlier/later
+Global Offset          → shifts intro window
+🔹 Fallback Behavior
+
+If OutroFind fails or is not present:
+
+SMC falls back to:
+intro removal + tail tuck (fixed seconds)
+🔹 Key Design Philosophy
+Reuse proven tools instead of building new ones.
+
+OutroFind is not a new system:
+
+It is IntroFind applied to the end of the file.
+🔹 Bottom Line
+If you have outro.mkv → full automatic episode trimming
+If you don’t → intro-only trimming still works
+
+SMC is now the primary cutting engine going forward.
 
