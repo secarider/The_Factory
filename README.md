@@ -39,35 +39,55 @@ ARCHIVE_Lx_<file>.mkv
 
 Use Cases:
 
-Scenario	Recommendation
-Raw dump folder	Enable smart shortening
-TV episodes	Disable shortening
-Storage reduction	Run BEFORE Factory
-Archive finished work	Run AFTER Factory
-STEP 1 — ORGANIZE & RENAME (episodes.csv)
+## Scenario	Recommendation
+→ Raw dump folder	
+→ Enable smart shortening
+→ TV episodes	Disable shortening
+→ Storage reduction	Run BEFORE Factory
+→ Archive finished work	Run AFTER Factory
+→ STEP 1 — ORGANIZE & RENAME (episodes.csv)
 Why This Matters
 
 Consistent naming is critical for:
 
 Matching CSV operations
+
 Subtitle alignment
+
 Metadata correctness
+
 Automation reliability
-episodes.csv Format
-S03E01,The Best of Both Worlds
-S03E02,Family
+
+episodes.csv 
+Format S03E01
+
+The Best of Both Worlds
+S03E02
+
+Family
 Resulting Filename
 S03E01_The_Best_of_Both_Worlds.mkv
+
 Why Underscores?
+
 Shell-safe
+
 No quoting issues
+
 Cross-platform stable
+
 Clean parsing in scripts
+
 Why SxxExx?
+
 Absolute episode identity
+
 Sorting correctness
+
 Metadata alignment
+
 Required for automation consistency
+
 STEP 2 — TEMPLATE SETUP
 
 Create:
