@@ -457,13 +457,9 @@ SmartCut (SMC) now supports unified intro and outro trimming in a single operati
 This allows complete episode cleanup in one pass:
 
 * optional tip snip       MGM lions, "previously on", Network logo's, etc.
-
 * remove intro
-
 * keep episode
-
 * remove outro
-
 
 The result is a cleaner and more reliable workflow than the previous keyframe-normalization and concat-based approaches. SmartCut performs localized re-encoding only where required, while preserving lossless stream-copy behavior across the majority of the file.
 
