@@ -461,7 +461,9 @@ This allows complete episode cleanup in one pass:
 * keep episode
 * remove outro
 
-The result is a cleaner and more reliable workflow than the previous keyframe-normalization and concat-based approaches. SmartCut performs localized re-encoding only where required, while preserving lossless stream-copy behavior across the majority of the file.
+The result is a cleaner and more reliable workflow than the previous keyframe-normalization and concat-based approaches.
+
+SmartCut performs localized re-encoding only where required, while preserving lossless stream-copy behavior across the majority of the file.
 
 ---
 
