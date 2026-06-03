@@ -8385,11 +8385,6 @@ run_subtox() {
 #     1) Standard Rename / Detox
 #     2) Recovery Rename From episodes.csv + Front Number Tags Or Preen
 #
-# IMPORTANT:
-# - For The First Paste, MOVE The CURRENT INLINE Mission 1 BLOCK
-#   From run_subtox() Into This Function BODY.
-# - Do NOT Rewrite That Logic Yet.
-# - Just Relocate It Here So The New Menu Can Dispatch Cleanly.
 # =========================
 run_subtox_standard_rename() {
 	local -a vids=("$@")
