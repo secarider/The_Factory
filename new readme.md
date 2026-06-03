@@ -209,10 +209,15 @@ SMC replaces this with:
 Available in SmartCut menu:
 
 Tip Snip Seconds        → trims from beginning
+
 Tail Tuck Seconds      → trims from end (fallback if no outro)
+
 Intro Pre/Post Pads    → fine tune intro cut
+
 Outro Pre-Pad          → adjust outro start earlier/later
+
 Global Offset          → shifts intro window
+
 🔹 Fallback Behavior
 
 If OutroFind fails or is not present:
