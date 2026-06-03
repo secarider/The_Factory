@@ -95,7 +95,9 @@ filename,start,end
 Uses either:
 
 * `smartcut` (pipx installed), or
-* `smc.app` (AppImage) SmartMediaCutter-2.3.4-x86_64.AppImage
+* `smc.app` (AppImage) SmartMediaCutter-2.3.4-x86_64.AppImage Rename The Appimage To SMC.App
+*  Carry It Around In The Working Dir Where Script Is Running
+
 
 🔹 OUTRO DETECTION + SMARTCUT (SMC) WORKFLOW
 Overview
