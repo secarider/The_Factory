@@ -19,9 +19,9 @@ Inspired by `https://github.com/mifi/lossless-cut`
 
 It replaces large portions of the legacy Factory workflow with a simpler, faster model:
 
-```text
+`
 IntroFind (pHash) → intro_map.csv → SmartCut Batch → SMC_* Outputs
-```
+`
 
 This approach eliminates the need for global re-encoding, keyframe normalization, and concat-based stitching.
 
