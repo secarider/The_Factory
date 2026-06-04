@@ -129,17 +129,11 @@ Command pattern:
 
 Examples:
 
-`Intro Only:
---cut 128,234
-`
+Intro Only:`--cut 128,234`
 
-`Intro + Tail:
---cut 128,234,-72,end
-`
+Intro + Tail:`--cut 128,234,-72,end`
 
-`Tip + Intro + Tail:
---cut 0,10,128,234,-72,end
-`
+Tip + Intro + Tail:`--cut 0,10,128,234,-72,end`
 
 ## Prefix System
 
@@ -250,11 +244,10 @@ Factory maintains session defaults for commonly adjusted values.
 
 Examples:
 
-`
-Run 1: Tip=10 Tail=72
-Run 2: Press Enter → Tip=10 Tail=72
-Run 3: Change Tip=5 → New Default Becomes 5
-`
+
+Run 1: `Tip=10 Tail=72`
+Run 2: Press Enter → `Tip=10 Tail=72`
+Run 3: Change Tip=5 → `New Default Becomes 5`
 
 This allows large batches to be tuned without repeatedly entering the same settings.
 
@@ -272,7 +265,7 @@ sed
 grep
 df
 python3
-smartcut (pipx) OR smc.app
+smartcut (pipx) OR smc.app alongside Factory
 `
 
 ### Python Modules (IntroFind)
@@ -305,7 +298,7 @@ SMCUT does NOT rely on:
 * info.csv ledger systems
 * Large-scale preprocessing before routine cuts
 
-These tools remain available for rescue and repair workflows but are no longer part of the standard processing path.
+These Tools Remain Available In Some Form For Rescue And Repair Workflows But Are No Longer Part Of The Standard Processing Path.
 
 ---
 
@@ -507,3 +500,127 @@ Smart Cutting With Minimal Preprocessing
 It achieves equivalent visual results with drastically reduced complexity, fewer processing stages, and significantly shorter turnaround times.
 
 SmartCut is now the primary cutting engine within Factory and serves as the foundation for modern IntroFind, OutroFind, Pilot Validation, and automated episode cleanup workflows.
+
+
+## Tools And Utilities
+
+Factory also includes a collection of specialized repair, diagnostic, archival, and workflow tools. These utilities support uncommon situations, damaged media, custom editing tasks, and long-term storage workflows that fall outside the standard SmartCut processing path.
+
+### Audio Sync Rescue
+
+Provides tools for correcting synchronization issues between audio and video streams. Useful when source material contains delayed, early, drifting, or improperly muxed audio tracks.
+
+---
+
+### Video Rescue (Dirty / AVI)
+
+A collection of repair-oriented workflows designed for problematic source files.
+
+Supported scenarios include:
+
+* Legacy AVI containers
+* Corrupt timestamps
+* Damaged indexing
+* Playback compatibility issues
+* Difficult-to-cut source material
+
+These tools prioritize recoverability and preservation over compression efficiency.
+
+---
+
+### Probes And Diagnostics
+
+Information-only utilities used to inspect media before processing.
+
+Available diagnostics include:
+
+* Video Truth Probe
+* Stream inspection
+* Duration verification
+* Subtitle inspection
+* Codec analysis
+* Metadata review
+* Workflow troubleshooting
+
+Designed to help users make informed decisions before modifying source material.
+
+---
+
+### Normalize And REKEY Tools
+
+Factory includes a collection of normalization and re-encoding tools for rescue and compatibility workflows.
+
+Common uses include:
+
+* Creating clean MKV sources
+* Repairing problematic encodes
+* Standardizing GOP structures
+* Improving editing compatibility
+* Preparing unusual source material for downstream processing
+
+Normalization is no longer part of the standard workflow but remains available when needed.
+
+---
+
+### Clip And Join Workshop
+
+Tools for creating custom edits, joining clips, and performing one-off video operations.
+
+Examples include:
+
+* Join any two clips
+* Merge custom segments
+* Create highlight reels
+* Build custom templates
+* Normalize mismatched clips before joining
+* Experimental editing workflows
+
+These tools are intended for manual editing tasks rather than automated episode processing.
+
+---
+
+### Twisted Color Menu
+
+Factory's appearance and experimentation workshop.
+
+Provides:
+
+* Theme selection
+* Color customization
+* Menu styling
+* Visual experiments
+* ASCII and terminal fun
+
+Workflow warnings and safety messages remain protected from theme customization.
+
+---
+
+### Archival Array
+
+Multi-level archival workflows designed for long-term media storage.
+
+Available modes include:
+
+* L1 Fast Archive
+* L2 Balanced Archive
+* L3 Deep Archive
+* L4 Maximum Compression
+
+Archival processing focuses on storage efficiency, batch throughput, and long-term preservation rather than editing compatibility.
+
+---
+
+### Design Philosophy
+
+These utilities exist to support exceptional cases, rescue operations, diagnostics, experimentation, and archival workflows.
+
+The standard Factory path remains:
+
+```text
+Inspect
+→ Repair (if needed)
+→ Templates
+→ IntroFind / OutroFind
+→ Pilot Validation
+→ SmartCut
+→ Finalize
