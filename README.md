@@ -16,7 +16,7 @@ Inspired by `https://github.com/mifi/lossless-cut`
 
 ## Overview
 
-**SMCUT** is a lightweight, modern replacement pipeline for intro removal and episode trimming.
+**SMCUT** is a lightweight, modern replacement pipeline for Factory's intro removal and episode trimming.
 
 It replaces large portions of the legacy Factory workflow with a simpler, faster model:
 
