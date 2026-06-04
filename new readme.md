@@ -98,144 +98,6 @@ Uses either:
 * `smc.app` (AppImage) SmartMediaCutter-2.3.4-x86_64.AppImage Rename The Appimage To SMC.App
 *  Carry It Around In The Working Dir Where Script Is Running
 
-
-🔹 OUTRO DETECTION + SMARTCUT (SMC) WORKFLOW
-Overview
-
-Factory now supports automatic outro (credits) detection using the same perceptual hash engine as IntroFind.
-
-This enables a full episode trim in one pass:
-
-[ optional tip snip ] +
-remove intro +
-keep main content +
-remove outro (credits)
-
-All without manual timing or guesswork.
-
-🔹 Trigger Conditions (IMPORTANT)
-
-Outro detection is auto-enabled only when:
-
-intro_template/outro.mkv exists
-
-If outro.mkv is NOT present:
-
-→ IntroFind runs normally (intro only)
-→ SmartCut performs intro removal + optional tail tuck
-
-If outro.mkv IS present:
-
-→ IntroFind runs (intro detection)
-→ OutroFind runs automatically (end-window scan)
-→ outro_map.csv is generated
-→ SmartCut uses BOTH intro_map.csv AND outro_map.csv
-🔹 How Outro Detection Works
-
-Factory does NOT invent a new engine.
-
-Instead it reuses IntroFind with a different scan window:
-
-Scan Start = file_duration - OUTRO_SCAN_BACK_SECONDS (default: 240)
-Scan Limit = file_duration
-Template   = intro_template/outro.mkv
-
-So detection occurs only in the last ~4 minutes of the file.
-
-🔹 Outro Template Requirements
-
-Unlike intro templates:
-
-intro_template.mkv → full intro length (e.g. 106s)
-
-Outro templates should be:
-
-SHORT (recommended: 10–30 seconds)
-
-Why:
-
-We only need a unique visual/audio signature to FIND the start of credits.
-We do NOT use template duration for cutting.
-🔹 Cut Behavior (CRITICAL DIFFERENCE)
-Intro:
-cut intro_start → intro_end (uses template duration)
-Outro:
-cut outro_start → END OF FILE
-
-SmartCut uses:
-
---cut "intro_start,intro_end,outro_start,end"
-
-The outro_end value is informational only.
-
-🔹 New SmartCut (SMC) System
-Replacement for GAPMAN
-OLD: GAPMAN (CSV concat / stream copy)
-NEW: SMC (SmartCut engine)
-
-SMC advantages:
-
-✔ Keyframe-aware cutting (no large timing drift)
-✔ Minimal re-encode only when needed
-✔ No concat stage required
-✔ Handles intro + outro in one command
-✔ More accurate on imperfect sources
-🔹 Why GAPMAN Is No Longer Preferred
-
-GAPMAN relies on:
-
-- strict keyframe alignment
-- normalized GOP structure
-- concat stitching
-
-Which leads to:
-
-✖ 6–10 second timing drift on bad sources
-✖ fragile behavior across mixed encodes
-✖ extra pipeline complexity
-
-SMC replaces this with:
-
-✔ adaptive micro re-encode at cut boundaries
-✔ accurate frame-level cuts
-✔ simpler pipeline
-🔹 SmartCut Pipeline (Current)
-1) IntroFind → intro_map.csv
-2) OutroFind (if outro.mkv exists) → outro_map.csv
-3) SmartCut reads BOTH maps
-4) Builds unified cut plan:
-   intro_start,intro_end,outro_start,end
-5) Produces SMC_<file>
-🔹 Optional Controls
-
-Available in SmartCut menu:
-
-Tip Snip Seconds        → trims from beginning
-
-Tail Tuck Seconds      → trims from end (fallback if no outro)
-
-Intro Pre/Post Pads    → fine tune intro cut
-
-Outro Pre-Pad          → adjust outro start earlier/later
-
-Global Offset          → shifts intro window
-
-🔹 Fallback Behavior
-
-If OutroFind fails or is not present:
-
-SMC falls back to:
-intro removal + tail tuck (fixed seconds)
-🔹 Key Design Philosophy
-Reuse proven tools instead of building new ones.
-
-OutroFind is not a new system:
-
-It is IntroFind applied to the end of the file.
-🔹 Bottom Line
-If you have outro.mkv → full automatic episode trimming
-If you don’t → intro-only trimming still works
-
 ---
 
 Command pattern:
@@ -436,7 +298,13 @@ IntroFind → SmartCut
 
 ### ✔ Pilot-Run Validation Mode
 
-Factory now supports Pilot Mode validation before committing to a full SmartCut batch. Pilot runs process either the first file or first few files from a batch and pause for manual review. This allows verification of IntroFind matches, OutroFind matches, SmartCut cut plans, subtitle behavior, playback defaults, title-bar display, and overall output quality before processing the entire collection. This is when user gathers information about errors ( if any ) like "all the cut start 1 second too early" that and any other timing issues are correctable in the pre,post,padding and or offset window with out reworking the whole introfind process.Last second padding for tip and or tail also help perfect the cut.
+Factory now supports Pilot Mode validation before committing to a full SmartCut batch.
+
+Pilot runs process either the first file or first few files from a batch and pause for manual review.
+
+This allows verification of IntroFind matches, OutroFind matches, SmartCut cut plans, subtitle behavior, playback defaults, title-bar display, and overall output quality before processing the entire collection.
+
+Pilot review is the stage where timing adjustments are refined. If cuts consistently start or end slightly early or late, users can adjust offsets, padding, tip snips, or tail tucks before committing to a full batch run.
 
 Pilot outputs are tracked independently from production runs and can be accepted, discarded, or retained for further inspection. This dramatically reduces the risk of discovering mapping errors or template issues after a large batch has already completed.
 
@@ -503,6 +371,19 @@ The result is a smoother end-to-end workflow where most files receive metadata c
 
 ---
 
+## Current Workflow
+
+1. Inspect / Prepare Sources
+2. Repair Or Pack External Subtitles (if needed)
+3. Build Intro / Outro Templates
+4. Generate Intro / Outro Maps
+5. Pilot Validation
+6. SmartCut Batch Processing
+7. CSV Authority Rename (optional)
+8. Finalize
+
+---
+
 ## Summary
 
 SMCUT represents a shift from:
@@ -520,9 +401,6 @@ smart cutting with minimal preprocessing
 It achieves equivalent visual results with drastically reduced complexity and processing time.
 
 ---
-
-End of document.
-additional text.
 
 🔹 OUTRO DETECTION + SMARTCUT (SMC) WORKFLOW
 Overview
