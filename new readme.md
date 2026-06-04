@@ -19,13 +19,23 @@ Inspired by `https://github.com/mifi/lossless-cut`
 
 It replaces large portions of the legacy Factory workflow with a simpler, faster model:
 
-```
-IntroFind (pHash) → intro_map.csv → SmartCut batch → SMC_* outputs
+```text
+IntroFind (pHash) → intro_map.csv → SmartCut Batch → SMC_* Outputs
 ```
 
 This approach eliminates the need for global re-encoding, keyframe normalization, and concat-based stitching.
 
-## That Makes GAPMAN Old And Not The Tool Of Choice
+---
+
+## SmartCut Replaces GAPMAN
+
+SmartCut (SMC) is now the preferred cutting engine within Factory.
+
+The older GAPMAN workflow relied on keyframe alignment, normalization, and stitching operations. While effective, it required additional preprocessing and introduced complexity when working with mixed or imperfect source material.
+
+SmartCut achieves the same goals with significantly less preprocessing while maintaining more accurate cut boundaries. By performing localized re-encoding only where required, SmartCut can remove intros, outros, and other unwanted segments without requiring full-file re-encoding or concat-based reconstruction.
+
+This shift allows Factory to focus on detection, validation, and workflow safety rather than extensive normalization and repair steps.
 
 ---
 
@@ -33,14 +43,19 @@ This approach eliminates the need for global re-encoding, keyframe normalization
 
 ### Old Model (Factory)
 
-```
-Normalize (REKEY) → Ensure Keyframes → Cut → Stitch → Verify
+```text
+Normalize (REKEY)
+→ Ensure Keyframes
+→ Cut
+→ Stitch
+→ Verify
 ```
 
 ### New Model (SMCUT)
 
-```
-Detect → Cut (SmartCut handles seams)
+```text
+Detect
+→ Cut (SmartCut Handles Seams)
 ```
 
 ---
@@ -58,86 +73,89 @@ Detect → Cut (SmartCut handles seams)
 
 ## Components
 
-### 1. IntroFind (pHash Engine)
+### IntroFind (pHash Engine)
 
 * Scans video files using perceptual hashing
-* Matches against templates in `intro_template/`
+* Matches against templates stored in `intro_template/`
 * Writes results to `intro_map.csv`
+* Supports adjustable scan depth, step size, hash thresholds, and anchor positions
 
-**Output format:**
+**Output Format**
 
-```
+```text
 filename,start,end,start_hms,end_hms,template_used,diff
 ```
 
 ---
 
-### 2. intro_map.csv
+### intro_map.csv
 
 Acts as the central instruction file for batch cutting.
 
 Example:
 
-```
+```text
 Star_Trek_TNG_S05E03_Ensign_Ro.mkv,128,234,00:02:08,00:03:54,intro_template.mkv,10
 ```
 
-Only the first three columns are required for cutting:
+Only the first three columns are required for SmartCut processing:
 
-```
+```text
 filename,start,end
 ```
 
 ---
 
-### 3. SmartCut Engine
+### SmartCut Engine
 
 Uses either:
 
-* `smartcut` (pipx installed), or
-* `smc.app` (AppImage) SmartMediaCutter-2.3.4-x86_64.AppImage Rename The Appimage To SMC.App
-*  Carry It Around In The Working Dir Where Script Is Running
+* `smartcut` (pipx installed)
+* `smc.app` (AppImage)
 
----
+Rename the AppImage to:
+
+```text
+SMC.App
+```
+
+and place it in the working directory alongside Factory.
 
 Command pattern:
 
-```
+```text
 --cut start,end,-tail,end
 ```
 
 Examples:
 
-```
-Intro only:
+```text
+Intro Only:
 --cut 128,234
 
-Intro + tail:
+Intro + Tail:
 --cut 128,234,-72,end
 
-Tip + intro + tail:
+Tip + Intro + Tail:
 --cut 0,10,128,234,-72,end
 ```
-
----
-
 ## Prefix System
 
-All outputs are prefixed:
+All SmartCut outputs are prefixed:
 
-```
+```text
 SMC_<original_filename>
 ```
 
 Example:
 
-```
+```text
 SMC_Star_Trek_TNG_S05E03_Ensign_Ro.mkv
 ```
 
-Filtered out during processing:
+Factory automatically filters workflow-generated files during processing to prevent accidental reprocessing:
 
-```
+```text
 SMC_
 SUTURED_
 intro_template
@@ -147,16 +165,25 @@ intro_template
 
 ## Template System
 
-Current method:
+### Intro Templates
 
-* Full intro clip stored in `intro_template/`
-* Used for matching and duration
+The current IntroFind workflow uses a full intro clip stored within:
 
-Future direction (not implemented yet):
-
+```text
+intro_template/
 ```
-Short key clip (~15s) + stored duration metadata
-```
+
+The template is used for both matching and duration calculations.
+
+---
+
+### Outro Templates
+
+OutroFind uses a short outro template, typically between 10 and 30 seconds in length.
+
+Unlike intro templates, outro templates are intended only to identify the start of the credits sequence. Template duration is not used for trimming calculations.
+
+This approach improves reliability on difficult content, especially animated series where credits may contain black screens, changing cast cards, or repeated visual patterns.
 
 ---
 
@@ -164,25 +191,52 @@ Short key clip (~15s) + stored duration metadata
 
 ### Tip Snip
 
-Removes seconds from the beginning of the file
+Removes unwanted material from the beginning of a file.
 
+Examples:
+
+```text
+Network Logo
+MGM Lion
+Previously On
+Sponsor Cards
 ```
+
+Example cut:
+
+```text
 0,10
 ```
 
+---
+
 ### Intro Cut
 
-From IntroFind CSV
+Generated automatically from IntroFind results:
 
-```
+```text
 128,234
 ```
 
+---
+
+### Outro Cut
+
+Generated automatically from OutroFind results:
+
+```text
+1450,end
+```
+
+---
+
 ### Tail Tuck
 
-Removes seconds from the end
+Optional fallback trimming from the end of the file when OutroFind is unavailable.
 
-```
+Example:
+
+```text
 -72,end
 ```
 
@@ -190,13 +244,17 @@ Removes seconds from the end
 
 ## Rolling Defaults
 
-Tip and tail values persist during the session:
+Factory maintains session defaults for commonly adjusted values.
 
-```
+Examples:
+
+```text
 Run 1: Tip=10 Tail=72
 Run 2: Press Enter → Tip=10 Tail=72
-Run 3: Change Tip=5 → new default becomes 5
+Run 3: Change Tip=5 → New Default Becomes 5
 ```
+
+This allows large batches to be tuned without repeatedly entering the same settings.
 
 ---
 
@@ -204,7 +262,7 @@ Run 3: Change Tip=5 → new default becomes 5
 
 ### Required
 
-```
+```text
 ffmpeg
 ffprobe
 awk
@@ -217,7 +275,7 @@ smartcut (pipx) OR smc.app
 
 ### Python Modules (IntroFind)
 
-```
+```text
 opencv-python (cv2)
 pillow (PIL)
 imagehash
@@ -225,7 +283,7 @@ imagehash
 
 ### Optional
 
-```
+```text
 ffplay
 findmnt
 less
@@ -234,65 +292,88 @@ pipx
 
 ---
 
-## What Was Removed from Factory
+## What Was Removed From Factory
 
-SMCUT does NOT use:
+SMCUT does NOT rely on:
 
 * REKEY normalization
 * CRF calibration loops
-* keyframe suitability gating
-* concat/stitch pipelines
-* info.csv ledger system
+* Keyframe suitability gating
+* Concat/stitch pipelines
+* info.csv ledger systems
+* Large-scale preprocessing before routine cuts
+
+These tools remain available for rescue and repair workflows but are no longer part of the standard processing path.
 
 ---
 
-## Safety Features (Recommended)
+## Safety Features
 
-* Dry-run mode (preview cuts)
+Factory emphasizes validation and recoverability throughout the workflow.
+
+### Pilot Validation
+
+* Validate timing before full batches
+* Review outputs before committing
+* Accept, reject, or retain pilot files
+
+### Processing Protection
+
 * Skip existing outputs
-* Pre-run summary confirmation
-* Batch success/fail counters
+* Pre-run confirmations
+* Batch success/fail reporting
+* OEM-first workflow
+* Archive-before-replace behavior
 
 ---
 
 ## Usage Flow
 
-1. Build template:
+### Build Templates
 
-```
+```text
 create_template
 ```
 
-2. Run IntroFind:
+### Generate Intro Maps
 
-```
+```text
 run_introfind_phash_batch
 ```
 
-3. Run SmartCut:
+### Generate Outro Maps
 
+```text
+run_outrofind_selected_files
 ```
+
+### Run SmartCut
+
+```text
 smartcut_from_csv
 ```
 
-or combined:
+Or:
 
-```
-IntroFind → SmartCut
+```text
+IntroFind
+→ OutroFind
+→ SmartCut
 ```
 
 ---
 
 ## Design Status
 
-✔ IntroFind batch working
-✔ CSV generation stable
-✔ SmartCut batch successful
-✔ Tip/Tail trimming integrated
-✔ Rolling defaults implemented
-
-
----
+* ✔ IntroFind batch working
+* ✔ OutroFind batch working
+* ✔ CSV generation stable
+* ✔ SmartCut batch successful
+* ✔ Intro + Outro map integration
+* ✔ Pilot validation mode
+* ✔ Tip/Tail trimming integrated
+* ✔ Rolling session defaults implemented
+* ✔ Barfix Lite integration
 
 ## Recently Completed Enhancements
 
@@ -310,44 +391,57 @@ Pilot outputs are tracked independently from production runs and can be accepted
 
 ---
 
-### ✔ OutroFind With Key-Clip Templates
+### ✔ OutroFind With Short Outro Templates
 
-OutroFind now uses the same perceptual hash engine that powers IntroFind, allowing automatic detection of episode credits and outros using short template clips. Unlike intro templates, outro templates are intentionally kept short, typically 10–30 seconds, because only a unique signature is needed to locate the beginning of the credits sequence.
+OutroFind now uses the same perceptual hash engine that powers IntroFind, allowing automatic detection of episode credits and outros using short template clips.
 
-Recent enhancements added independent outro tuning controls, including custom anchor positions, hash thresholds, scan step size, and tail scan depth. These controls have proven especially useful for difficult content such as animated series, where credits may contain repetitive black screens, changing cast cards, or highly variable visual patterns.
+Unlike intro templates, outro templates are intentionally kept short, typically 10–30 seconds, because only a unique signature is needed to locate the beginning of the credits sequence.
+
+Recent enhancements added independent outro tuning controls, including custom anchor positions, hash thresholds, scan step size, and tail scan depth.
+
+These controls have proven especially useful for difficult content such as animated series, where credits may contain repetitive black screens, changing cast cards, or highly variable visual patterns.
 
 ---
 
 ### ✔ SmartCut Intro + Outro Integration
 
-SmartCut (SMC) now supports unified intro and outro trimming in a single operation. IntroFind generates `intro_map.csv`, OutroFind generates `outro_map.csv`, and SmartCut automatically merges both maps into a single cut plan.
+SmartCut (SMC) now supports unified intro and outro trimming in a single operation.
+
+IntroFind generates `intro_map.csv`, OutroFind generates `outro_map.csv`, and SmartCut automatically merges both maps into a single cut plan.
 
 This allows complete episode cleanup in one pass:
 
-* optional tip snip    `MGM lions, "previously on", Network logo's, etc.`
-* remove intro
-* keep episode
-* remove outro
+* Optional Tip Snip
+* Remove Intro
+* Keep Episode
+* Remove Outro
 
-The result is a cleaner and more reliable workflow than the previous keyframe-normalization and concat-based approaches.
+The result is a cleaner and more reliable workflow than previous keyframe-normalization and concat-based approaches.
 
-SmartCut performs localized re-encoding only where required, while preserving lossless stream-copy behavior across the majority of the file.
+SmartCut performs localized re-encoding only where required while preserving stream-copy behavior across the majority of the file.
 
 ---
 
 ### ✔ Persistent Session Defaults
 
-Factory now maintains session-level defaults for commonly adjusted settings, including IntroFind tuning values, OutroFind tuning values, SmartCut trimming controls, and Barfix Lite preferences. Once a working configuration is discovered, users can repeatedly process similar content without re-entering the same values for every run.
+Factory now maintains session-level defaults for commonly adjusted settings, including:
 
-This significantly improves workflow efficiency when processing large collections, season sets, or media libraries with consistent formatting and structure.
+* IntroFind tuning values
+* OutroFind tuning values
+* SmartCut trimming controls
+* Barfix Lite preferences
+
+Once a working configuration is discovered, similar content can be processed repeatedly without re-entering the same values for every run.
 
 ---
 
 ### ✔ Parallel SmartCut Batch Processing
 
-SmartCut batch processing has matured into the primary cutting engine within Factory. Combined with IntroFind and OutroFind automation, large episode collections can be processed rapidly while maintaining accurate frame-level cuts.
+SmartCut batch processing has matured into the primary cutting engine within Factory.
 
-The modern SMC workflow replaces older stitching and concat-based systems with a simpler architecture:
+Combined with IntroFind and OutroFind automation, large episode collections can be processed rapidly while maintaining accurate frame-level cuts.
+
+The modern workflow is:
 
 ```text
 Detect
@@ -363,23 +457,33 @@ This approach reduces complexity while improving reliability across mixed source
 
 ### ✔ Barfix Lite Integration
 
-Barfix Lite is now integrated directly into the SmartCut workflow. After successful SMC processing, playback defaults and title-bar metadata can be updated automatically without requiring a separate repair pass.
+Barfix Lite is now integrated directly into the SmartCut workflow.
 
-This allows finished files to immediately inherit improved playback behavior, cleaner title presentation, preferred subtitle defaults, and other metadata refinements while remaining fully compatible with the more advanced Barfix tools available for manual correction and rescue work.
+After successful SMC processing, playback defaults and title-bar metadata can be updated automatically without requiring a separate repair pass.
 
-The result is a smoother end-to-end workflow where most files receive metadata cleanup automatically, while still preserving access to full manual control whenever special handling is required.
+This allows finished files to inherit improved playback behavior, cleaner title presentation, preferred subtitle defaults, and other metadata refinements while remaining fully compatible with the advanced Barfix tools available for manual correction and rescue work.
+
+The result is a smoother end-to-end workflow where most files receive metadata cleanup automatically while still preserving access to full manual control whenever special handling is required.
 
 ---
 
 ## Current Workflow
 
+Factory now follows a SmartCut-first workflow.
+
+Media is inspected, repaired if necessary, mapped using IntroFind and OutroFind, validated through Pilot Mode, processed with SmartCut, and finally finalized into the finished library.
+
+Most routine processing no longer requires global normalization, keyframe preparation, or large-scale re-encoding. Those tools remain available for rescue and repair scenarios but are no longer part of the normal processing path.
+
+### Standard Workflow
+
 1. Inspect / Prepare Sources
-2. Repair Or Pack External Subtitles (if needed)
+2. Repair Or Pack External Subtitles (If Needed)
 3. Build Intro / Outro Templates
 4. Generate Intro / Outro Maps
 5. Pilot Validation
 6. SmartCut Batch Processing
-7. CSV Authority Rename (optional)
+7. CSV Authority Rename (Optional)
 8. Finalize
 
 ---
@@ -388,150 +492,16 @@ The result is a smoother end-to-end workflow where most files receive metadata c
 
 SMCUT represents a shift from:
 
-```
-heavy preprocessing + safe cutting
+```text
+Heavy Preprocessing + Safe Cutting
 ```
 
 to:
 
+```text
+Smart Cutting With Minimal Preprocessing
 ```
-smart cutting with minimal preprocessing
-```
 
-It achieves equivalent visual results with drastically reduced complexity and processing time.
+It achieves equivalent visual results with drastically reduced complexity, fewer processing stages, and significantly shorter turnaround times.
 
----
-
-🔹 OUTRO DETECTION + SMARTCUT (SMC) WORKFLOW
-Overview
-
-Factory now supports automatic outro (credits) detection using the same perceptual hash engine as IntroFind.
-
-This enables a full episode trim in one pass:
-
-[ optional tip snip ] +
-remove intro +
-keep main content +
-remove outro (credits)
-
-All without manual timing or guesswork.
-
-🔹 Trigger Conditions (IMPORTANT)
-
-Outro detection is auto-enabled only when:
-
-intro_template/outro.mkv exists
-
-If outro.mkv is NOT present:
-
-→ IntroFind runs normally (intro only)
-→ SmartCut performs intro removal + optional tail tuck
-
-If outro.mkv IS present:
-
-→ IntroFind runs (intro detection)
-→ OutroFind runs automatically (end-window scan)
-→ outro_map.csv is generated
-→ SmartCut uses BOTH intro_map.csv AND outro_map.csv
-🔹 How Outro Detection Works
-
-Factory does NOT invent a new engine.
-
-Instead it reuses IntroFind with a different scan window:
-
-Scan Start = file_duration - OUTRO_SCAN_BACK_SECONDS (default: 240)
-Scan Limit = file_duration
-Template   = intro_template/outro.mkv
-
-So detection occurs only in the last ~4 minutes of the file.
-
-🔹 Outro Template Requirements
-
-Unlike intro templates:
-
-intro_template.mkv → full intro length (e.g. 106s)
-
-Outro templates should be:
-
-SHORT (recommended: 10–30 seconds)
-
-Why:
-
-We only need a unique visual/audio signature to FIND the start of credits.
-We do NOT use template duration for cutting.
-🔹 Cut Behavior (CRITICAL DIFFERENCE)
-Intro:
-cut intro_start → intro_end (uses template duration)
-Outro:
-cut outro_start → END OF FILE
-
-SmartCut uses:
-
---cut "intro_start,intro_end,outro_start,end"
-
-The outro_end value is informational only.
-
-🔹 New SmartCut (SMC) System
-Replacement for GAPMAN
-OLD: GAPMAN (CSV concat / stream copy)
-NEW: SMC (SmartCut engine)
-
-SMC advantages:
-
-✔ Keyframe-aware cutting (no large timing drift)
-✔ Minimal re-encode only when needed
-✔ No concat stage required
-✔ Handles intro + outro in one command
-✔ More accurate on imperfect sources
-🔹 Why GAPMAN Is No Longer Preferred
-
-GAPMAN relies on:
-
-- strict keyframe alignment
-- normalized GOP structure
-- concat stitching
-
-Which leads to:
-
-✖ 6–10 second timing drift on bad sources
-✖ fragile behavior across mixed encodes
-✖ extra pipeline complexity
-
-SMC replaces this with:
-
-✔ adaptive micro re-encode at cut boundaries
-✔ accurate frame-level cuts
-✔ simpler pipeline
-🔹 SmartCut Pipeline (Current)
-1) IntroFind → intro_map.csv
-2) OutroFind (if outro.mkv exists) → outro_map.csv
-3) SmartCut reads BOTH maps
-4) Builds unified cut plan:
-   intro_start,intro_end,outro_start,end
-5) Produces SMC_<file>
-🔹 Optional Controls
-
-Available in SmartCut menu:
-
-Tip Snip Seconds       → trims from beginning
-Tail Tuck Seconds      → trims from end (fallback if no outro)
-Intro Pre/Post Pads    → fine tune intro cut
-Outro Pre-Pad          → adjust outro start earlier/later
-Global Offset          → shifts intro window
-🔹 Fallback Behavior
-
-If OutroFind fails or is not present:
-
-SMC falls back to:
-intro removal + tail tuck (fixed seconds)
-🔹 Key Design Philosophy
-Reuse proven tools instead of building new ones.
-
-OutroFind is not a new system:
-
-It is IntroFind applied to the end of the file.
-🔹 Bottom Line
-If you have outro.mkv → full automatic episode trimming
-If you don’t → intro-only trimming still works
-
-SMC is the primary cutting engine going forward.
+SmartCut is now the primary cutting engine within Factory and serves as the foundation for modern IntroFind, OutroFind, Pilot Validation, and automated episode cleanup workflows.
