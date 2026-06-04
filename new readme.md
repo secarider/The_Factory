@@ -95,7 +95,7 @@ Acts as the central instruction file for batch cutting.
 Example:
 
 ```text
-Star_Trek_TNG_S05E03_Ensign_Ro.mkv,128,234,00:02:08,00:03:54,intro_template.mkv,10
+Some_Show_Series_SxxExx_Named_Episode.mkv,128,234,00:02:08,00:03:54,intro_template.mkv,10
 ```
 
 Only the first three columns are required for SmartCut processing:
@@ -150,7 +150,7 @@ SMC_<original_filename>
 Example:
 
 ```text
-SMC_Star_Trek_TNG_S05E03_Ensign_Ro.mkv
+SMC_Some_Show_Series_SxxExx_Named_Episode.mkv
 ```
 
 Factory automatically filters workflow-generated files during processing to prevent accidental reprocessing:
