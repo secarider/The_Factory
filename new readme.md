@@ -129,18 +129,15 @@ Command pattern:
 
 Examples:
 
-* `
-Intro Only:
+`Intro Only:
 --cut 128,234
 `
 
-* `
-Intro + Tail:
+`Intro + Tail:
 --cut 128,234,-72,end
 `
 
-* `
-Tip + Intro + Tail:
+`Tip + Intro + Tail:
 --cut 0,10,128,234,-72,end
 `
 
