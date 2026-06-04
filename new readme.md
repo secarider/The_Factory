@@ -602,11 +602,11 @@ Multi-level archival workflows designed for long-term media storage.
 Audio policy selected separately with these options
 
 ARRAY AUDIO POLICY
-1) Copy All Audio Streams (Recommended)
-2) AAC 192k
-3) AAC 128k
-4) AAC 96k
-5) Strip Audio
+1) Copy Through All Audio: (Recommended) Used to be hard-wired to L1
+2) AAC 192k: Used to be hard-wired to L2 `now you get to pick one for the whole batch at whatever L`
+3) AAC 128k: Used to be hard-wired to L3
+4) AAC 96k: Used to be hard-wired to L4
+5) Strip Audio: `Because some large *.cams dump folder may have files with blank, silent, not needed, corrupt or ? we thought it could be useful at least once , somewhere.
 
 Available modes include:
 
