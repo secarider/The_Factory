@@ -43,20 +43,20 @@ This shift allows Factory to focus on detection, validation, and workflow safety
 
 ### Old Model (Factory)
 
-```text
+`
 Normalize (REKEY)
 → Ensure Keyframes
 → Cut
 → Stitch
 → Verify
-```
+`
 
 ### New Model (SMCUT)
 
-```text
+`
 Detect
 → Cut (SmartCut Handles Seams)
-```
+`
 
 ---
 
@@ -82,9 +82,9 @@ Detect
 
 **Output Format**
 
-```text
+`
 filename,start,end,start_hms,end_hms,template_used,diff
-```
+`
 
 ---
 
@@ -94,15 +94,15 @@ Acts as the central instruction file for batch cutting.
 
 Example:
 
-```text
-Some_Show_Series_SxxExx_Named_Episode.mkv,128,234,00:02:08,00:03:54,intro_template.mkv,10
-```
+`
+Star_Trek_TNG_S05E03_Ensign_Ro.mkv,128,234,00:02:08,00:03:54,intro_template.mkv,10
+`
 
 Only the first three columns are required for SmartCut processing:
 
-```text
+`
 filename,start,end
-```
+`
 
 ---
 
@@ -115,21 +115,21 @@ Uses either:
 
 Rename the AppImage to:
 
-```text
+`
 SMC.App
-```
+`
 
 and place it in the working directory alongside Factory.
 
 Command pattern:
 
-```text
+`
 --cut start,end,-tail,end
-```
+`
 
 Examples:
 
-```text
+`
 Intro Only:
 --cut 128,234
 
@@ -138,28 +138,28 @@ Intro + Tail:
 
 Tip + Intro + Tail:
 --cut 0,10,128,234,-72,end
-```
+`
 ## Prefix System
 
 All SmartCut outputs are prefixed:
 
-```text
+`
 SMC_<original_filename>
-```
+`
 
 Example:
 
-```text
-SMC_Some_Show_Series_SxxExx_Named_Episode.mkv
-```
+`
+SMC_Star_Trek_TNG_S05E03_Ensign_Ro.mkv
+`
 
 Factory automatically filters workflow-generated files during processing to prevent accidental reprocessing:
 
-```text
+`
 SMC_
 SUTURED_
 intro_template
-```
+`
 
 ---
 
@@ -169,9 +169,9 @@ intro_template
 
 The current IntroFind workflow uses a full intro clip stored within:
 
-```text
+`
 intro_template/
-```
+`
 
 The template is used for both matching and duration calculations.
 
@@ -195,18 +195,18 @@ Removes unwanted material from the beginning of a file.
 
 Examples:
 
-```text
+`
 Network Logo
 MGM Lion
 Previously On
 Sponsor Cards
-```
+`
 
 Example cut:
 
-```text
+`
 0,10
-```
+`
 
 ---
 
@@ -214,9 +214,9 @@ Example cut:
 
 Generated automatically from IntroFind results:
 
-```text
+`
 128,234
-```
+`
 
 ---
 
@@ -224,9 +224,9 @@ Generated automatically from IntroFind results:
 
 Generated automatically from OutroFind results:
 
-```text
+`
 1450,end
-```
+`
 
 ---
 
@@ -236,9 +236,9 @@ Optional fallback trimming from the end of the file when OutroFind is unavailabl
 
 Example:
 
-```text
+`
 -72,end
-```
+`
 
 ---
 
@@ -248,11 +248,11 @@ Factory maintains session defaults for commonly adjusted values.
 
 Examples:
 
-```text
+`
 Run 1: Tip=10 Tail=72
 Run 2: Press Enter → Tip=10 Tail=72
 Run 3: Change Tip=5 → New Default Becomes 5
-```
+`
 
 This allows large batches to be tuned without repeatedly entering the same settings.
 
@@ -262,7 +262,7 @@ This allows large batches to be tuned without repeatedly entering the same setti
 
 ### Required
 
-```text
+`
 ffmpeg
 ffprobe
 awk
@@ -271,24 +271,24 @@ grep
 df
 python3
 smartcut (pipx) OR smc.app
-```
+`
 
 ### Python Modules (IntroFind)
 
-```text
+`
 opencv-python (cv2)
 pillow (PIL)
 imagehash
-```
+`
 
 ### Optional
 
-```text
+`
 ffplay
 findmnt
 less
 pipx
-```
+`
 
 ---
 
@@ -331,35 +331,35 @@ Factory emphasizes validation and recoverability throughout the workflow.
 
 ### Build Templates
 
-```text
+`
 create_template
-```
+`
 
 ### Generate Intro Maps
 
-```text
+`
 run_introfind_phash_batch
-```
+`
 
 ### Generate Outro Maps
 
-```text
+`
 run_outrofind_selected_files
-```
+`
 
 ### Run SmartCut
 
-```text
+`
 smartcut_from_csv
-```
+`
 
 Or:
 
-```text
+`
 IntroFind
 → OutroFind
 → SmartCut
-```
+`
 
 ---
 
@@ -443,13 +443,13 @@ Combined with IntroFind and OutroFind automation, large episode collections can 
 
 The modern workflow is:
 
-```text
+`
 Detect
 → Build Maps
 → Pilot Validation
 → SmartCut Batch
 → Finalize
-```
+`
 
 This approach reduces complexity while improving reliability across mixed source material.
 
@@ -492,15 +492,15 @@ Most routine processing no longer requires global normalization, keyframe prepar
 
 SMCUT represents a shift from:
 
-```text
+`
 Heavy Preprocessing + Safe Cutting
-```
+`
 
 to:
 
-```text
+`
 Smart Cutting With Minimal Preprocessing
-```
+`
 
 It achieves equivalent visual results with drastically reduced complexity, fewer processing stages, and significantly shorter turnaround times.
 
