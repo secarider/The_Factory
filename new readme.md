@@ -197,12 +197,12 @@ Removes unwanted material from the beginning of a file.
 
 Examples:
 
-`
-Network Logo
-MGM Lion
-Previously On
-Sponsor Cards
-`
+
+* Network Logo
+* MGM Lion
+* Previously On
+* Sponsor Cards
+
 
 Example cut:
 
