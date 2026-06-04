@@ -601,10 +601,28 @@ Multi-level archival workflows designed for long-term media storage.
 
 Available modes include:
 
-* L1 Fast Archive
-* L2 Balanced Archive
-* L3 Deep Archive
-* L4 Maximum Compression
+L1 Fast Archive
+- Light archival compression
+- Highest quality archive tier
+- Fastest processing
+- Audio policy selected separately
+
+L2 Balanced Archive
+- Balanced size reduction
+- General-purpose archive tier
+- Audio policy selected separately
+
+L3 Deep Archive
+- Storage-focused archival compression
+- Greater size reduction
+- Longer processing times
+- Audio policy selected separately
+
+L4 Maximum Compression
+- Aggressive size reduction
+- Lowest storage footprint
+- Longest processing times
+- Audio policy selected separately
 
 Archival processing focuses on storage efficiency, batch throughput, and long-term preservation rather than editing compatibility.
 
