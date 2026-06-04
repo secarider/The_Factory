@@ -599,6 +599,15 @@ Workflow warnings and safety messages remain protected from theme customization.
 
 Multi-level archival workflows designed for long-term media storage.
 
+Audio policy selected separately with these options
+
+ARRAY AUDIO POLICY
+1) Copy All Audio Streams (Recommended)
+2) AAC 192k
+3) AAC 128k
+4) AAC 96k
+5) Strip Audio
+
 Available modes include:
 
 L1 Fast Archive
