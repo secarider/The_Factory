@@ -60,7 +60,6 @@ Factory can use either:
 
 The AppImage should be renamed to:
 
-```text
 SMC.App
 
 ---
