@@ -49,8 +49,19 @@ Used by:
 - Intro removal
 - Outro removal
 - Pilot validation workflows
+- CSV-driven batch cutting
 
 Provides frame-accurate cuts while minimizing re-encoding.
+
+Factory can use either:
+
+- A pipx-installed `smartcut` command
+- The standalone `SMC.App` SmartCut AppImage
+
+The AppImage should be renamed to:
+
+```text
+SMC.App
 
 ---
 
