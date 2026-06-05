@@ -232,4 +232,6 @@ Scrollable pager used for:
 - mkvpropedit is included with mkvtoolnix.
 - SmartCut is now a primary Factory dependency.
 - SceneDetect remains useful for selected workflows and diagnostics.
-- Most Factory workflows prefer MKV whenever practical.
+- Most Factory workflows prefer MKV whenever practical. You Should To
+- less is OPTIONAL; note screens can fall back to plain cat behavior.
+- iconv is OPTIONAL; some detox/transliteration behavior may be reduced without it.
