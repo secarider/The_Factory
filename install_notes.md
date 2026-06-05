@@ -1,3 +1,11 @@
+### Minimal Install
+
+`sudo apt update && sudo apt install ffmpeg bc pipx mkvtoolnix -y && pipx install "scenedetect[opencv]" && pipx install smartcut`
+
+Full Install (Recommended)
+
+`sudo apt update && sudo apt install ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less -y && pipx install "scenedetect[opencv]" && pipx install smartcut`
+
 # Core SmartCut Features
 
 # IntroFind
