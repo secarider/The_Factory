@@ -3,11 +3,10 @@
 
 Factory Automates Complex, Repetitive Workflows Such As Intro Detection, Clean Cutting, Subtitle Handling, Metadata Repair, And Batch Normalization—While Preserving Original Files At Every Stage.
 ---
-
+# SMCUT — SmartCut-Based Intro Removal System
 ```text
 https://github.com/skeskinen/smartcut
 ```
-# SMCUT — SmartCut-Based Intro Removal System
 ![SmartCut_Logo](logo_head.png)
 ```text
 https://github.com/skeskinen/smartcut
