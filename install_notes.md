@@ -42,6 +42,11 @@ Used for:
 
 ### smartcut
 
+Inspired and Powered by 
+```text
+https://github.com/skeskinen/smartcut
+```
+
 Factory's primary cutting engine.
 
 Used by:
@@ -57,6 +62,11 @@ Factory can use either:
 
 - A pipx-installed `smartcut` command
 - The standalone `SMC.App` SmartCut AppImage
+- Support Them Here
+```text
+https://smartmediacutter.com/
+```
+
 
 The AppImage should be renamed to:
 
