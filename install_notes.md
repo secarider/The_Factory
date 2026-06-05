@@ -2,10 +2,10 @@
 # THE_FACTORY
 
 ![SmartCut_Logo](logo_head.png)
-# SMCUT — SmartCut-Based Intro Removal System
 ```text
 https://github.com/skeskinen/smartcut
 ```
+# SMCUT — SmartCut-Based Intro Removal System
 - Support Them Here
 ```text
 https://smartmediacutter.com/
