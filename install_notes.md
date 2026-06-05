@@ -1,54 +1,159 @@
-#                 !!! SYSTEM CHECKLIST - INSTALL THESE FIRST !!!
------------------------------------------------------------------------------------------
-Copy And Run One Of These Lines In Your Terminal To Install The Tools Needed To Run The Script:
------------------------------------------------------------------------------------------
-  OLD Setup Command Or Minimal If You Are On Any Of The New *NixZ This Will Likely Be Enough
-sudo apt update && sudo apt install ffmpeg bc pipx mkvtoolnix -y && pipx install "scenedetect[opencv]"
------------------------------------------------------------------------------------------
-  NEW Setup Command no word wrap with this baby,it installs the bathroom sink and all
-sudo apt update && sudo apt install ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less -y && pipx install "scenedetect[opencv]"
--------------------------DEPENDENCY DESCRIPTIONS INSTALL THESE---------------------------
-ffmpeg:       The Main Engine For Remuxing, Trimming, Joining, Rebuilding, And More.
------------------------------------------------------------------------------------------
-ffprobe:      The "Eyes" Used To Calculate Duration, Streams, FPS, And Probe Details.
------------------------------------------------------------------------------------------
-bc:           The "Brain" For Decimal Math And Timing Comparisons.
------------------------------------------------------------------------------------------
-awk:          Text Surgery Helper Used For Parsing, Formatting, And Field Work.
------------------------------------------------------------------------------------------
-sed:          Stream Editor Used For Cleanup, Input Normalization, And Text Fixups.
------------------------------------------------------------------------------------------
-grep:         Pattern Hunter Used For Matching, Filtering, And Decision Logic.
------------------------------------------------------------------------------------------
-df:           Disk Space Reporter So The Script Can Warn About Free Space.
------------------------------------------------------------------------------------------
-python3:      Needed For Python-Based Helper Paths And Related Tooling.
------------------------------------------------------------------------------------------
-pipx:         The Safe "Bubble" Environment For Python Apps Like Scenedetect.
------------------------------------------------------------------------------------------
-scenedetect:  The "Orbital Laser" For Automatic Intro Finding (Installed Via Pipx).
------------------------------------------------------------------------------------------
-iconv:        Character Transliteration Helper Used In Some Title Cleanup Paths.
------------------------------------------------------------------------------------------
-ffplay:       Quick Playback Checker For Manual Review / Sanity Checks.
------------------------------------------------------------------------------------------
-findmnt:      Friendly Drive Label / Mount Source Lookup Helper.
------------------------------------------------------------------------------------------
-less:         Scrollable Pager For Long Notes / Explain Screens.
------------------------------------------------------------------------------------------
-mkvpropedit:  Fast In-Place MKV Metadata Editor (Title Repair Without Remux).
------------------------------------------------------------------------------------------
-mkvpropedit:  Is part of mkvtoolnix. [mkvtoolnix.download](https://mkvtoolnix.download/)
------------------------------------------------------------------------------------------
-INSTALL COMMAND:
-sudo apt update && sudo apt install ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less -y && pipx install "scenedetect[opencv]"
------------------------------------------------------------------------------------------
-NOTES:
-- ffprobe and ffplay normally come with the ffmpeg package.
-- df is part of coreutils on Debian/Ubuntu/Mint systems.
-- findmnt is usually provided by util-linux on Debian/Ubuntu/Mint systems.
-- mkvpropedit comes from mkvtoolnix.
-- scenedetect is OPTIONAL but automatic intro detection is the star of the show.
-- less is OPTIONAL; note screens can fall back to plain cat behavior.
-- iconv is OPTIONAL; some detox/transliteration behavior may be reduced without it.
------------------------------------------------------------------------------------------
+Core SmartCut Features
+IntroFind
+
+Perceptual-hash based intro detection using configurable:
+
+Scan depth
+Anchor positions
+Step sizes
+Match thresholds
+
+Supports difficult animated and drift-prone content through multi-anchor matching.
+
+OutroFind
+
+Template-based outro detection using short key clips.
+
+Features:
+
+Multi-anchor matching
+Adjustable outro scan windows
+Independent intro/outro detection
+CSV logging integration
+SmartCut
+
+Automated commercial and segment removal based on IntroFind and OutroFind results.
+
+Features:
+
+Intro removal
+Outro removal
+Tip snip / tail tuck controls
+Pilot validation mode
+Batch processing
+Single-file workflows
+Pilot Validation Mode
+
+Pilot mode allows users to validate processing results before committing an entire batch.
+
+Features:
+
+First-file testing
+First-three-file testing
+Review checkpoints
+OEM preservation safeguards
+Persistent Session Configuration
+
+Factory remembers workflow settings through dedicated configuration controls.
+
+Examples include:
+
+IntroFind defaults
+OutroFind defaults
+SmartCut offsets
+Tip/Tail settings
+BARFIX Lite preferences
+Parallel SmartCut Batch Processing
+
+Factory supports batch SmartCut operations while maintaining OEM safety protections.
+
+Features:
+
+Pilot-first workflow
+Resume support
+Batch execution
+Consistent cut plans
+BARFIX Lite Integration
+
+SmartCut outputs can automatically receive lightweight metadata cleanup.
+
+Features:
+
+Title-bar repair
+Preferred audio selection
+Preferred subtitle selection
+Playback default management
+Repair And Preparation Tools
+SUBTOX
+
+Filename cleanup and episode normalization system.
+
+Features:
+
+SxxExx detection
+5x## conversion support
+CSV-assisted naming
+Batch rename workflows
+Audio Sync Rescue
+
+Tools for correcting synchronization issues between audio and video streams.
+
+Video Rescue
+
+Repair workflows for:
+
+AVI sources
+Damaged timestamps
+Broken indexing
+Difficult editing sources
+Normalize / REKEY
+
+Cut-friendly rebuilding and compatibility preparation tools.
+
+Used when problematic source material requires normalization before further processing.
+
+Archival Array
+
+Multi-level archival processing designed for long-term storage.
+
+Archive Levels:
+
+L1 Fast Archive
+L2 Balanced Archive
+L3 Deep Archive
+L4 Maximum Compression
+
+Audio policy is selected independently from archive level.
+
+Metadata Sidecar Protection
+
+Archival processing can preserve source metadata before encoding.
+
+Available modes:
+
+Sidecar Strip
+Restore Common
+Minimal Skip
+
+Metadata sidecars are stored separately for future reference and recovery.
+
+Diagnostics And Utilities
+Probes
+
+Information-only inspection tools including:
+
+Video Truth Probe
+Stream inspection
+Metadata review
+Subtitle inspection
+Duration verification
+Clip And Join Workshop
+
+Manual editing utilities including:
+
+Join two clips
+Custom cut workflows
+Normalization before joining
+One-off editing operations
+Twisted Color Menu
+
+Theme and appearance controls for Factory's terminal interface.
+
+Semantic warning colors remain protected regardless of theme selection.
+
+Notes
+Factory prefers MKV workflows whenever practical.
+OEM backups are preserved whenever possible.
+SmartCut is the primary processing workflow.
+Repair tools remain available for exceptional cases.
+IntroFind and OutroFind are designed to be tuned per series when necessary.
