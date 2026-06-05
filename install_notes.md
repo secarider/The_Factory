@@ -1,4 +1,4 @@
-                 !!! FRESH SYSTEM CHECKLIST - INSTALL THESE FIRST !!!
+#                 !!! SYSTEM CHECKLIST - INSTALL THESE FIRST !!!
 -----------------------------------------------------------------------------------------
 Copy And Run One Of These Lines In Your Terminal To Install The Tools Needed To Run The Script:
 -----------------------------------------------------------------------------------------
@@ -40,7 +40,6 @@ mkvpropedit:  Fast In-Place MKV Metadata Editor (Title Repair Without Remux).
 -----------------------------------------------------------------------------------------
 mkvpropedit:  Is part of mkvtoolnix. [mkvtoolnix.download](https://mkvtoolnix.download/)
 -----------------------------------------------------------------------------------------
-#
 INSTALL COMMAND:
 sudo apt update && sudo apt install ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less -y && pipx install "scenedetect[opencv]"
 -----------------------------------------------------------------------------------------
