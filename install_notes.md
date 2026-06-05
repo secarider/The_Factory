@@ -1,6 +1,8 @@
 ![The_Factory Logo](TheFactory.png)
 # THE_FACTORY
-
+```text
+https://github.com/skeskinen/smartcut
+```
 ![SmartCut_Logo](logo_head.png)
 ```text
 https://github.com/skeskinen/smartcut
