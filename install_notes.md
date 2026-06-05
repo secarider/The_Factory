@@ -3,6 +3,14 @@
 
 ![SmartCut_Logo](logo_head.png)
 # SMCUT — SmartCut-Based Intro Removal System
+```text
+https://github.com/skeskinen/smartcut
+```
+- Support Them Here
+```text
+https://smartmediacutter.com/
+```
+
 ### Minimal Install
 
 ```text
