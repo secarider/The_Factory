@@ -3,7 +3,6 @@
 
 ![SmartCut_Logo](logo_small.png)
 # SMCUT — SmartCut-Based Intro Removal System
-
 ### Minimal Install
 
 ```text
