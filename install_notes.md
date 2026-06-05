@@ -1,7 +1,7 @@
 ![The_Factory Logo](TheFactory.png)
 # THE_FACTORY
 
-![SmartCut_Logo](logo_small.png)
+![SmartCut_Logo](logo_head.png)
 # SMCUT — SmartCut-Based Intro Removal System
 ### Minimal Install
 
