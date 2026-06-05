@@ -10,280 +10,191 @@ Full Install (Recommended)
 sudo apt update && sudo apt install ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less -y && pipx install "scenedetect[opencv]" && pipx install smartcut
 ```
 
-# -----------------------------------------------------------------------------------------
+## Dependencies
 
-# !!! SYSTEM CHECKLIST - INSTALL THESE FIRST !!!
+### ffmpeg
 
-# -----------------------------------------------------------------------------------------
+The primary media engine used throughout Factory.
 
-# Copy And Run One Of These Commands To Install The Tools Used Throughout Factory.
+Used for:
+- Remuxing
+- Rebuilding
+- Joining clips
+- Archival encoding
+- Rescue workflows
+- Audio repair
+- Custom cuts
 
-# -----------------------------------------------------------------------------------------
+---
 
-#
+### ffprobe
 
-# MINIMAL INSTALL
+Factory's media inspection tool.
 
-#
+Used for:
+- Duration detection
+- Stream analysis
+- Codec discovery
+- Resolution reporting
+- General media verification
 
-# sudo apt update && sudo apt install ffmpeg bc pipx mkvtoolnix -y && pipx install "scenedetect[opencv]" && pipx install smartcut
+---
 
-#
+### smartcut
 
-# -----------------------------------------------------------------------------------------
+Factory's primary cutting engine.
 
-#
+Used by:
+- SmartCut (SMC)
+- Intro removal
+- Outro removal
+- Pilot validation workflows
 
-# FULL INSTALL (RECOMMENDED)
+Provides frame-accurate cuts while minimizing re-encoding.
 
-#
+---
 
-# sudo apt update && sudo apt install ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less -y && pipx install "scenedetect[opencv]" && pipx install smartcut
+### scenedetect
 
-#
+Scene analysis utility installed through Pipx.
 
-# -----------------------------------------------------------------------------------------
+Used by:
+- Detection workflows
+- Template generation workflows
+- Diagnostic utilities
 
-# DEPENDENCY DESCRIPTIONS
+---
 
-# -----------------------------------------------------------------------------------------
+### bc
 
-#
+Decimal math engine used for:
+- Timing calculations
+- Percentages
+- Duration comparisons
+- Offset calculations
 
-# ffmpeg:
+---
 
-# The Main Engine.
+### awk
 
-# Used For Remuxing, Rebuilding, Joining, Archiving, Rescue Work,
+Factory's primary text-processing tool.
 
-# Audio Repair, Custom Cuts, And Countless Internal Operations.
+Used for:
+- CSV handling
+- Reporting
+- Parsing
+- Workflow automation
 
-#
+---
 
-# -----------------------------------------------------------------------------------------
+### sed
 
-#
+Stream editor used for:
+- Text cleanup
+- Normalization
+- Replacement operations
+- Configuration editing
 
-# ffprobe:
+---
 
-# Factory's Eyes.
+### grep
 
-# Used To Determine Duration, Streams, Codecs, Bitrates, Resolution,
+Pattern matching utility used for:
+- Filtering
+- Decision making
+- Workflow control
+- Validation checks
 
-# And General Media Truth.
+---
 
-#
+### python3
 
-# -----------------------------------------------------------------------------------------
+Required for:
+- IntroFind
+- Detection engines
+- Helper scripts
+- Various Factory subsystems
 
-#
+---
 
-# smartcut:
+### pipx
 
-# Factory's Scalpel.
+Safe Python application installer.
 
-# Performs Intro And Outro Removal With Minimal Re-encoding.
+Used for:
+- SmartCut
+- SceneDetect
 
-# Primary Engine Behind Modern SMC Workflows.
+Keeps Factory dependencies isolated from the system Python environment.
 
-#
+---
 
-# -----------------------------------------------------------------------------------------
+### mkvtoolnix / mkvpropedit
 
-#
+MKV metadata utilities used by:
+- BARFIX
+- BARFIX Lite
+- Title repair
+- Playback-default management
 
-# scenedetect:
+Provides fast metadata editing without rebuilding media files.
 
-# Scene Analysis Helper.
+---
 
-# Used By Selected Detection And Template Workflows.
+### iconv
 
-# Installed Via Pipx.
+Character conversion helper used during:
+- SUBTOX operations
+- Filename cleanup
+- Text normalization
 
-#
+---
 
-# -----------------------------------------------------------------------------------------
+### ffplay
 
-#
+Lightweight playback utility useful for:
+- Pilot review
+- Sanity checks
+- Quick validation
 
-# bc:
+---
 
-# Factory's Calculator.
+### findmnt
 
-# Handles Decimal Math, Timing Math, Percentages, And Comparisons.
+Used to display:
+- Drive labels
+- Mount points
+- Storage information
 
-#
+---
 
-# -----------------------------------------------------------------------------------------
+### df
 
-#
+Disk-space reporting utility.
 
-# awk:
+Used to:
+- Check free space
+- Warn before large operations
+- Verify storage availability
 
-# Text Surgery Assistant.
+---
 
-# Used For CSV Processing, Parsing, Formatting, Reporting,
+### less
 
-# And Workflow Automation.
+Scrollable pager used for:
+- Notes
+- Reports
+- Logs
+- Long information screens
 
-#
+---
 
-# -----------------------------------------------------------------------------------------
+## Notes
 
-#
-
-# sed:
-
-# Stream Editor.
-
-# Used For Cleanup, Normalization, Replacement, And Text Repair.
-
-#
-
-# -----------------------------------------------------------------------------------------
-
-#
-
-# grep:
-
-# Pattern Hunter.
-
-# Used To Locate Matches, Filter Results, And Drive Decisions.
-
-#
-
-# -----------------------------------------------------------------------------------------
-
-#
-
-# python3:
-
-# Required For IntroFind, Detection Engines, Helpers,
-
-# And Various Factory Subsystems.
-
-#
-
-# -----------------------------------------------------------------------------------------
-
-#
-
-# pipx:
-
-# Safe Application Sandbox.
-
-# Used To Install SmartCut And SceneDetect Without Polluting
-
-# The System Python Environment.
-
-#
-
-# -----------------------------------------------------------------------------------------
-
-#
-
-# mkvtoolnix:
-
-# MKV Toolbox Collection.
-
-# Provides mkvpropedit And Other MKV Utilities Used Throughout Factory.
-
-#
-
-# -----------------------------------------------------------------------------------------
-
-#
-
-# mkvpropedit:
-
-# Fast In-Place Metadata Editor.
-
-# Powers BARFIX And BARFIX Lite Without Rebuilding Files.
-
-#
-
-# -----------------------------------------------------------------------------------------
-
-#
-
-# iconv:
-
-# Character Translation Helper.
-
-# Used During SUBTOX, Cleanup, And Filename Repair Operations.
-
-#
-
-# -----------------------------------------------------------------------------------------
-
-#
-
-# ffplay:
-
-# Quick Playback Viewer.
-
-# Useful For Sanity Checks, Pilot Validation, And Manual Review.
-
-#
-
-# -----------------------------------------------------------------------------------------
-
-#
-
-# findmnt:
-
-# Mount And Drive Information Helper.
-
-# Used To Display Friendly Storage And Device Information.
-
-#
-
-# -----------------------------------------------------------------------------------------
-
-#
-
-# df:
-
-# Disk Space Reporter.
-
-# Allows Factory To Warn About Low Free Space Before Large Jobs.
-
-#
-
-# -----------------------------------------------------------------------------------------
-
-#
-
-# less:
-
-# Scrollable Pager.
-
-# Used For Notes, Reports, Logs, And Long Information Screens.
-
-#
-
-# -----------------------------------------------------------------------------------------
-
-#
-
-# NOTES
-
-#
-
-# - ffprobe and ffplay normally ship with ffmpeg.
-
-# - df is normally provided by coreutils.
-
-# - findmnt is normally provided by util-linux.
-
-# - mkvpropedit is part of mkvtoolnix.
-
-# - SmartCut is now a primary Factory dependency.
-
-# - SceneDetect remains useful for selected workflows and diagnostics.
-
-# - Most Factory workflows prefer MKV whenever practical.
-
-#
-
-# -----------------------------------------------------------------------------------------
+- ffprobe and ffplay normally ship with ffmpeg.
+- df is normally provided by coreutils.
+- findmnt is normally provided by util-linux.
+- mkvpropedit is included with mkvtoolnix.
+- SmartCut is now a primary Factory dependency.
+- SceneDetect remains useful for selected workflows and diagnostics.
+- Most Factory workflows prefer MKV whenever practical.
