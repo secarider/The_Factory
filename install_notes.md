@@ -10,174 +10,280 @@ Full Install (Recommended)
 sudo apt update && sudo apt install ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less -y && pipx install "scenedetect[opencv]" && pipx install smartcut
 ```
 
-# Core SmartCut Features
+# -----------------------------------------------------------------------------------------
 
-# IntroFind
+# !!! SYSTEM CHECKLIST - INSTALL THESE FIRST !!!
 
-Perceptual-hash based intro detection using configurable:
+# -----------------------------------------------------------------------------------------
 
-* Scan depth
-* Anchor positions
-* Step sizes
-* Match thresholds
+# Copy And Run One Of These Commands To Install The Tools Used Throughout Factory.
 
-Supports difficult animated and drift-prone content through multi-anchor matching.
+# -----------------------------------------------------------------------------------------
 
-# OutroFind
+#
 
-Template-based outro detection using short key clips.
+# MINIMAL INSTALL
 
-Features:
+#
 
-* Multi-anchor matching
-* Adjustable outro scan windows
-* Independent intro/outro detection
-* CSV logging integration
+# sudo apt update && sudo apt install ffmpeg bc pipx mkvtoolnix -y && pipx install "scenedetect[opencv]" && pipx install smartcut
 
-# SmartCut
+#
 
-Automated commercial and segment removal based on IntroFind and OutroFind results.
+# -----------------------------------------------------------------------------------------
 
-Features:
+#
 
-* Intro removal
-* Outro removal
-* Tip snip / tail tuck controls
-* Pilot validation mode
-* Batch processing
-* Single-file workflows
+# FULL INSTALL (RECOMMENDED)
 
-# Pilot Validation Mode
+#
 
-Pilot mode allows users to validate processing results before committing an entire batch.
+# sudo apt update && sudo apt install ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less -y && pipx install "scenedetect[opencv]" && pipx install smartcut
 
-Features:
+#
 
-* First-file testing
-* First-three-file testing
-* Review checkpoints
-* OEM preservation safeguards
+# -----------------------------------------------------------------------------------------
 
-# Persistent Session Configuration
+# DEPENDENCY DESCRIPTIONS
 
-Factory remembers workflow settings through dedicated configuration controls.
+# -----------------------------------------------------------------------------------------
 
-Examples include:
+#
 
-* IntroFind defaults
-* OutroFind defaults
-* SmartCut offsets
-* Tip/Tail settings
-* BARFIX Lite preferences
+# ffmpeg:
 
-# Parallel SmartCut Batch Processing
+# The Main Engine.
 
-Factory supports batch SmartCut operations while maintaining OEM safety protections.
+# Used For Remuxing, Rebuilding, Joining, Archiving, Rescue Work,
 
-Features:
+# Audio Repair, Custom Cuts, And Countless Internal Operations.
 
-* Pilot-first workflow
-* Resume support
-* Batch execution
-* Consistent cut plans
+#
 
-# BARFIX Lite Integration
+# -----------------------------------------------------------------------------------------
 
-SmartCut outputs can automatically receive lightweight metadata cleanup.
+#
 
-Features:
+# ffprobe:
 
-* Title-bar repair
-* Preferred audio selection
-* Preferred subtitle selection
-* Playback default management
-* Repair And Preparation Tools
+# Factory's Eyes.
 
-# SUBTOX
+# Used To Determine Duration, Streams, Codecs, Bitrates, Resolution,
 
-Filename cleanup and episode normalization system.
+# And General Media Truth.
 
-Features:
+#
 
-* SxxExx detection
-* 5x## conversion support
-* CSV-assisted naming
-* Batch rename workflows
+# -----------------------------------------------------------------------------------------
 
-# Audio Sync Rescue
+#
 
-Tools for correcting synchronization issues between audio and video streams.
+# smartcut:
 
-# Video Rescue
+# Factory's Scalpel.
 
-Repair workflows for:
+# Performs Intro And Outro Removal With Minimal Re-encoding.
 
-* AVI sources
-* Damaged timestamps
-* Broken indexing
-* Difficult editing sources
+# Primary Engine Behind Modern SMC Workflows.
 
-# Normalize / REKEY
+#
 
-Cut-friendly rebuilding and compatibility preparation tools.
+# -----------------------------------------------------------------------------------------
 
-Used when problematic source material requires normalization before further processing.
+#
 
-Archival Array
+# scenedetect:
 
-Multi-level archival processing designed for long-term storage.
+# Scene Analysis Helper.
 
-# Archive Levels:
+# Used By Selected Detection And Template Workflows.
 
-* L1 Fast Archive
-* L2 Balanced Archive
-* L3 Deep Archive
-* L4 Maximum Compression
+# Installed Via Pipx.
 
-Audio policy is selected independently from archive level.
+#
 
-# Metadata Sidecar Protection
+# -----------------------------------------------------------------------------------------
 
-Archival processing can preserve source metadata before encoding.
+#
 
-Available modes:
+# bc:
 
-* Sidecar Strip
-* Restore Common
-* Minimal Skip
+# Factory's Calculator.
 
-Metadata sidecars are stored separately for future reference and recovery.
+# Handles Decimal Math, Timing Math, Percentages, And Comparisons.
 
-# Diagnostics And Utilities
+#
 
-Probes
+# -----------------------------------------------------------------------------------------
 
-Information-only inspection tools including:
+#
 
-* Video Truth Probe
-* Stream inspection
-* Metadata review
-* Subtitle inspection
-* Duration verification
+# awk:
 
-# Clip And Join Workshop
+# Text Surgery Assistant.
 
-Manual editing utilities including:
+# Used For CSV Processing, Parsing, Formatting, Reporting,
 
-* Join two clips
-* Custom cut workflows
-* Normalization before joining
-* One-off editing operations
+# And Workflow Automation.
 
-# Twisted Color Menu
+#
 
-Theme and appearance controls for Factory's terminal interface.
+# -----------------------------------------------------------------------------------------
 
-Semantic warning colors remain protected regardless of theme selection.
+#
 
-Notes
-* Factory prefers MKV workflows whenever practical.
-* OEM backups are preserved whenever possible.
-* SmartCut is the primary processing workflow.
-* Repair tools remain available for exceptional cases.
-* IntroFind and OutroFind are designed to be tuned per series when necessary.
+# sed:
+
+# Stream Editor.
+
+# Used For Cleanup, Normalization, Replacement, And Text Repair.
+
+#
+
+# -----------------------------------------------------------------------------------------
+
+#
+
+# grep:
+
+# Pattern Hunter.
+
+# Used To Locate Matches, Filter Results, And Drive Decisions.
+
+#
+
+# -----------------------------------------------------------------------------------------
+
+#
+
+# python3:
+
+# Required For IntroFind, Detection Engines, Helpers,
+
+# And Various Factory Subsystems.
+
+#
+
+# -----------------------------------------------------------------------------------------
+
+#
+
+# pipx:
+
+# Safe Application Sandbox.
+
+# Used To Install SmartCut And SceneDetect Without Polluting
+
+# The System Python Environment.
+
+#
+
+# -----------------------------------------------------------------------------------------
+
+#
+
+# mkvtoolnix:
+
+# MKV Toolbox Collection.
+
+# Provides mkvpropedit And Other MKV Utilities Used Throughout Factory.
+
+#
+
+# -----------------------------------------------------------------------------------------
+
+#
+
+# mkvpropedit:
+
+# Fast In-Place Metadata Editor.
+
+# Powers BARFIX And BARFIX Lite Without Rebuilding Files.
+
+#
+
+# -----------------------------------------------------------------------------------------
+
+#
+
+# iconv:
+
+# Character Translation Helper.
+
+# Used During SUBTOX, Cleanup, And Filename Repair Operations.
+
+#
+
+# -----------------------------------------------------------------------------------------
+
+#
+
+# ffplay:
+
+# Quick Playback Viewer.
+
+# Useful For Sanity Checks, Pilot Validation, And Manual Review.
+
+#
+
+# -----------------------------------------------------------------------------------------
+
+#
+
+# findmnt:
+
+# Mount And Drive Information Helper.
+
+# Used To Display Friendly Storage And Device Information.
+
+#
+
+# -----------------------------------------------------------------------------------------
+
+#
+
+# df:
+
+# Disk Space Reporter.
+
+# Allows Factory To Warn About Low Free Space Before Large Jobs.
+
+#
+
+# -----------------------------------------------------------------------------------------
+
+#
+
+# less:
+
+# Scrollable Pager.
+
+# Used For Notes, Reports, Logs, And Long Information Screens.
+
+#
+
+# -----------------------------------------------------------------------------------------
+
+#
+
+# NOTES
+
+#
+
+# - ffprobe and ffplay normally ship with ffmpeg.
+
+# - df is normally provided by coreutils.
+
+# - findmnt is normally provided by util-linux.
+
+# - mkvpropedit is part of mkvtoolnix.
+
+# - SmartCut is now a primary Factory dependency.
+
+# - SceneDetect remains useful for selected workflows and diagnostics.
+
+# - Most Factory workflows prefer MKV whenever practical.
+
+#
+
+# -----------------------------------------------------------------------------------------
