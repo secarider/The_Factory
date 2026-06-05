@@ -7,8 +7,8 @@ Factory Automates Complex, Repetitive Workflows Such As Intro Detection, Clean C
 ```text
 https://github.com/skeskinen/smartcut
 ```
-![SmartCut_Logo](logo_head.png)
 # SMCUT — SmartCut-Based Intro Removal System
+![SmartCut_Logo](logo_head.png)
 ```text
 https://github.com/skeskinen/smartcut
 ```
