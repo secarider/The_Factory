@@ -56,9 +56,11 @@
 # - df is part of coreutils on Debian/Ubuntu/Mint systems.
 # - findmnt is usually provided by util-linux on Debian/Ubuntu/Mint systems.
 # - mkvpropedit comes from mkvtoolnix.
-# - scenedetect is OPTIONAL but automatic intro detection is the star of the show.
+# - SceneDetect automatic intro detection is the star of the show.
 # - less is OPTIONAL; note screens can fall back to plain cat behavior.
 # - iconv is OPTIONAL; some detox/transliteration behavior may be reduced without it.
+# - SmartCut is now a primary Factory dependency.
+# - Most Factory workflows prefer MKV whenever practical.
 # -----------------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -1287,203 +1289,6 @@ format_bytes_human() {
 			printf "%.2f GB", b / 1073741824
 		}
 	}'
-}
-
-# ================================================================
-# MARKER: PERFORMANCE SCOREBOARD MENU
-# ================================================================
-performance_scoreboard_menu() {
-
-	echo -e "${CYAN}============================================================${NC}"
-	echo -e "${CYAN} = = > PERFORMANCE SCOREBOARD MENU${NC}"
-	echo -e "${CYAN}============================================================${NC}"
-	echo
-
-	while true; do
-
-		echo -e "${YELLOW}     1) View Full Scoreboard${NC}"
-		echo -e "${YELLOW}     2) View Top Scores${NC}"
-		echo -e "${YELLOW}     0.) Return to Main Menu${NC}"
-		echo
-
-		echo -ne "${CYAN}      = = > Select Option: "
-		read -r choice
-		echo -ne "${NC}"
-		choice="${choice,,}"
-
-		case "$choice" in
-			1)
-				show_performance_scoreboard
-				;;
-			2)
-				show_top_scores
-				;;
-			0.|q)
-				return
-				;;
-			*)
-				echo -e "${RED}Invalid selection.${NC}"
-				if ! ask_yes_no "Try again?"; then
-					return
-				fi
-				;;
-		esac
-
-		echo
-	done
-}
-
-# ================================================================
-# PERFORMANCE SCOREBOARD HELPERS
-# ================================================================
-# Anonymous, project-neutral timing logger.
-#
-# Purpose:
-#   - Record machine + job timing data to a CSV.
-#   - Compare throughput across different computers.
-#   - Avoid project-specific names so this block can be reused.
-#
-# CSV columns:
-#   timestamp,machine,cpu,ram_gb,tool,mode,profile,input_bytes,output_bytes,elapsed_sec,mb_per_sec,score_label
-# ================================================================
-
-PERF_SCOREBOARD_CSV="${PERF_SCOREBOARD_CSV:-performance_scoreboard.csv}"
-
-perf_machine_name() {
-	hostname 2>/dev/null || printf 'unknown'
-}
-
-perf_cpu_name() {
-	awk -F': ' '/model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null || printf 'unknown'
-}
-
-perf_ram_gb() {
-	awk '/MemTotal/ {printf "%.0f", $2/1024/1024}' /proc/meminfo 2>/dev/null || printf '0'
-}
-
-perf_csv_escape() {
-	local s="${1:-}"
-	s="${s//\"/\"\"}"
-	printf '"%s"' "$s"
-}
-
-perf_score_label() {
-	local mb_per_sec="${1:-0}"
-
-	awk -v r="$mb_per_sec" 'BEGIN {
-		if (r >= 20)      print "BLASTED";
-		else if (r >= 10) print "FAST";
-		else if (r >= 5)  print "RESPECTABLE";
-		else if (r >= 2)  print "WORKING";
-		else              print "DISMAL";
-	}'
-}
-
-perf_scoreboard_init() {
-	if [[ -f "$PERF_SCOREBOARD_CSV" ]]; then
-		return 0
-	fi
-
-	cat > "$PERF_SCOREBOARD_CSV" <<'EOF'
-time,host,ram,profile,in,out,sec,mbps,score,audio_in,audio_out,subs_in,subs_out,vcodec_in,vcodec_out,pix_in,pix_out,res_in,res_out,audio_policy
-"1994","486DX4","16M","L0","2.1G","1.1G","999999","0.00","MUSEUM","","","","","","","","","","",""
-EOF
-}
-
-perf_scoreboard_log() {
-	local tool mode profile input_file output_file elapsed_sec truth_tail=""
-
-	if [[ $# -eq 4 || $# -eq 5 ]]; then
-		tool="ARCHIVAL"
-		mode="ENCODE"
-		input_file="${1:-}"
-		output_file="${2:-}"
-		profile="L${3:-UNKNOWN}"
-		elapsed_sec="${4:-0}"
-		truth_tail="${5:-}"
-	else
-		tool="${1:-UNKNOWN}"
-		mode="${2:-UNKNOWN}"
-		profile="${3:-UNKNOWN}"
-		input_file="${4:-}"
-		output_file="${5:-}"
-		elapsed_sec="${6:-0}"
-		truth_tail="${7:-}"
-	fi
-
-	local timestamp machine ram_gb ram_human
-	local input_bytes output_bytes input_human output_human
-	local elapsed_human mb_per_sec score_label
-
-	timestamp="$(date '+%Y-%m-%d_%H%M%S')"
-	machine="$(perf_machine_name)"
-	ram_gb="$(perf_ram_gb)"
-	ram_human="${ram_gb}G"
-
-	input_bytes="$(stat -c '%s' -- "$input_file" 2>/dev/null || printf '0')"
-	output_bytes="$(stat -c '%s' -- "$output_file" 2>/dev/null || printf '0')"
-
-	input_human="$(awk -v b="$input_bytes" 'BEGIN { if (b >= 1073741824) printf "%.1fG", b/1073741824; else printf "%.0fM", b/1048576 }')"
-	output_human="$(awk -v b="$output_bytes" 'BEGIN { if (b >= 1073741824) printf "%.1fG", b/1073741824; else printf "%.0fM", b/1048576 }')"
-
-	if declare -F format_seconds_hms >/dev/null 2>&1; then
-		elapsed_human="$(format_seconds_hms "$elapsed_sec")"
-	else
-		elapsed_human="${elapsed_sec}s"
-	fi
-
-	mb_per_sec="$(awk -v b="$input_bytes" -v s="$elapsed_sec" 'BEGIN {
-		if (s <= 0) print "0.00";
-		else printf "%.2f", (b / 1048576) / s;
-	}')"
-
-	score_label="$(perf_score_label "$mb_per_sec")"
-
-	perf_scoreboard_init
-
-	printf '%s,%s,%s,%s,%s,%s,%s,%s,%s%s\n' \
-		"$(perf_csv_escape "$timestamp")" \
-		"$(perf_csv_escape "$machine")" \
-		"$(perf_csv_escape "$ram_human")" \
-		"$(perf_csv_escape "$profile")" \
-		"$(perf_csv_escape "$input_human")" \
-		"$(perf_csv_escape "$output_human")" \
-		"$(perf_csv_escape "$elapsed_sec")" \
-		"$(perf_csv_escape "$mb_per_sec")" \
-		"$(perf_csv_escape "$score_label")" \
-		"${truth_tail:+,$truth_tail}" >> "$PERF_SCOREBOARD_CSV"
-}
-
-show_performance_scoreboard() {
-	local file="$PERF_SCOREBOARD_CSV"
-
-	if [[ ! -f "$file" ]]; then
-		echo -e "${RED}No scoreboard data found.${NC}"
-		return
-	fi
-
-	echo -e "${CYAN}============================================================${NC}"
-	echo -e "${CYAN} = = > PERFORMANCE SCOREBOARD${NC}"
-	echo -e "${CYAN}============================================================${NC}"
-	echo
-
-	column -s, -t < "$file" | less -S
-}
-
-show_top_scores() {
-	local file="$PERF_SCOREBOARD_CSV"
-
-	if [[ ! -f "$file" ]]; then
-		echo -e "${RED}No scoreboard data found.${NC}"
-		return
-	fi
-
-	echo -e "${YELLOW}--- TOP THROUGHPUT (MB/s) ---${NC}"
-
-	awk -F, 'NR>1 {gsub(/"/,""); print $8, $2, $4, $9}' "$file" \
-		| sort -nr \
-		| head -5 \
-		| awk '{printf "%-10s %-18s %-12s %-8s %-12s\n", $1, $2, $3, $4, $5}'
 }
 
 # start new rekey helpers all rekey related
@@ -6696,7 +6501,6 @@ run_main_menu() {
     echo -e "${YEB}-------------IntroFind-v2.1- ${NC}${BWHITE}https://github.com/secarider/The_Factory${NC}"
     echo -e "${YEB}--------Video SmartCut-v1.7- ${NC}${BWHITE}https://github.com/skeskinen/smartcut${NC}"
     echo -e "${CYAN}--------------For A Cut Friendly Environment, Along Comes SmartCut----${NC}"
-    echo -e "${YEB}--------Video Smartcut-v1.7- ${NC}${BWHITE}https://github.com/skeskinen/smartcut${NC}"
     echo -e "${RED}============================================================================${NC}"
     echo
 
@@ -6735,7 +6539,7 @@ run_main_menu() {
     echo "     4) Create Intro / Outro Templates by SmartCut"
     echo "     5) Detect Intro / Outro by IntroFind-v2.1"
     echo "     6) Run SMARTGAP by Video SmartCut-v1.7"
-    echo "     7) Run BARFIX Playback Defaults And Title Bar Settings"
+    echo "     7) Run BARFIX Set Player Defaults,Title Bar Display"
     echo "     8) Cleanup / Finalize Folder"
     echo "     9) Utility / Advanced Tools"
     echo
@@ -7048,6 +6852,11 @@ run_barfix() {
     clear
     echo -e "${CYAN}=====================================================${NC}"
     echo -e "${CYAN}      BARFIX v3 — TITLE + PLAYBACK DEFAULT TOOLS     ${NC}"
+    echo -e "${CYAN}=====================================================${NC}"
+    echo -e "${CYAN}======= Title Bar: ${NC}${GREEN}Name In Your Player Bar ==========${NC}"
+    echo -e "${CYAN}======= Player Defaults: ${NC}${GREEN}Audio Language =============${NC}"
+    echo -e "${CYAN}==== Subtitles Defaults: ${NC}${GREEN}On or Off and Language =====${NC}"
+    echo -e "${CYAN}=====================================================${NC}"
     echo -e "${CYAN}=====================================================${NC}"
     echo
     echo -e "${YELLOW}"
@@ -9304,59 +9113,17 @@ run_build_episodes() {
 # End Of BUILD_EPISODES_CSV (INTERACTIVE TITLE BUILDER) ---
 # -------------------------------------------------------------------------------------------------------
 
-ARRAY_TRUTH_LOGGING=0
-
-array_truth_probe_compact() {
-	local f="$1"
-	local audio_count sub_count vcodec pix width height
-
-	audio_count="$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$f" 2>/dev/null | wc -l | tr -d ' ')"
-	sub_count="$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$f" 2>/dev/null | wc -l | tr -d ' ')"
-	vcodec="$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$f" 2>/dev/null || true)"
-	pix="$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of default=nw=1:nk=1 "$f" 2>/dev/null || true)"
-	width="$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=nw=1:nk=1 "$f" 2>/dev/null || true)"
-	height="$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=nw=1:nk=1 "$f" 2>/dev/null || true)"
-
-	printf '%s|%s|%s|%s|%sx%s\n' \
-		"${audio_count:-0}" "${sub_count:-0}" "${vcodec:-unknown}" "${pix:-unknown}" "${width:-?}" "${height:-?}"
-}
-
-array_truth_tail_for_scoreboard() {
-	local src="$1"
-	local out="$2"
-	local src_probe out_probe
-	local ai si vc_i pix_i res_i
-	local ao so vc_o pix_o res_o
-
-	src_probe="$(array_truth_probe_compact "$src")"
-	out_probe="$(array_truth_probe_compact "$out")"
-
-	IFS='|' read -r ai si vc_i pix_i res_i <<< "$src_probe"
-	IFS='|' read -r ao so vc_o pix_o res_o <<< "$out_probe"
-
-	printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s' \
-		"$(perf_csv_escape "$ai")" \
-		"$(perf_csv_escape "$ao")" \
-		"$(perf_csv_escape "$si")" \
-		"$(perf_csv_escape "$so")" \
-		"$(perf_csv_escape "$vc_i")" \
-		"$(perf_csv_escape "$vc_o")" \
-		"$(perf_csv_escape "$pix_i")" \
-		"$(perf_csv_escape "$pix_o")" \
-		"$(perf_csv_escape "$res_i")" \
-		"$(perf_csv_escape "$res_o")" \
-		"$(perf_csv_escape "${ARRAY_AUDIO_LABEL:-UNKNOWN}")"
-}
-
-array_offer_truth_logging() {
-	if ask_yes_no " = = > Enable Array Before/After Truth Logging To Scoreboard? (y/n or 1/2): "; then
-		ARRAY_TRUTH_LOGGING=1
-		echo -e "${GR} = = > Array Truth Logging Enabled.${NC}"
-	else
-		ARRAY_TRUTH_LOGGING=0
-		echo -e "${YE} = = > Array Truth Logging Skipped.${NC}"
-	fi
-}
+# ============================================================
+# #MARKER: ARRAY METADATA POLICY DEFAULTS
+# ============================================================
+# PURPOSE:
+# - Save source metadata before archival processing.
+# - Prevent archival outputs from being the only place metadata ever lived.
+# - Keep this lightweight; no full Archie ledger port here.
+# ============================================================
+ARCHIVE_META_DIR="${ARCHIVE_META_DIR:-ARCHIVE_META}"
+ARRAY_METADATA_LABEL="SIDECAR_STRIP"
+ARRAY_METADATA_ARGS=(-map_metadata -1 -map_chapters -1)
 
 archival_configure_audio_policy() {
 
@@ -9406,6 +9173,91 @@ archival_configure_audio_policy() {
 
 	echo
 	echo -e "${GR} = = > Audio Policy:${NC} ${YELLOW}$ARRAY_AUDIO_LABEL${NC}"
+	echo
+}
+
+archival_safe_stem() {
+	local name="$1"
+
+	name="${name##*/}"
+	name="${name%.*}"
+	name="${name// /_}"
+	name="${name//[^A-Za-z0-9._-]/_}"
+
+	printf '%s\n' "$name"
+}
+
+archival_ensure_meta_dir() {
+	mkdir -p -- "$ARCHIVE_META_DIR"
+}
+
+archival_capture_metadata_sidecar() {
+	local src="$1"
+	local stem meta_json meta_txt sha_file
+
+	archival_ensure_meta_dir
+	stem="$(archival_safe_stem "$src")"
+
+	meta_json="$ARCHIVE_META_DIR/${stem}.ffprobe.json"
+	meta_txt="$ARCHIVE_META_DIR/${stem}.stat.txt"
+	sha_file="$ARCHIVE_META_DIR/${stem}.sha256.txt"
+
+	if have_cmd ffprobe; then
+		ffprobe -v quiet -print_format json -show_format -show_streams "$src" > "$meta_json" 2>/dev/null || true
+	fi
+
+	{
+		echo "SOURCE_FILE=$src"
+		echo "CAPTURED_UTC=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+		stat --printf='SIZE=%s\nMTIME_EPOCH=%Y\nATIME_EPOCH=%X\nCTIME_EPOCH=%Z\nMODE=%a\nUID=%u\nGID=%g\n' -- "$src" 2>/dev/null || true
+	} > "$meta_txt"
+
+	if have_cmd sha256sum; then
+		sha256sum -- "$src" > "$sha_file" 2>/dev/null || true
+	fi
+
+	printf '%s\n' "$meta_json"
+}
+
+archival_configure_metadata_policy() {
+	local choice
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}              ARRAY METADATA POLICY             ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW}     1) Sidecar Strip   Save metadata, strip output metadata${NC}"
+	echo -e "${YELLOW}     2) Restore Common  Save metadata, keep common tags${NC}"
+	echo -e "${YELLOW}     3) Minimal Skip    No metadata sidecar / no metadata args${NC}"
+	echo
+
+	echo -ne "${YELLOW} = = > Select Metadata Policy [1-3]: ${NC}${GREEN}"
+	read -r choice
+	echo -e "${NC}"
+
+	case "${choice:-1}" in
+		1)
+			ARRAY_METADATA_LABEL="SIDECAR_STRIP"
+			ARRAY_METADATA_ARGS=(-map_metadata -1 -map_chapters -1)
+			;;
+		2)
+			ARRAY_METADATA_LABEL="RESTORE_COMMON"
+			ARRAY_METADATA_ARGS=(-map_metadata 0 -map_chapters -1)
+			;;
+		3)
+			ARRAY_METADATA_LABEL="MINIMAL_SKIP"
+			ARRAY_METADATA_ARGS=()
+			;;
+		*)
+			echo -e "${YE} = = > Invalid Choice. Using Sidecar Strip.${NC}"
+			ARRAY_METADATA_LABEL="SIDECAR_STRIP"
+			ARRAY_METADATA_ARGS=(-map_metadata -1 -map_chapters -1)
+			;;
+	esac
+
+	echo
+	echo -e "${GR} = = > Metadata Policy:${NC} ${YELLOW}$ARRAY_METADATA_LABEL${NC}"
 	echo
 }
 
@@ -9557,6 +9409,7 @@ archival_encode_one_file() {
 		1)
 			ffmpeg -y -hide_banner -nostats -loglevel error -i "$in" \
 				-map 0 \
+				"${ARRAY_METADATA_ARGS[@]}" \
 				-c:v libx264 -preset slow -crf 21 \
 				"${ARRAY_AUDIO_ARGS[@]}" \
 				"$out"
@@ -9564,6 +9417,7 @@ archival_encode_one_file() {
 		2)
 			ffmpeg -y -hide_banner -nostats -loglevel error -i "$in" \
 				-map 0 \
+				"${ARRAY_METADATA_ARGS[@]}" \
 				-c:v libx264 -preset medium -crf 25 \
 				"${ARRAY_AUDIO_ARGS[@]}" \
 				"$out"
@@ -9571,6 +9425,7 @@ archival_encode_one_file() {
 		3)
 			ffmpeg -y -hide_banner -nostats -loglevel error -i "$in" \
 				-map 0 \
+				"${ARRAY_METADATA_ARGS[@]}" \
 				-c:v libx264 -preset medium -crf 29 \
 				"${ARRAY_AUDIO_ARGS[@]}" \
 				"$out"
@@ -9578,6 +9433,7 @@ archival_encode_one_file() {
 		4)
 			ffmpeg -y -hide_banner -nostats -loglevel error -i "$in" \
 				-map 0 \
+				"${ARRAY_METADATA_ARGS[@]}" \
 				-c:v libx264 -preset slow -crf 32 \
 				"${ARRAY_AUDIO_ARGS[@]}" \
 				"$out"
@@ -9617,7 +9473,6 @@ archival_process_one_target() {
 
 	local f="$1"
 	local out pair src_from_pair out_from_pair
-	local perf_start_ts perf_end_ts perf_elapsed_sec
 	local orig_size new_size
 
 	out="$(archival_make_output_name "$prefix" "$((success_count + fail_count + no_gain_count + 1))" "$f")"
@@ -9628,13 +9483,7 @@ archival_process_one_target() {
 	echo -e "${CYAN} = = > Archiving:${NC} ${GREEN} $f${NC}"
 	echo -e "${CYAN} = = > Output Name:${NC} ${YELLOW} $out${NC}"
 
-	perf_start_ts="$(date +%s)"
-
 	if run_with_progress "Archival Array: $(basename "$f")" archival_encode_one_file "$level" "$f" "$out"; then
-		perf_end_ts="$(date +%s)"
-		perf_elapsed_sec=$((perf_end_ts - perf_start_ts))
-
-		perf_scoreboard_log "$f" "$out" "$level" "$perf_elapsed_sec"
 
 		orig_size=$(stat -c%s "$f")
 		new_size=$(stat -c%s "$out")
@@ -9669,7 +9518,6 @@ archival_process_one_target_result() {
 	local result_file="$2"
 
 	local out tmp_out
-	local perf_start_ts perf_end_ts perf_elapsed_sec
 	local orig_size new_size
 
 	out="$(archival_make_output_name "$prefix" "$((success_count + fail_count + no_gain_count + 1))" "$f")"
@@ -9679,21 +9527,14 @@ archival_process_one_target_result() {
 		rm -f -- "$out"
 	fi
 
-	perf_start_ts="$(date +%s)"
-
 	echo -e "${CYAN} = = > Archiving:${NC} ${GREEN}$f${NC}"
+
+	if [[ "${ARRAY_METADATA_LABEL:-SIDECAR_STRIP}" != "MINIMAL_SKIP" ]]; then
+		archival_capture_metadata_sidecar "$f" >/dev/null || true
+	fi
+
 	if archival_encode_one_file "$level" "$f" "$tmp_out"; then
 		mv -f -- "$tmp_out" "$out"
-
-		perf_end_ts="$(date +%s)"
-		perf_elapsed_sec=$((perf_end_ts - perf_start_ts))
-
-		local truth_tail=""
-		if [[ "${ARRAY_TRUTH_LOGGING:-0}" == "1" ]]; then
-			truth_tail="$(array_truth_tail_for_scoreboard "$f" "$out")"
-		fi
-
-		perf_scoreboard_log "$f" "$out" "$level" "$perf_elapsed_sec" "$truth_tail"
 
 		orig_size=$(stat -c%s "$f")
 		new_size=$(stat -c%s "$out")
@@ -9710,14 +9551,13 @@ archival_process_one_target_result() {
 	fi
 }
 
-run_archies_archival_array() {
+run_archival_array() {
 	local level prefix tar_name
 	local orig_size new_size
 	local -a targets=()
 	local -a outputs=()
 	local -a source_output_pairs=()
 	local f out pair src_from_pair out_from_pair
-	local perf_start_ts perf_end_ts perf_elapsed_sec
 	local success_count=0
 	local fail_count=0
 	local no_gain_count=0
@@ -9727,7 +9567,7 @@ run_archies_archival_array() {
 	show_space_overview
 
 	echo -e "${CYAN}================================================${NC}"
-	echo -e "${CYAN}               ARCHIE'S ARCHIVAL ARRAY          ${NC}"
+	echo -e "${CYAN}                 ARCHIVAL ARRAY                 ${NC}"
 	echo -e "${CYAN}================================================${NC}"
 	echo
 	echo -e "${YELLOW} = = > PURPOSE: Re-encode large video collections into smaller archival copies.${NC}"
@@ -9815,7 +9655,7 @@ run_archies_archival_array() {
 
 	prefix="$(archival_get_prefix_for_level "$level")"
 	archival_configure_audio_policy
-	array_offer_truth_logging
+	archival_configure_metadata_policy
 
 	echo
 	echo -e "${CYAN} = = > Selected Level: ${GREEN}$level ${NC}"
@@ -9836,13 +9676,6 @@ run_archies_archival_array() {
 	echo
 
 	ARCHIVE_TMPDIR="$(mktemp -d)"
-	# ----------------------------------------------------
-	# PERFORMANCE SCOREBOARD INIT
-	# ----------------------------------------------------
-	# Initializes CSV/log target and writes header if needed.
-	# Safe to call once per run before encode loop begins.
-	# ----------------------------------------------------
-	perf_scoreboard_init
 
 	result_file="$(mktemp)"
 	pids=()
@@ -12157,6 +11990,9 @@ prepare_set_rekey_preference() {
     echo -e "${CYAN}================================================${NC}"
     echo -e "${CYAN}      PREPARE SOURCES :: REKEY PREFERENCE       ${NC}"
     echo -e "${CYAN}================================================${NC}"
+    echo -e "${YEB}====THIS AREA IS NOT PART OF WORKFLOW ANYMORE====${NC}"
+	echo -e "${YEB}====SO UNLESS YOU REALLY MEANT TO BE HERE====${NC}"
+	echo -e "${YEB}====GO BACK AND USE SMARTCUT ENABLED OPTIONS====${NC}"
     echo
 
     echo -e "${CYAN} = = > Current Prefer_Rekey State:${NC} ${prefer_rekey:-0}"
@@ -15752,12 +15588,11 @@ while true; do
 		echo -e "${YELLOW}     5) Clip / Join Triage${NC}"
 		echo -e "${YELLOW}     6) Twisted Color Menu${NC}"
 		echo -e "${YELLOW}     7) Archival Array${NC}"
-		echo -e "${YELLOW}     8) performance_scoreboard_menu${NC}"
 		echo
 		echo -e "${YELLOW}     0.) Return${NC}"
 		echo
 
-		prompt_menu_choice " = = > Select Option [1-8 | 0.=return]: " util_choice
+		prompt_menu_choice " = = > Select Option [1-7 | 0.=return]: " util_choice
 
 		if is_exit_token "$util_choice"; then
 			return 0
@@ -15784,11 +15619,8 @@ while true; do
 				run_twisted_menu
 				;;
 			7)
-				run_archies_archival_array
+				run_archival_array
 				;;
-            8)
-		        performance_scoreboard_menu
-		        ;;
 			*)
 				echo -e "${REB} = = > Invalid.${NC}"
 				pause
