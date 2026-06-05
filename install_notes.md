@@ -70,7 +70,7 @@ https://smartmediacutter.com/
 
 The AppImage should be renamed to:
 
-SMC.App
+`SMC.App` and kept alongside Factory
 
 ---
 
