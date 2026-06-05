@@ -2,6 +2,15 @@
 # THE_FACTORY
 
 Factory Automates Complex, Repetitive Workflows Such As Intro Detection, Clean Cutting, Subtitle Handling, Metadata Repair, And Batch Normalization—While Preserving Original Files At Every Stage.
+
+The Factory Runs On SmartCut
+
+Inspired and Powered by `https://github.com/skeskinen/smartcut`
+
+Support Them Here `https://smartmediacutter.com/`
+
+Inspired by `https://github.com/mifi/lossless-cut`
+
 ---
 # SMCUT — SmartCut-Based Intro Removal System
 ```text
@@ -16,16 +25,6 @@ https://github.com/skeskinen/smartcut
 ```text
 https://smartmediacutter.com/
 ```
-
----
-
-The Factory Runs On SmartCut
-
-Inspired and Powered by `https://github.com/skeskinen/smartcut`
-
-Support Them Here `https://smartmediacutter.com/`
-
-Inspired by `https://github.com/mifi/lossless-cut`
 
 ---
 
