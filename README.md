@@ -1,5 +1,9 @@
 ![The_Factory Logo](TheFactory.png)
 # THE_FACTORY
+---
+Factory Automates Complex, Repetitive Workflows Such As Intro Detection, Clean Cutting, Subtitle Handling, Metadata Repair, And Batch Normalization—While Preserving Original Files At Every Stage.
+---
+
 ```text
 https://github.com/skeskinen/smartcut
 ```
