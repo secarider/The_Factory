@@ -4,7 +4,7 @@ Copy And Run One Of These Lines In Your Terminal To Install The Tools Needed To 
 -----------------------------------------------------------------------------------------
   OLD Setup Command Or Minimal If You Are On Any Of The New *NixZ This Will Likely Be Enough
 sudo apt update && sudo apt install ffmpeg bc pipx mkvtoolnix -y && pipx install "scenedetect[opencv]"
------------------------------------------------------------------------------------------/\IntroFind Magic Right Here Do It
+-----------------------------------------------------------------------------------------
   NEW Setup Command no word wrap with this baby,it installs the bathroom sink and all
 sudo apt update && sudo apt install ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less -y && pipx install "scenedetect[opencv]"
 -------------------------DEPENDENCY DESCRIPTIONS INSTALL THESE---------------------------
