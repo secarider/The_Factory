@@ -439,7 +439,7 @@ twisted() {
 }
 
 # ----- INITIALIZE DEFAULT COLORS AT STARTUP -----------------------------------
-init_base_colors   
+init_base_colors
 
 # ===== TWISTED MENU ===========================================================
 # PURPOSE:
@@ -508,12 +508,30 @@ run_twisted_menu() {
 				theme_name="${theme_name//[[:space:]]/}"
 
 				case "$theme_name" in
-					1) twisted theme classic ;;
-					2) twisted theme mellow ;;
-					3) twisted theme danger ;;
-					4) twisted theme ice ;;
-					5) twisted theme twisted ;;
-					6) twisted theme mono ;;
+					1)
+						twisted theme classic
+						twisted_save_theme "classic"
+						;;
+					2)
+						twisted theme mellow
+						twisted_save_theme "mellow"
+						;;
+					3)
+						twisted theme danger
+						twisted_save_theme "danger"
+						;;
+					4)
+						twisted theme ice
+						twisted_save_theme "ice"
+						;;
+					5)
+						twisted theme twisted
+						twisted_save_theme "twisted"
+						;;
+					6)
+						twisted theme mono
+						twisted_save_theme "mono"
+						;;
 					0.|q|Q)
 						echo -e "${YE} = = > Theme selection canceled.${NC}"
 						pause
@@ -560,6 +578,40 @@ run_twisted_menu() {
 
 # END OF COLOR SYSTEM / TWISTED THEME ENGINE ===================================
 
+# ========================================================
+# #MARKER: TWISTED STICKY SETTINGS
+# ========================================================
+TWISTED_CONFIG_FILE=".factory_twisted.conf"
+
+twisted_save_theme() {
+	local theme_name="$1"
+
+	cat > "$TWISTED_CONFIG_FILE" <<EOF
+TWISTED_THEME="$theme_name"
+EOF
+
+	echo -e "${GR} = = > Twisted Theme Saved:${NC} ${YELLOW}$theme_name${NC}"
+}
+
+twisted_load_sticky_theme() {
+	local saved_theme=""
+
+	[[ -f "$TWISTED_CONFIG_FILE" ]] || return 0
+
+	# shellcheck disable=SC1090
+	source "$TWISTED_CONFIG_FILE" 2>/dev/null || return 0
+
+	saved_theme="${TWISTED_THEME:-}"
+
+	[[ -n "$saved_theme" ]] || return 0
+
+	if twisted theme "$saved_theme" 2>/dev/null; then
+		echo -e "${CYAN} = = > Twisted Theme Loaded:${NC} ${YELLOW}$saved_theme${NC}"
+	fi
+}
+# ----- LOAD SAVED TWISTED THEME AFTER STICKY HELPERS EXIST --------------------
+twisted_load_sticky_theme
+
 # ------------------ DEFAULTS ------------------
 # ========================================================
 # ARCHIVE TEMP WORKDIR (SAFE WRITE AREA)
@@ -567,7 +619,7 @@ run_twisted_menu() {
 ARCHIVE_TMPDIR=""
 # ------------------ DEFAULTS ------------------
 DEFAULT_SCAN_START=30
-DEFAULT_HASH_DIFF=12
+DEFAULT_HASH_DIFF=16
 DEFAULT_MAX_SCAN=601
 STEP_SIZE="${STEP_SIZE:-1}"
 ANCHOR_SECONDS="${ANCHOR_SECONDS:-3,5,7}"
@@ -622,7 +674,7 @@ REKEY_GROWTH_WARN_PERCENT=25
 REKEY_SHRINK_WARN_PERCENT=15
 TARGET_MAX_GROWTH=10
 TARGET_MAX_SHRINK=5
-REKEY_CRF=25
+REKEY_CRF=24
 ARRAY_MAX_JOBS=2
 
 # - Helpers
@@ -882,6 +934,46 @@ fmax0() { echo "scale=3; if(($1)<0) 0 else ($1)" | bc; }
 # =========================================================================================
 # #MARKER: TIME / PARSE HELPERS THIS IS A GROUP TITLE NOT AN INDIVIDUAL ONE
 # =========================================================================================
+
+smc_explain_cut_plan() {
+	local cut_args="$1"
+	local token n=0
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}              SMARTCUT CUT PLAN REVIEW          ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${CYAN} = = > Raw Cut Plan:${NC} ${YELLOW}$cut_args${NC}"
+	echo
+
+	IFS=',' read -r -a tokens <<< "$cut_args"
+
+	for ((i=0; i<${#tokens[@]}; i+=2)); do
+		local start="${tokens[$i]:-}"
+		local end="${tokens[$((i+1))]:-}"
+
+		((n+=1)) || :
+
+		echo -e "${YELLOW} [$n] REMOVE SEGMENT${NC}"
+		echo -e "${CYAN}     Start:${NC} ${GREEN}$start${NC}"
+		echo -e "${CYAN}     End:  ${NC} ${GREEN}$end${NC}"
+
+		if [[ "$start" != "end" && "$start" != -* ]]; then
+			echo -e "${CYAN}     Start HMS:${NC} ${YELLOW}$(format_seconds_hms "$start")${NC}"
+		fi
+
+		if [[ "$end" != "end" && "$end" != -* ]]; then
+			echo -e "${CYAN}     End HMS:  ${NC} ${YELLOW}$(format_seconds_hms "$end")${NC}"
+		fi
+
+		echo
+	done
+
+	echo -e "${YE} = = > Review Decimal Points Carefully.${NC}"
+	echo -e "${YE} = = > Example: 24.5 = 24.5 seconds, but 2.20 = 2 minutes 20 seconds.${NC}"
+	echo
+}
 
 # ================================================================
 # #INDIVIDUAL-NORMALIZED TIME PROMPT HELPER
@@ -3425,12 +3517,12 @@ resolve_working_source_for_detection() {
     # - If We Already Trust A Working File For This Raw File, Use It.
     #
     if cached="$(get_cached_working_source_if_trusted "$raw" 2>/dev/null)"; then
-        echo -e "${GREEN} = = > Reusing Cached Trusted Working Source:${NC} $(basename "$cached")" >&2
+        echo -e "${GREEN} = = > Working Source Used:${NC} $(basename "$cached")" >&2
 
         # Defensive alias skip:
         # If The Cached Working File Itself Was Already Mapped, Caller Can Skip.
         if already_processed "$cached"; then
-            echo -e "${YELLOW} = = > Cached Working Source Already Mapped. Skipping.${NC}" >&2
+            echo -e "${YELLOW} = = > Working Source Already Mapped. Skipping.${NC}" >&2
             return 10
         fi
 
@@ -3871,14 +3963,14 @@ avi_rescue_run_profile() {
 	fi
 
 	echo
-	echo -e "${CYAN} = = > AVI Rescue Profile:${NC} ${YELLOW}$(avi_rescue_profile_label "$profile")${NC}"
+	echo -e "${CYAN} = = > Rescue Profile:${NC} ${YELLOW}$(avi_rescue_profile_label "$profile")${NC}"
 	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$src${NC}"
 	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
 	echo
 
 	case "$profile" in
 		REMUX)
-			run_with_progress "AVI Rescue REMUX: $(basename "$src")" \
+			run_with_progress "Rescue REMUX: $(basename "$src")" \
 				ffmpeg -y -hide_banner -nostats -loglevel error \
 					-fflags +genpts+discardcorrupt \
 					-err_detect ignore_err \
@@ -3890,7 +3982,7 @@ avi_rescue_run_profile() {
 			;;
 
 		DECODE)
-			run_with_progress "AVI Rescue DECODE: $(basename "$src")" \
+			run_with_progress "Rescue DECODE: $(basename "$src")" \
 				ffmpeg -y -hide_banner -nostats -loglevel error \
 					-fflags +genpts+discardcorrupt \
 					-err_detect ignore_err \
@@ -3905,7 +3997,7 @@ avi_rescue_run_profile() {
 			;;
 
 		BWDIF)
-			run_with_progress "AVI Rescue BWDIF: $(basename "$src")" \
+			run_with_progress "Rescue BWDIF: $(basename "$src")" \
 				ffmpeg -y -hide_banner -nostats -loglevel error \
 					-fflags +genpts+discardcorrupt \
 					-err_detect ignore_err \
@@ -3920,7 +4012,7 @@ avi_rescue_run_profile() {
 			;;
 
 		DENOISE)
-			run_with_progress "AVI Rescue DENOISE: $(basename "$src")" \
+			run_with_progress "Rescue DENOISE: $(basename "$src")" \
 				ffmpeg -y -hide_banner -nostats -loglevel error \
 					-fflags +genpts+discardcorrupt \
 					-err_detect ignore_err \
@@ -3935,7 +4027,7 @@ avi_rescue_run_profile() {
 			;;
 
 		LASTCHANCE)
-			run_with_progress "AVI Rescue LASTCHANCE: $(basename "$src")" \
+			run_with_progress "Rescue LASTCHANCE: $(basename "$src")" \
 				ffmpeg -y -hide_banner -nostats -loglevel error \
 					-fflags +genpts+discardcorrupt \
 					-err_detect ignore_err \
@@ -3951,23 +4043,23 @@ avi_rescue_run_profile() {
 			;;
 
 		*)
-			echo -e "${REB} = = > Unknown AVI Rescue Profile:${NC} ${YELLOW}$profile${NC}"
+			echo -e "${REB} = = > Unknown Rescue Profile:${NC} ${YELLOW}$profile${NC}"
 			return 1
 			;;
 	esac
 
 	if [[ -s "$out" ]]; then
-		echo -e "${GR} = = > AVI Rescue Output Created:${NC} ${GREEN}$out${NC}"
+		echo -e "${GR} = = > Rescue Output Created:${NC} ${GREEN}$out${NC}"
 
 		if [[ "${PILOT_MODE:-0}" == "1" ]]; then
-			pilot_register_output "$out" "AVI_RESCUE_${profile}"
+			pilot_register_output "$out" "RESCUE_${profile}"
 		fi
 
 		return 0
 	fi
 
 	rm -f -- "$out"
-	echo -e "${REB} = = > AVI Rescue Failed:${NC} ${YELLOW}$src${NC}"
+	echo -e "${REB} = = > Rescue Failed:${NC} ${YELLOW}$src${NC}"
 	return 1
 }
 
@@ -3980,7 +4072,7 @@ avi_rescue_pick_one_source() {
 
 	if ((${#sources[@]} == 0)); then
 		echo
-		echo -e "${YE} = = > No Eligible Dirty Video / AVI Rescue Sources Found.${NC}"
+		echo -e "${YE} = = > No Eligible Dirty Video / Rescue Sources Found.${NC}"
 		echo
 		printf -v "$__var_name" '%s' ""
 		return 1
@@ -3988,7 +4080,7 @@ avi_rescue_pick_one_source() {
 
 	echo
 	echo -e "${CYAN}================================================${NC}"
-	echo -e "${CYAN}             AVI / DIRTY VIDEO PICKER           ${NC}"
+	echo -e "${CYAN}          LEGACY / DIRTY VIDEO PICKER           ${NC}"
 	echo -e "${CYAN}================================================${NC}"
 	echo
 
@@ -4021,14 +4113,15 @@ avi_rescue_pick_profile() {
 
 	echo
 	echo -e "${CYAN}================================================${NC}"
-	echo -e "${CYAN}              AVI RESCUE PROFILE MENU           ${NC}"
+	echo -e "${CYAN}           LEGACY RESCUE PROFILE MENU           ${NC}"
 	echo -e "${CYAN}================================================${NC}"
 	echo
-	echo -e "${YELLOW}     1) Fast Remux / Timestamp Rebuild${NC}"
-	echo -e "${YELLOW}     2) Dirty Decode Rebuild${NC}"
-	echo -e "${YELLOW}     3) Deinterlace / Field Rescue${NC}"
-	echo -e "${YELLOW}     4) Mild Noise Cleanup${NC}"
-	echo -e "${YELLOW}     5) Last-Chance Combo Rescue${NC}"
+	echo -e "${YELLOW}     1) REMUX      - Fast Container / Timestamp Rebuild${NC}"
+	echo -e "${YELLOW}     2) DECODE     - Full Decode Rebuild${NC}"
+	echo -e "${YELLOW}     3) BWDIF      - Deinterlace / Field Rescue${NC}"
+	echo -e "${YELLOW}     4) DENOISE    - Mild Noise Cleanup Rebuild${NC}"
+	echo -e "${YELLOW}     5) LASTCHANCE - Heavy Combo Recovery${NC}"
+	echo -e "${YE} = = 2 Thru 5 ==== Are ==== SmartCut Friendly Rescue Options${NC}"
 	echo
 	echo -e "${YELLOW}     0.) Return${NC}"
 	echo
@@ -4078,8 +4171,8 @@ run_avi_rescue_one_file_full() {
 	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
 	echo
 
-	if ! ask_yes_no " = = > Run This AVI Rescue Profile Now? (y/n or 1/2): "; then
-		echo -e "${YE} = = > AVI Rescue Cancelled.${NC}"
+	if ! ask_yes_no " = = > Run This Rescue Profile Now? (y/n or 1/2): "; then
+		echo -e "${YE} = = > Rescue Cancelled.${NC}"
 		pause
 		return 0
 	fi
@@ -4119,15 +4212,15 @@ run_avi_rescue_pilot_samples() {
 	echo -e "${YE} = = > This Creates PILOT_RESCUE_* Sample Files Only.${NC}"
 	echo
 
-	if ! ask_yes_no " = = > Create AVI Rescue Pilot Samples? (y/n or 1/2): "; then
-		echo -e "${YE} = = > AVI Rescue Pilot Cancelled.${NC}"
+	if ! ask_yes_no " = = > Create Rescue Pilot Samples? (y/n or 1/2): "; then
+		echo -e "${YE} = = > Rescue Pilot Cancelled.${NC}"
 		pause
 		return 0
 	fi
 
 	PILOT_MODE=1
-	pilot_begin_session "AVI_RESCUE"
-	pilot_register_restore_point "$src" "AVI_RESCUE_PILOT_SOURCE"
+	pilot_begin_session "RESCUE"
+	pilot_register_restore_point "$src" "RESCUE_PILOT_SOURCE"
 
 	for profile in "${profiles[@]}"; do
 		out="$(avi_rescue_output_name "$src" "$profile" 1)"
@@ -4135,7 +4228,7 @@ run_avi_rescue_pilot_samples() {
 	done
 
 	echo
-	echo -e "${GR} = = > AVI Rescue Pilot Samples Complete.${NC}"
+	echo -e "${GR} = = > Rescue Pilot Samples Complete.${NC}"
 	echo -e "${CYAN} = = > Review PILOT_RESCUE_* files in your player.${NC}"
 	echo
 
@@ -4158,14 +4251,14 @@ run_avi_rescue_batch_same_profile() {
 
 	if ((${#targets[@]} == 0)); then
 		echo
-		echo -e "${YE} = = > No Eligible AVI / Dirty Video Rescue Targets Found.${NC}"
+		echo -e "${YE} = = > No Eligible LEGACY / Dirty Video Rescue Targets Found.${NC}"
 		echo
 		pause
 		return 0
 	fi
 
 	if ! limit_targets_interactive targets; then
-		echo -e "${YE} = = > AVI Rescue Batch Cancelled.${NC}"
+		echo -e "${YE} = = > Rescue Batch Cancelled.${NC}"
 		pause
 		return 0
 	fi
@@ -4176,18 +4269,18 @@ run_avi_rescue_batch_same_profile() {
 	fi
 
 	echo
-	echo -e "${YE} = = > Batch AVI Rescue Creates RESCUE_${profile}_*.mkv Outputs.${NC}"
+	echo -e "${YE} = = > Batch Rescue Creates RESCUE_${profile}_*.mkv Outputs.${NC}"
 	echo -e "${YE} = = > Originals Are Left In Place.${NC}"
 	echo -e "${CYAN} = = > Targets:${NC} ${YELLOW}${#targets[@]}${NC}"
 	echo
 
-	if ! ask_yes_no " = = > Run Batch AVI Rescue Now? (y/n or 1/2): "; then
-		echo -e "${YE} = = > AVI Rescue Batch Cancelled.${NC}"
+	if ! ask_yes_no " = = > Run Batch Rescue Now? (y/n or 1/2): "; then
+		echo -e "${YE} = = > Rescue Batch Cancelled.${NC}"
 		pause
 		return 0
 	fi
 
-	rescue_run_dir="OEM/AVI_RESCUE/run_$(date '+%Y%m%d_%H%M%S')"
+	rescue_run_dir="OEM/RESCUE/run_$(date '+%Y%m%d_%H%M%S')"
 	mkdir -p "$rescue_run_dir"
 
 	total="${#targets[@]}"
@@ -4198,7 +4291,7 @@ run_avi_rescue_batch_same_profile() {
 		out="$(avi_rescue_output_name "$file" "$profile" 0)"
 
 		echo
-		echo -e "${CYAN}[${current} / ${total}] AVI RESCUE TARGET:${NC} ${GREEN}$file${NC}"
+		echo -e "${CYAN}[${current} / ${total}] RESCUE TARGET:${NC} ${GREEN}$file${NC}"
 
 		if avi_rescue_run_profile "$file" "$profile" "$out"; then
 			printf '%s,%s,%s,%s,%s\n' \
@@ -4218,11 +4311,30 @@ run_avi_rescue_batch_same_profile() {
 	done
 
 	echo
-	echo -e "${GR} = = > Batch AVI Rescue Pass Complete.${NC}"
+	echo -e "${GR} = = > Batch Rescue Pass Complete.${NC}"
 	echo -e "${CYAN} = = > Run Ledger:${NC} ${YELLOW}$rescue_run_dir/avi_rescue_history.csv${NC}"
 	echo
 	pause
 }
+
+
+# ================================================================
+# #MARKER: VIDEO RESCUE PROFILES
+# ================================================================
+# PURPOSE:
+# - Repair Difficult Video Sources.
+# - Rebuild Containers, Timestamps, Or Streams.
+# - Recover Files That Refuse Normal Processing.
+# - Create SmartCut-Friendly Sources When Needed.
+#
+# COMMON RECOVERY TARGETS:
+# - Broken AVI Containers
+# - Problematic HEVC Sources
+# - Timestamp Damage
+# - Field Order Issues
+# - Decoder Compatibility Problems
+# ================================================================
+
 
 run_avi_rescue_menu() {
 	local choice
@@ -4230,11 +4342,16 @@ run_avi_rescue_menu() {
 	while true; do
 		clear
 		echo -e "${CYAN}================================================${NC}"
-		echo -e "${CYAN}          AVI / DIRTY VIDEO RESCUE MENU         ${NC}"
+		echo -e "${CYAN}       LEGACY / DIRTY VIDEO RESCUE MENU         ${NC}"
 		echo -e "${CYAN}================================================${NC}"
 		echo
-		echo -e "${YE} = = > No miracle switch. This is a controlled attempt ladder.${NC}"
-		echo -e "${CYAN} = = > Try pilot samples first when damage is visual/artifact-based.${NC}"
+		echo -e "${YE} = = > Repair Difficult Video Sources Or Decoder Compatibility Problems${NC}"
+		echo -e "${YE} = = > Rebuild Containers, Timestamps, Or Streams.${NC}"
+		echo -e "${YE} = = > Recover Files That Refuse Normal Processing.${NC}"
+		echo -e "${YE} = = > Create SmartCut-Friendly Sources When Needed.${NC}"
+		echo -e "${YE} = = > SMC-Opz needs 200ish second clip for a 3 cut test.${NC}"
+		echo -e "${YE} = = > No Miracle Switch. This is a Controlled Attempt Ladder.${NC}"
+		echo -e "${YE} = = > Try x-Second Pilot Samples First. For Direct Comparison  ${NC}"
 		echo
 		echo -e "${YELLOW}     1) One File Rescue — Choose One Profile${NC}"
 		echo -e "${YELLOW}     2) Pilot Samples — One File / All Profiles${NC}"
@@ -4244,7 +4361,7 @@ run_avi_rescue_menu() {
 		echo -e "${YELLOW}     0.) Return${NC}"
 		echo
 
-		prompt_menu_choice " = = > Select AVI Rescue Option [1-4 | 0.=return]: " choice
+		prompt_menu_choice " = = > Select Rescue Option [1-4 | 0.=return]: " choice
 
 		if is_exit_token "$choice"; then
 			return 0
@@ -4256,7 +4373,7 @@ run_avi_rescue_menu() {
 			3) run_avi_rescue_batch_same_profile ;;
 			4) run_video_truth_probe_menu ;;
 			*)
-				echo -e "${REB} = = > Invalid AVI Rescue Selection.${NC}"
+				echo -e "${REB} = = > Invalid Rescue Selection.${NC}"
 				pause
 				;;
 		esac
@@ -5749,10 +5866,9 @@ have_cmd() {
 ensure_intro_template_dir() {
 	if [[ ! -d "intro_template" ]]; then
 		mkdir -p intro_template
-		echo -e "${YELLOW} = = > Created intro_template/ working directory.${NC}"
+		#echo -e "${YELLOW} = = > Created intro_template/ working directory.${NC}"
 	fi
 }
-
 
 # ============================================================
 # #MARKER: TITLECASE WORDS HELPER
@@ -5831,7 +5947,6 @@ make_title_from_filename() {
   echo "$sliced" | tr '_' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | titlecase_words
 }
 # End Of make_title_from_filename
-
 
 show_working_folder_and_disk_free() {
     local cwd cwd_display drive_display
@@ -5921,7 +6036,6 @@ trim_working_path_display() {
 	fi
 }
 
-
 # =========================
 # #MARKER: SECONDS → HH:MM:SS
 # =========================
@@ -5957,71 +6071,114 @@ get_file_duration_seconds() {
 # #MARKER: GLOBAL TIME INPUT NORMALIZER
 # =========================
 # PURPOSE:
-# - To Make The Ten Key An Easy Place To Enter Times
-# - Accept user time input in any of these forms:
-#     120         -> 120 seconds
-#     2:20        -> 140 seconds
-#     2.20        -> 140 seconds
-#     1:02:30     -> 3750 seconds
-#     1.02.30     -> 3750 seconds
+# - Make Time Entry Fast And Ten-Key Friendly
+# - Accept Raw Seconds, Keypad Time, Or Decimal Seconds
+# - Normalize Everything Into Decimal Seconds For Internal Use
+#
+# ACCEPTED INPUT EXAMPLES:
+#
+# RAW SECONDS
+#     120          -> 120.000
+#     120.5        -> 120.500
+#     .5           -> 0.500
+#
+# KEYPAD FRIENDLY TIME
+#     2:20         -> 140.000
+#     2.20         -> 140.000
+#
+#     1:02:30      -> 3750.000
+#     1.02.30      -> 3750.000
+#
+# DECIMAL TIME
+#     1:14.5       -> 74.500
+#     00:01:14.5   -> 74.500
+#     00:01:14.750 -> 74.750
 #
 # DESIGN:
-# - "." is treated the same as ":" for keypad-friendly entry
-# - No separator = raw seconds
-# - One separator = mm:ss
-# - Two separators = hh:mm:ss
+# - "." And ":" Are Equivalent For Traditional Keypad Entry
+# - No Separator = Raw Seconds
+# - One Separator = mm:ss
+# - Two Separators = hh:mm:ss
+# - Fractional Seconds Are Preserved
+#
+# COMPATIBILITY RULE:
+# - Legacy Factory Entries Continue To Work:
+#       2.20      = 2 minutes 20 seconds
+#       1.02.30   = 1 hour 2 minutes 30 seconds
+#
+# - Decimal Seconds Are Intended To Use:
+#       24.5
+#       .5
+#       24.750
+#
+# WHY:
+# - SmartCut Already Accepts Fractional Cut Points
+# - IntroFind And OutroFind Already Produce Fractional Times
+# - Allows Fine Trim Adjustments For Audio Sync, Intro Boundaries,
+#   Outro Boundaries, And SmartCut Drift Compensation
+#
+# OUTPUT:
+# - Returns Decimal Seconds
+# - Examples:
+#       24      -> 24.000
+#       24.5    -> 24.500
+#       2.20    -> 140.000
+#       1:14.5  -> 74.500
 #
 # IMPORTANT:
-# - This helper returns INTEGER seconds
-# - It must live in global scope so Template Builder, SMARTGAP, and other
-#   workflow stages can all use it.
-#
+# - This Helper Lives In Global Scope.
+# - Used By SmartCut, IntroFind, OutroFind, Template Builder,
+#   Audio Rescue, And Future Timing Tools.
+# =========================
 to_seconds() {
-  local input
-  local h=0 m=0 s=0
-  local p1 p2 p3
+	local input="$1"
+	local h=0 m=0 s=0
+	local p1 p2 p3
+	local old_ifs
 
-  input="${1:-}"
+	input="$(printf '%s\n' "$input" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
 
-  # Trim whitespace
-  input="$(echo "$input" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+	[[ -z "$input" ]] && { printf '0\n'; return 0; }
 
-  # Empty input -> 0
-  [[ -z "$input" ]] && {
-    echo "0"
-    return 0
-  }
+	if [[ "$input" =~ ^[0-9]+$ ]]; then
+		printf '%.3f\n' "$input"
+		return 0
+	fi
 
-  # Keypad-friendly normalization: treat "." same as ":"
-  input="${input//./:}"
+	if [[ "$input" =~ ^[0-9]*\.[0-9]+$ ]]; then
+		local frac="${input#*.}"
+		if (( ${#frac} == 2 )); then
+			input="${input//./:}"
+		else
+			awk -v v="$input" 'BEGIN { printf "%.3f\n", v + 0 }'
+			return 0
+		fi
+	fi
 
-  # Raw integer seconds
-  if [[ "$input" =~ ^[0-9]+$ ]]; then
-    echo "$input"
-    return 0
-  fi
+	if [[ "$input" != *:* ]]; then
+		input="${input//./:}"
+	fi
 
-  # Split on ":" after normalization
-  IFS=':' read -r p1 p2 p3 <<< "$input"
+	old_ifs="$IFS"
+	IFS=':'
+	read -r p1 p2 p3 <<< "$input"
+	IFS="$old_ifs"
 
-  if [[ -n "${p1:-}" && -n "${p2:-}" && -z "${p3:-}" ]]; then
-    # mm:ss
-    m="$p1"
-    s="$p2"
-  elif [[ -n "${p1:-}" && -n "${p2:-}" && -n "${p3:-}" ]]; then
-    # hh:mm:ss
-    h="$p1"
-    m="$p2"
-    s="$p3"
-  else
-    # Malformed input -> 0
-    echo "0"
-    return 0
-  fi
+	if [[ -n "${p1:-}" && -n "${p2:-}" && -z "${p3:-}" ]]; then
+		m="$p1"
+		s="$p2"
+	elif [[ -n "${p1:-}" && -n "${p2:-}" && -n "${p3:-}" ]]; then
+		h="$p1"
+		m="$p2"
+		s="$p3"
+	else
+		printf '0\n'
+		return 0
+	fi
 
-  # Force base-10 so 08 / 09 do not trigger octal interpretation
-  # Ensure variables have default values to prevent arithmetic expansion errors
-  echo $((10#${h:-0} * 3600 + 10#${m:-0} * 60 + 10#${s:-0}))
+	awk -v h="${h:-0}" -v m="${m:-0}" -v s="${s:-0}" 'BEGIN {
+		printf "%.3f\n", (h * 3600) + (m * 60) + s
+	}'
 }
 
 # #MARKER: END GLOBAL TEXT / COMMAND HELPERS
@@ -6029,7 +6186,32 @@ to_seconds() {
 
 
     # ------------------ DEP CHECK ------------------
+
+resolve_smc_bin() {
+	# Prefer local Smart Media Cutter AppImage beside factory.sh.
+	if [[ -x "./smc.app" ]]; then
+		SMC_BIN="./smc.app"
+		HAS_SMC=1
+		echo -e "${GR} = = > SmartCut Engine:${NC} ${YELLOW}./smc.app${NC}"
+		return 0
+	fi
+
+	# Fallback to old pipx / PATH smartcut.
+	if have_cmd smartcut; then
+		SMC_BIN="$(command -v smartcut)"
+		HAS_SMC=1
+		echo -e "${YE} = = > SmartCut Engine Fallback:${NC} ${YELLOW}$SMC_BIN${NC}"
+		return 0
+	fi
+
+	SMC_BIN=""
+	HAS_SMC=0
+	print_missing_optional_dep "smc.app / smartcut" "SmartCut / Smart Media Cutter missions will be unavailable."
+	return 1
+}
+
     # ------------------ DEP CHECK ------------------
+
     # ============================================================
     # #MARKER: GLOBAL DEPENDENCY CHECK / TOOL AVAILABILITY WALL
     # ============================================================
@@ -6282,6 +6464,7 @@ detect_optional_tools() {
 	else
 		print_missing_optional_dep "iconv" "Some title detox transliteration behavior may be reduced."
 	fi
+		resolve_smc_bin
 }
 
     # ============================================================
@@ -6590,11 +6773,12 @@ run_main_menu() {
           echo -e "${YELLOW}     1) Set Intro/Outro Detection VarZ${NC}"
           echo -e "${CYAN}     2) Run Intro Detection Menu${NC}"
           echo -e "${CYAN}     3) Run OutroFind On Selected Files${NC}"
+		  echo -e "${CYAN}     4) Outro Hash Compare Test${NC}"
           echo
           echo -e "${YELLOW}     0.) Return${NC}"
           echo
 
-          prompt_menu_choice " = = > Select Option [1-3 | 0.=return]: " detect_choice
+          prompt_menu_choice " = = > Select Option [1-4 | 0.=return]: " detect_choice
 
           if is_exit_token "$detect_choice"; then
             break
@@ -6621,6 +6805,10 @@ run_main_menu() {
             3)
               run_outrofind_selected_files
               ;;
+
+			4)
+			  run_outro_hash_compare_test
+			  ;;
 
             *)
               echo -e "${REB} = = > Invalid.${NC}"
@@ -6846,6 +7034,101 @@ run_barfix_lite_on_file() {
 	fi
 }
 
+# ================================================================
+# #MARKER: BARFIX DEFAULTS DISPLAY / SESSION KNOBS
+# ================================================================
+# PURPOSE:
+# - Give Full BARFIX The Same User-Facing Defaults Used By BARFIX Lite.
+# - Keep Audio, Subtitle, And Title Preferences In One Shared Place.
+# - Let SmartCut, BARFIX Lite, And Full BARFIX All Use The Same Brain.
+#
+# DESIGN:
+# - BARFIX Lite stays silent and one-file-at-a-time.
+# - Full BARFIX stays preview-first and batch-facing.
+# - These helpers only manage shared defaults.
+#
+# SHARED VARS:
+# - SMC_BARFIX_AUDIO_LANG
+# - SMC_BARFIX_SUBS_OFF
+# - SMC_BARFIX_TITLE_MODE
+# - SMC_BARFIX_TITLE_SEGMENT
+# ================================================================
+show_barfix_current_defaults() {
+	echo
+	echo -e "${CYAN}=====================================================${NC}"
+	echo -e "${CYAN}             CURRENT BARFIX DEFAULTS                 ${NC}"
+	echo -e "${CYAN}=====================================================${NC}"
+	echo -e "${CYAN} = = > Audio Language:${NC} ${YELLOW}${SMC_BARFIX_AUDIO_LANG:-eng}${NC}"
+	echo -e "${CYAN} = = > Subtitles Off:${NC}  ${YELLOW}${SMC_BARFIX_SUBS_OFF:-1}${NC}"
+	echo -e "${CYAN} = = > Title Mode:${NC}     ${YELLOW}${SMC_BARFIX_TITLE_MODE:-after_sxxexx}${NC}"
+	echo -e "${CYAN} = = > Title Segment:${NC}  ${YELLOW}${SMC_BARFIX_TITLE_SEGMENT:-3}${NC}"
+	echo
+}
+
+configure_barfix_defaults() {
+	local choice
+
+	echo
+	echo -e "${CYAN}=====================================================${NC}"
+	echo -e "${CYAN}              BARFIX DEFAULTS SETUP                  ${NC}"
+	echo -e "${CYAN}=====================================================${NC}"
+	echo
+
+	echo -e "${YELLOW} = = > Preferred Audio Language Default${NC}"
+	echo -e "${YELLOW} = = > If Available In Audio Streams${NC}"
+	echo -e "${CYAN}     1) English${NC}"
+	echo -e "${CYAN}     2) Japanese${NC}"
+	echo -e "${CYAN}     3) Spanish${NC}"
+	echo -e "${CYAN}     4) French${NC}"
+	echo -e "${CYAN}     5) German${NC}"
+	echo -e "${CYAN}     6) Keep Existing / No Audio Change${NC}"
+	prompt_menu_choice " = = > Select [1-6 | blank=keep current]: " choice
+	case "$choice" in
+		"") ;;
+		1) SMC_BARFIX_AUDIO_LANG="eng" ;;
+		2) SMC_BARFIX_AUDIO_LANG="jpn" ;;
+		3) SMC_BARFIX_AUDIO_LANG="spa" ;;
+		4) SMC_BARFIX_AUDIO_LANG="fra" ;;
+		5) SMC_BARFIX_AUDIO_LANG="deu" ;;
+		6) SMC_BARFIX_AUDIO_LANG="skip" ;;
+		*) echo -e "${YE} = = > Invalid Audio Choice. Keeping:${NC} ${YELLOW}${SMC_BARFIX_AUDIO_LANG:-eng}${NC}" ;;
+	esac
+	echo
+
+	echo -e "${YELLOW} = = > Disable Subtitles By Default?${NC}"
+	echo -e "${CYAN}     1) Yes${NC}"
+	echo -e "${CYAN}     2) No / Leave Subtitle Defaults Alone${NC}"
+	prompt_menu_choice " = = > Select [1/2 | blank=keep current]: " choice
+	case "$choice" in
+		"") ;;
+		1) SMC_BARFIX_SUBS_OFF=1 ;;
+		2) SMC_BARFIX_SUBS_OFF=0 ;;
+		*) echo -e "${YE} = = > Invalid Subtitle Choice. Keeping:${NC} ${YELLOW}${SMC_BARFIX_SUBS_OFF:-1}${NC}" ;;
+	esac
+	echo
+
+	echo -e "${YELLOW} = = > Title Naming Mode${NC}"
+	echo -e "${CYAN}     1) After SxxExx${NC}"
+	echo -e "${CYAN}     2) Full Filename${NC}"
+	echo -e "${CYAN}     3) Skip Title Set${NC}"
+	echo -e "${CYAN}     4) Choose Segment Number${NC}"
+	prompt_menu_choice " = = > Select [1-4 | blank=keep current]: " choice
+	case "$choice" in
+		"") ;;
+		1) SMC_BARFIX_TITLE_MODE="after_sxxexx" ;;
+		2) SMC_BARFIX_TITLE_MODE="full_filename" ;;
+		3) SMC_BARFIX_TITLE_MODE="skip" ;;
+		4)
+			SMC_BARFIX_TITLE_MODE="segment"
+			prompt_read " = = > Start Title At Segment Number (current ${SMC_BARFIX_TITLE_SEGMENT:-3}): " choice
+			[[ -n "$choice" ]] && SMC_BARFIX_TITLE_SEGMENT="$choice"
+			;;
+		*) echo -e "${YE} = = > Invalid Title Mode. Keeping:${NC} ${YELLOW}${SMC_BARFIX_TITLE_MODE:-after_sxxexx}${NC}" ;;
+	esac
+
+	echo
+	echo -e "${GR} = = > BARFIX Defaults Updated.${NC}"
+}
 
 run_barfix() {
 
@@ -6878,18 +7161,39 @@ run_barfix() {
       return 1
     fi
 
-    local SEG=""
-    if [[ "$BARFIX_MODE" == "1" || "$BARFIX_MODE" == "3" ]]; then
+	# ================================================================
+	# #MARKER: BARFIX FULL MODE DEFAULTS GATE
+	# ================================================================
+	# PURPOSE:
+	# - Let Full BARFIX Use The Same Defaults As BARFIX Lite.
+	# - Avoid Hidden Audio / Subtitle Choices.
+	# - Keep One Shared BARFIX Brain Across Full BARFIX And SMC Post-Process.
+	# ================================================================
+	show_barfix_current_defaults
 
-      echo -ne "${YELLOW} Start TITLE At Which Underscore Segment? (1-based, e.g. 3):${NC}${GREEN}"
-      read -r SEG
-	  echo -e "${NC}"
-      if [[ -z "${SEG:-}" || ! "$SEG" =~ ^[0-9]+$ || "$SEG" -lt 1 ]]; then
-        echo -e "${REB} = = > Invalid Segment Number.${NC}"
-        pause
-        return 0
-      fi
-    fi
+	echo -e "${YELLOW}     1) Use Current BARFIX Defaults${NC}"
+	echo -e "${YELLOW}     2) Change BARFIX Defaults First${NC}"
+	echo -e "${YELLOW}     0.) Return${NC}"
+	echo
+	prompt_menu_choice " = = > Select [1-2 | 0.=return | blank=use current]: " choice
+
+	if is_exit_token "$choice"; then
+		return 0
+	fi
+
+	case "${choice:-1}" in
+		1)
+			;;
+		2)
+			configure_barfix_defaults
+			show_barfix_current_defaults
+			;;
+		*)
+			echo -e "${YE} = = > Invalid Choice. Using Current BARFIX Defaults.${NC}"
+			;;
+	esac
+
+	local SEG="${SMC_BARFIX_TITLE_SEGMENT:-3}"
 
     # Use SUBTOX's vids list (already collected) if available, else collect here.
     # NOTE: SUBTOX uses local-scoped vids, so BARFIX will usually scan the folder.
@@ -11662,11 +11966,12 @@ inspect_run_keyframe_probe() {
 
 	while true; do
 		echo
-		echo -e "${CYAN} = = > Select File:${NC} ${YELLOW}[number | q=cancel]${NC}"
+		echo -e "${CYAN} = = > Select File:${NC} ${YELLOW}[number | q=cancel]${NC}${GREEN}"
 		echo
 
 		select probe_target in "${probe_files[@]}"; do
 			pick="${REPLY//[[:space:]]/}"
+        echo -e "${NC}"
 
 			# ========================================================
 			# TEN-KEY EXIT HOOK
@@ -12173,14 +12478,18 @@ run_prepare_sources() {
 }
 
 # ================================================================
-# #MARKER: PREEN FILENAME RESCUE / SxxExx INJECTOR
+# #MARKER: PREEN FILENAME / LINE RESCUE + SxxExx INJECTOR
 # ================================================================
 # PURPOSE:
-# - Give messy filename piles a preview-first rescue lane.
+# - Give messy filename piles and dirty text/CSV lists a preview-first rescue lane.
 # - Remove / keep filename segments.
 # - Remove / keep filename characters.
 # - Insert text by character position or segment position.
-# - Insert sequential SxxExx tags after user confirms file order.
+# - Insert sequential SxxExx tags into filenames after user confirms file order.
+# - Open .txt / .csv files and preen them line-by-line.
+# - Remove blank lines from title lists.
+# - Clean copied title/list garbage before episodes.csv work.
+# - Insert sequential SxxExx tags at the beginning of text/CSV lines.
 #
 # FACTORY FLOOR NOTE:
 # PREEN is the comb before the haircut.
@@ -12188,10 +12497,12 @@ run_prepare_sources() {
 # It lines up the feathers, shows you the mirror, then asks before touching anything.
 #
 # RULES:
-# - Extensions are protected.
+# - Filename mode protects extensions.
+# - Line mode writes a .preen.bak backup before changing a file.
 # - Preview is mandatory.
-# - Existing destination names are skipped.
-# - No automatic rename happens without user approval.
+# - Existing destination filenames are skipped.
+# - No automatic rename or line rewrite happens without user approval.
+# - CSV files are handled by Line Preen, not filename-target Preen.
 # ================================================================
 
 preen_collect_targets() {
@@ -12201,7 +12512,7 @@ preen_collect_targets() {
 	_out=()
 
 	shopt -s nullglob nocaseglob
-	for f in *.{lrv,mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,xvid,wmv}; do
+	for f in *.{lrv,mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,xvid,wmv,srt,ass,ssa,txt}; do
 		[[ -f "$f" ]] || continue
 
 		case "$f" in
@@ -12288,6 +12599,185 @@ preen_preview_and_apply() {
 	pause
 }
 
+run_line_preen() {
+	local file choice val marker insert_text out_file backup_file
+	local -a lines=()
+	local -a old_lines=()
+	local -a new_lines=()
+	local line newline i
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}              TEXT / CSV LINE PREEN             ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+
+	shopt -s nullglob nocaseglob
+	local -a text_files=( *.txt *.csv )
+	shopt -u nullglob nocaseglob
+
+	if (( ${#text_files[@]} == 0 )); then
+		echo -e "${YELLOW} = = > No .txt / .csv Files Found.${NC}"
+		pause
+		return 0
+	fi
+
+	echo
+	echo -e "${CYAN} = = > Available Text Files:${NC}"
+	echo
+
+	local i
+	for i in "${!text_files[@]}"; do
+		echo -e "${YELLOW}$((i+1)))${NC} ${GREEN}${text_files[$i]}${NC}"
+	done
+
+	echo
+	echo -ne "${YELLOW} = = > Choose File Number [0.=return]: ${NC}${GREEN}"
+	read -r file_choice
+	echo -e "${NC}"
+
+	is_exit_token "$file_choice" && return 0
+
+	[[ "$file_choice" =~ ^[0-9]+$ ]] || {
+		echo -e "${RED} = = > Invalid Selection.${NC}"
+		pause
+		return 0
+	}
+
+	(( file_choice >= 1 && file_choice <= ${#text_files[@]} )) || {
+		echo -e "${RED} = = > Invalid Selection.${NC}"
+		pause
+		return 0
+	}
+
+	file="${text_files[$((file_choice-1))]}"
+
+	mapfile -t lines < "$file"
+
+	echo
+	echo -e "${YELLOW}  1) Remove Blank Lines${NC}"
+	echo -e "${YELLOW}  2) Remove X characters from BEGINNING${NC}"
+	echo -e "${YELLOW}  3) Remove X characters from END${NC}"
+	echo -e "${YELLOW}  4) Remove before typed marker${NC}"
+	echo -e "${YELLOW}  5) Remove after typed marker${NC}"
+	echo -e "${YELLOW}  6) Insert Sequential SxxExx At Line Beginning${NC}"
+	echo
+
+	echo -ne "${YELLOW} = = > Choose:${NC} ${GREEN}"
+	read -r choice
+	echo -e "${NC}"
+
+	is_exit_token "$choice" && return 0
+
+	case "$choice" in
+		2|3)
+			echo -ne "${YELLOW} = = > Enter Count:${NC} ${GREEN}"
+			read -r val
+			echo -e "${NC}"
+			[[ "$val" =~ ^[0-9]+$ ]] || { echo -e "${RED}Invalid number.${NC}"; pause; return 0; }
+			;;
+		4|5)
+			echo -ne "${YELLOW} = = > Enter Marker Text:${NC} ${GREEN}"
+			read -r marker
+			echo -e "${NC}"
+			[[ -n "$marker" ]] || return 0
+			;;
+	esac
+
+	if [[ "$choice" == "6" ]]; then
+		local season ep_start current_ep tag
+
+		echo -ne "${YELLOW} = = > Season Number:${NC} ${GREEN}"
+		read -r season
+		echo -e "${NC}"
+
+		echo -ne "${YELLOW} = = > Starting Episode Number:${NC} ${GREEN}"
+		read -r ep_start
+		echo -e "${NC}"
+
+		[[ "$season" =~ ^[0-9]+$ && "$ep_start" =~ ^[0-9]+$ ]] || {
+			echo -e "${RED}Invalid season / episode.${NC}"
+			pause
+			return 0
+		}
+
+		current_ep="$ep_start"
+	fi
+
+	old_lines=()
+	new_lines=()
+
+	for line in "${lines[@]}"; do
+		newline="$line"
+
+		case "$choice" in
+			1)
+				[[ -z "${line//[[:space:]]/}" ]] && continue
+				;;
+			2)
+				(( val >= ${#line} )) && newline="" || newline="${line:val}"
+				;;
+			3)
+				(( val >= ${#line} )) && newline="" || newline="${line:0:${#line}-val}"
+				;;
+			4)
+				[[ "$line" == *"$marker"* ]] && newline="${line#*"$marker"}"
+				;;
+			5)
+				[[ "$line" == *"$marker"* ]] && newline="${line%%"$marker"*}"
+				;;
+			6)
+				[[ -z "${line//[[:space:]]/}" ]] && continue
+				printf -v tag 'S%02dE%02d' "$((10#$season))" "$((10#$current_ep))"
+				newline="${tag},${line}"
+				((current_ep+=1)) || :
+				;;
+			*)
+				echo -e "${RED}Invalid selection.${NC}"
+				pause
+				return 0
+				;;
+		esac
+
+		old_lines+=("$line")
+		new_lines+=("$newline")
+	done
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}               LINE PREEN PREVIEW               ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+
+	for i in "${!new_lines[@]}"; do
+		echo -e "${YELLOW}[$((i+1))]${NC} ${GREEN}${old_lines[$i]}${NC}"
+		echo -e "${CYAN}    -->${NC} ${YELLOW}${new_lines[$i]}${NC}"
+	done
+
+	echo
+	if ! ask_yes_no " = = > Apply Line Preen To File? (y/n or 1/2): "; then
+		echo -e "${YELLOW} = = > Cancelled. No File Changed.${NC}"
+		pause
+		return 0
+	fi
+
+	backup_file="${file}.preen.bak"
+	cp -f -- "$file" "$backup_file"
+
+	out_file="$file"
+	: > "$out_file"
+
+	for line in "${new_lines[@]}"; do
+		printf '%s\n' "$line" >> "$out_file"
+	done
+
+	echo
+	echo -e "${GREEN} = = > Line Preen Complete:${NC} ${YELLOW}$file${NC}"
+	echo -e "${CYAN} = = > Backup:${NC} ${YELLOW}$backup_file${NC}"
+	echo
+	pause
+}
+
 run_preen() {
 	local choice val marker insert_text
 	local -a targets=()
@@ -12325,6 +12815,7 @@ run_preen() {
 		echo -e "${YELLOW} 10) Insert text before segment number${NC}"
 		echo -e "${YELLOW} 11) Insert text after segment number${NC}"
 		echo -e "${YELLOW} 12) Insert Sequential SxxExx Tags${NC}"
+		echo -e "${YELLOW} 13) Text / CSV Line Preen${NC}"
 		echo
 		echo -e "${YELLOW}  0.) Return / Quit${NC}"
 		echo
@@ -12486,6 +12977,12 @@ run_preen() {
 			done
 
 			preen_preview_and_apply old_names new_names
+			preen_collect_targets targets
+			continue
+		fi
+
+		if [[ "$choice" == "13" ]]; then
+			run_line_preen
 			preen_collect_targets targets
 			continue
 		fi
@@ -13520,19 +14017,19 @@ create_template_smc() {
     echo -e "${YELLOW}     ========> Open File Selected From Which To Extract <=======${NC}"
     echo -e "${GREEN}     ===========> intro_template.mkv <==========================${NC}"
     echo -e "${YELLOW}     ====> Get Exact Times From That File For Accuracy <========${NC}"
-    echo -e "${GREEN}     ========> Watch It With Your Eyes To Get The <=============${NC}"
-    echo -e "${YELLOW}     =====> Start And End Times To The Second <=================${NC}"
+    echo -e "${GREEN}     =============> Watch It With Your Eyes To Get The <========${NC}"
+    echo -e "${YELLOW}     =================> Start And End Times To The Second <=====${NC}"
     echo -e "${GREEN}     ==> Verify Start And End Timings for intro_template.mkv <==${NC}"
 	echo
-    echo -e "${YELLOW}     ======>  Verify Only Start Timings for ${NC}${GREEN}outro.mkv${NC}${YELLOW} <=========${NC}"
-    echo -e "${YELLOW}     ======>  ${NC}${GREEN}outro.mkv${NC}${YELLOW}<======= Size Is Predetermined <=========${NC}"
-    echo -e "${YELLOW}     ======>  Outro Cuts Always Go To End-Time <================${NC}"
+    echo -e "${YELLOW}     ======>   Verify  Start  Timings  for  ${NC}${GREEN}outro.mkv${NC}${YELLOW} <=========${NC}"
+    echo -e "${YELLOW}     ======>  ${NC}${GREEN}outro.mkv${NC}${YELLOW}<======= Input Seconds To Keep <=========${NC}"
+    echo -e "${YELLOW}     ==> Leave Blank=Outro Cuts Will Go To End of File <========${NC}"
     echo -e "${CYAN}     ===========================================================${NC}"
 	echo -e "${GREEN}       = = > CHOOSE TEMPLATE TYPE${NC}"
 	echo -e "${CYAN}     =============================================================${NC}"
 	echo
-	echo -e "${CYAN}     1) Intro Template (start + end)${NC}"
-	echo -e "${CYAN}     2) Outro Template (start + 15 sec)${NC}"
+	echo -e "${CYAN}     1) Intro Template (Start + End)${NC}"
+	echo -e "${CYAN}     2) Outro Template (Start + End)${NC}"
 	echo
 	echo -e "${CYAN}     0.) Return${NC}"
 	echo
@@ -13552,9 +14049,22 @@ create_template_smc() {
 			;;
 		2)
 			prompt_read " = = > Enter Outro Start Time: " start
-
 			start="$(to_seconds "$start")"
-			end="$(awk -v s="$start" 'BEGIN{printf "%.3f", s+15}')"
+
+			echo
+			echo -e "${CYAN} = = > Outro End Mode:${NC}"
+			echo -e "${CYAN}     - Enter seconds to keep after start.${NC}"
+			echo -e "${CYAN}     - Blank = keep from start to END of file.${NC}"
+			echo
+
+			prompt_read " = = > Outro Length Seconds (blank=end): " outro_len
+
+			if [[ -n "$outro_len" ]]; then
+				outro_len="$(to_seconds "$outro_len")"
+				end="$(awk -v s="$start" -v l="$outro_len" 'BEGIN{printf "%.3f", s+l}')"
+			else
+				end="end"
+			fi
 
 			keep_args="$start,$end"
 			out="$(next_template_output_path "intro_template/outro.mkv")"
@@ -13922,6 +14432,7 @@ if (( csv_mode == 0 )); then
 		smc_phase_banner "TIP / TAIL TARGET"
 		echo -e "${CYAN} = = > Source:${NC} ${GREEN}$file${NC}"
 		echo -e "${CYAN} = = > Cut Plan:${NC} ${YELLOW}$cut_args${NC}"
+		smc_explain_cut_plan "$cut_args"
 		echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
 		echo
 
@@ -14090,8 +14601,14 @@ while IFS=, read -r file start end _; do
 
 	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$file${NC}"
 	echo -e "${CYAN} = = > Cut Plan:${NC} ${YELLOW}$cut_args${NC}"
+	smc_explain_cut_plan "$cut_args"
 	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
 	echo
+	echo -e "${CYAN} = = > ACTIVE SMC ENGINE:${NC} ${YELLOW}${SMC_BIN:-unset}${NC}"
+
+	if [[ -x "${SMC_BIN:-}" ]]; then
+		echo -e "${CYAN} = = > SMC VERSION:${NC} ${YELLOW}$("$SMC_BIN" --version 2>/dev/null | head -n1)${NC}"
+	fi
 
 	if run_smartcut_colored "$file" "$out" "$cut_args"; then
 		echo -e "${GR} = = > SMC SURGERY COMPLETE:${NC} ${GREEN}$out${NC}"
@@ -14134,40 +14651,65 @@ rm -f x265_2pass.log
 
 # ========================================================
 # #MARKER: SMARTCUT ENGINE DETECTION
-# commercial product SmartMediaCutter-2.3.4-x86_64.AppImage 186mb
-# that is what we have renamed smc.app and keep a copy right here In The Working Folder
 # ========================================================
 # PURPOSE:
-# - Locate The SmartCut Engine Used By SMCUT.
-# - Video Smartcut-MIT License is the daddy of SmartMediaCutter
-# - find out here > github.com/skeskinen/smartcut
-# - Prefer The pipx-installed smartcut command.
-# - Fall Back To A Local smc.app SmartMediaCutter If Carried In The Working or TOOLBOX Folder.
+# - Locate The SmartCut / Smart Media Cutter Engine Used By Factory.
+# - Prefer A Carried Smart Media Cutter AppImage When Available.
+# - Fall Back To The Older pipx / PATH smartcut Command Only If Needed.
+#
+# ENGINE ORDER:
+#   1) $HOME/TOOLBOX_NOT_INTRO/smc.app
+#      - Preferred portable Factory copy.
+#      - Rename current SmartMediaCutter AppImage to smc.app.
+#
+#   2) ./smc.app
+#      - Working-folder override / local test copy.
+#
+#   3) smartcut
+#      - Legacy pipx / PATH fallback.
+#
+# NOTES:
+# - smartcut is the original MIT-licensed CLI project.
+# - Smart Media Cutter is the newer commercial/appimage continuation.
+# - The AppImage should remain executable:
+#       chmod +x smc.app
 #
 # OUTPUT:
 # - Sets SMC_BIN
+# - Sets HAS_SMC
 # - Returns 0 If A Usable Engine Is Found
 # - Returns 1 If Not Found
 # ========================================================
-have_smartcut() {
-	SMC_BIN=""
-
-	if have_cmd smartcut; then
-		SMC_BIN="smartcut"
+resolve_smc_bin() {
+	if [[ -x "$HOME/TOOLBOX_NOT_INTRO/smc.app" ]]; then
+		SMC_BIN="$HOME/TOOLBOX_NOT_INTRO/smc.app"
+		HAS_SMC=1
+		echo -e "${GR} = = > SmartCut Engine:${NC} ${YELLOW}$SMC_BIN${NC}"
 		return 0
 	fi
 
 	if [[ -x "./smc.app" ]]; then
 		SMC_BIN="./smc.app"
+		HAS_SMC=1
+		echo -e "${GR} = = > SmartCut Engine:${NC} ${YELLOW}$SMC_BIN${NC}"
 		return 0
 	fi
 
-	if [[ -x "$HOME/TOOLBOX_NOT_INTRO/smc.app" ]]; then
-		SMC_BIN="$HOME/TOOLBOX_NOT_INTRO/smc.app"
+	if have_cmd smartcut; then
+		SMC_BIN="$(command -v smartcut)"
+		HAS_SMC=1
+		echo -e "${YE} = = > SmartCut Engine Fallback:${NC} ${YELLOW}$SMC_BIN${NC}"
 		return 0
 	fi
 
+	SMC_BIN=""
+	HAS_SMC=0
+	print_missing_optional_dep "smc.app / smartcut" "SmartCut / Smart Media Cutter missions will be unavailable."
 	return 1
+}
+
+have_smartcut() {
+	resolve_smc_bin >/dev/null 2>&1
 }
 
 # ================================================================
@@ -14230,7 +14772,36 @@ smartcut_session_varz_menu() {
 				[[ -n "$input" ]] && INTRO_ANCHOR_SECONDS="$input"
 
 				echo
-				echo -e "${YELLOW}--- OUTRO FIND VARS ---${NC}"
+				echo -e "${CYAN} = = > Intro Hash Mode:${NC} ${YELLOW}${INTRO_HASH_MODE:-phash}${NC}"
+				echo -e "${CYAN}     1) pHash  ${YELLOW}(recommended for normal intros)${NC}"
+				echo -e "${CYAN}     2) dHash  ${YELLOW}(edge/text heavy experiment)${NC}"
+				echo -e "${CYAN}     3) aHash  ${YELLOW}(fast/simple scout)${NC}"
+				echo -e "${CYAN}     4) wHash  ${YELLOW}(wavelet experiment)${NC}"
+				echo
+
+				prompt_menu_choice " = = > Select Intro Hash Mode [1-4 | blank=keep current]: " input
+
+				case "$input" in
+					"")
+						;;
+					1)
+						INTRO_HASH_MODE="phash"
+						;;
+					2)
+						INTRO_HASH_MODE="dhash"
+						;;
+					3)
+						INTRO_HASH_MODE="ahash"
+						;;
+					4)
+						INTRO_HASH_MODE="whash"
+						;;
+					*)
+						echo -e "${YE} = = > Invalid Hash Mode. Keeping:${NC} ${YELLOW}${INTRO_HASH_MODE:-phash}${NC}"
+						;;
+				esac
+				echo
+				echo -e "${CYAN}--- OUTRO FIND VARS ---${NC}"
 				prompt_read " = = > Outro Tail Scan Seconds (current ${OUTRO_TAIL_SCAN_SECONDS:-200}): " input
 				[[ -n "$input" ]] && OUTRO_TAIL_SCAN_SECONDS="$input"
 
@@ -14243,6 +14814,35 @@ smartcut_session_varz_menu() {
 				prompt_read " = = > Outro Anchor Seconds CSV (current ${OUTRO_ANCHOR_SECONDS:-8,12,16}): " input
 				[[ -n "$input" ]] && OUTRO_ANCHOR_SECONDS="$input"
 
+				echo
+				echo -e "${CYAN} = = > Outro Hash Mode:${NC} ${YELLOW}${OUTRO_HASH_MODE:-dhash}${NC}"
+				echo -e "${CYAN}     1) dHash  ${YELLOW}(recommended for credits / outro text)${NC}"
+				echo -e "${CYAN}     2) pHash  ${YELLOW}(classic perceptual fallback)${NC}"
+				echo -e "${CYAN}     3) aHash  ${YELLOW}(fast/simple scout)${NC}"
+				echo -e "${CYAN}     4) wHash  ${YELLOW}(wavelet experiment)${NC}"
+				echo
+
+				prompt_menu_choice " = = > Select Outro Hash Mode [1-4 | blank=keep current]: " input
+
+				case "$input" in
+					"")
+						;;
+					1)
+						OUTRO_HASH_MODE="dhash"
+						;;
+					2)
+						OUTRO_HASH_MODE="phash"
+						;;
+					3)
+						OUTRO_HASH_MODE="ahash"
+						;;
+					4)
+						OUTRO_HASH_MODE="whash"
+						;;
+					*)
+						echo -e "${YE} = = > Invalid Hash Mode. Keeping:${NC} ${YELLOW}${OUTRO_HASH_MODE:-dhash}${NC}"
+						;;
+				esac
 				echo
 				echo -e "${GR} = = > Intro/Outro Find Vars Updated.${NC}"
 				pause
@@ -14526,6 +15126,7 @@ run_smartcut_menu() {
 				echo
 				echo -e "${CYAN} = = > File:${NC} ${GREEN}$file${NC}"
 				echo -e "${CYAN} = = > Cut Args:${NC} ${YELLOW}$cut_args${NC}"
+				smc_explain_cut_plan "$cut_args"
 				echo
 
 				if ! ask_yes_no " = = > Proceed? (y/n or 1/2): "; then
@@ -15416,12 +16017,6 @@ run_tail_tuck() {
 	pause
 }
 
-run_one_file_rekey_tool() {
-	echo
-	echo -e "${YE} = = > One-File Rekey Tool Not Wired Yet.${NC}"
-	pause
-}
-
 compare_two_files() {
 	local a b
 	if ! pick_file a "COMPARE FILE A"; then return 0; fi
@@ -15517,11 +16112,12 @@ run_probes_menu() {
 		echo -e "${YELLOW}     2) Keyframe Probe${NC}"
 		echo -e "${YELLOW}     3) Media Truth Probe${NC}"
 		echo -e "${YELLOW}     4) Dependency Status${NC}"
+		echo -e "${YELLOW}     5) Reykey One File${NC}"
 		echo
 		echo -e "${YELLOW}     0.) Return${NC}"
 		echo
 
-		prompt_menu_choice " = = > Select Option [1-4 | 0.=return]: " probes_choice
+		prompt_menu_choice " = = > Select Option [1-5 | 0.=return]: " probes_choice
 
 		if is_exit_token "$probes_choice"; then
 			return 0
@@ -15539,6 +16135,9 @@ run_probes_menu() {
 				;;
 			4)
 				inspect_dependencies
+				;;
+			5)
+				run_one_file_rekey_tool
 				;;
 			*)
 				echo -e "${REB} = = > Invalid.${NC}"
@@ -17020,7 +17619,7 @@ normalize_cut_friendly_file() {
 	if (( quiet_progress == 0 )); then
 		echo -e "${CYAN} = = > Normalizing:${NC} ${GREEN}$in${NC}"
 		echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
-		echo -e "${CYAN} = = > GOP target:${NC} ${YELLOW}~1 second${NC} (${fps_calc} fps)"
+		echo -e "${CYAN} = = > GOP target:${NC} ${YELLOW}~1 second (${fps_calc} fps)${NC}"
 		echo -e "${CYAN} = = > REKEY_CRF:${NC} ${YELLOW}$rekey_crf${NC}"
 		echo -e "${CYAN} = = > Audio Policy:${NC} ${YELLOW}copy-through${NC}"
 
@@ -18109,6 +18708,16 @@ on_abort() {
 	fi
 
 	# ========================================================
+	# HASH ENGINE ABORT CLEANUP
+	# ========================================================
+	rm -f -- \
+		"${PHASH_ENGINE:-.phash_engine.py}" \
+		".phash_engine.py" \
+		".hash_engine.py" \
+		".phash_engine.stderr.log" \
+		".hash_engine.stderr.log"
+
+	# ========================================================
 	# EMERGENCY PILOT RESTORE
 	# --------------------------------------------------------
 	# PURPOSE:
@@ -18606,11 +19215,10 @@ cached_rekey_is_known_bad_for_raw() {
 
 
 ensure_phash_engine() {
-	if [[ -s "$PHASH_ENGINE" ]]; then
-		return 0
-	fi
+	# During engine development, always rebuild from the current Factory source.
+	rm -f -- "$PHASH_ENGINE"
 
-	echo -e "${YE} = = > pHash Engine Missing. Building Local Engine:${NC} ${YELLOW}$PHASH_ENGINE${NC}"
+	echo -e "${YE} = = > Building Local xHash Engine:${NC} ${YELLOW}$PHASH_ENGINE${NC}"
 
 	# IMPORTANT:
 	# Move/copy the existing full:
@@ -18656,6 +19264,15 @@ FILE       = sys.argv[4]
 # ------------------------------------------------------------
 # Safe defaults if Bash does not pass the extra knobs.
 # ============================================================
+
+HASH_MODE = "phash"
+
+if len(sys.argv) >= 9:
+    HASH_MODE = sys.argv[8].strip().lower()
+
+if HASH_MODE not in ("phash", "dhash", "ahash", "whash"):
+    print(f"WARN|unknown HASH_MODE '{HASH_MODE}', using phash", file=sys.stderr)
+    HASH_MODE = "phash"
 
 DEFAULT_STEP = 0.5
 DEFAULT_ANCHORS = [3.0, 5.0, 7.0]
@@ -18728,7 +19345,7 @@ if not TEMPLATES and TEMPLATE_GLOB == "intro_template/intro_template*.mkv":
 TEMPLATES.sort(key=template_sort_key)
 
 print("TEMPLATE_ORDER|" + "|".join(TEMPLATES), file=sys.stderr)
-print(f"ENGINE_CFG|SCAN_START={SCAN_START}|LIMIT={LIMIT}|HASH_DIFF={HASH_DIFF}|STEP={STEP}|ANCHORS={ANCHOR_OFFSETS}", file=sys.stderr)
+print(f"ENGINE_CFG|HASH_MODE={HASH_MODE}|SCAN_START={SCAN_START}|LIMIT={LIMIT}|HASH_DIFF={HASH_DIFF}|STEP={STEP}|ANCHORS={ANCHOR_OFFSETS}", file=sys.stderr)
 
 # ============================================================
 # HASH CACHE
@@ -18755,7 +19372,17 @@ def get_hash(path, sec):
 
     try:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        ph = imagehash.phash(Image.fromarray(rgb))
+        img = Image.fromarray(rgb)
+
+        if HASH_MODE == "dhash":
+            ph = imagehash.dhash(img)
+        elif HASH_MODE == "ahash":
+            ph = imagehash.average_hash(img)
+        elif HASH_MODE == "whash":
+            ph = imagehash.whash(img)
+        else:
+            ph = imagehash.phash(img)
+
         hash_cache[cache_key] = ph
         return ph
     except Exception:
@@ -19065,6 +19692,11 @@ run_outrofind_selected_files() {
 		}')"
 
 		echo
+		echo -e "${CYAN} = = > DEBUG HASH_MODE:${NC} ${YELLOW}${OUTRO_HASH_MODE:-phash}${NC}"
+		echo -e "${CYAN} = = > DEBUG OUTRO_HASH_DIFF:${NC} ${YELLOW}${OUTRO_HASH_DIFF:-unset}${NC}"
+		echo -e "${CYAN} = = > DEBUG INTRO_HASH_DIFF:${NC} ${YELLOW}${INTRO_HASH_DIFF:-unset}${NC}"
+		echo -e "${CYAN} = = > DEBUG DEFAULT_HASH_DIFF:${NC} ${YELLOW}${DEFAULT_HASH_DIFF:-unset}${NC}"
+		echo
 		echo -e "${CYAN}============================================================${NC}"
 		echo -e "${CYAN}                 OUTROFIND ONLY TARGET                     ${NC}"
 		echo -e "${CYAN}============================================================${NC}"
@@ -19094,6 +19726,7 @@ run_outrofind_selected_files() {
 				"${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}" \
 				"${OUTRO_ANCHOR_SECONDS:-8,12,16}" \
 				"$OUTRO_TEMPLATE" \
+				"${OUTRO_HASH_MODE:-phash}" \
 				2> >(tee "$PHASH_STDERR_LOG" | run_phash_engine_colored >&2)
 		)"
 
@@ -19133,7 +19766,124 @@ run_outrofind_selected_files() {
 	return 0
 }
 
+run_outro_hash_compare_test() {
+	local -a targets=()
+	local -a hash_modes=("phash" "dhash")
+	local -a anchor_sets=("8,12,16" "4,8,12,16,20")
+	local file duration outro_scan_start outro_limit
+	local hash_mode anchors outro_output outro_result
+	local t0 t1 elapsed result_status start_val diff_val
+	local log_file="outro_hash_compare.csv"
+
+	ensure_phash_engine || {
+		echo -e "${REB} = = > Could Not Build Hash Engine.${NC}"
+		pause
+		return 1
+	}
+
+	if [[ ! -f "$OUTRO_TEMPLATE" ]]; then
+		echo -e "${REB} = = > Outro Template Missing:${NC} ${YELLOW}$OUTRO_TEMPLATE${NC}"
+		pause
+		return 1
+	fi
+
+	shopt -s nullglob nocaseglob
+	targets=( *.mkv )
+	shopt -u nullglob nocaseglob
+
+	if (( ${#targets[@]} == 0 )); then
+		echo -e "${YE} = = > No MKV Targets Found.${NC}"
+		pause
+		return 0
+	fi
+
+	limit_targets_interactive targets || {
+		echo -e "${YE} = = > Outro Hash Compare Cancelled.${NC}"
+		pause
+		return 0
+	}
+
+	printf '%s\n' "file,hash_mode,anchors,result,start,diff,elapsed_seconds" > "$log_file"
+
+	for file in "${targets[@]}"; do
+		[[ -f "$file" ]] || continue
+
+		duration="$(get_file_duration_seconds "$file")"
+		outro_limit="$duration"
+
+		outro_scan_start="$(awk -v d="$duration" -v back="${OUTRO_TAIL_SCAN_SECONDS:-200}" 'BEGIN{
+			v=d-back
+			if (v < 0) v=0
+			printf "%.3f", v
+		}')"
+
+		echo
+		echo -e "${CYAN}============================================================${NC}"
+		echo -e "${CYAN}              OUTRO HASH COMPARE TARGET                    ${NC}"
+		echo -e "${CYAN}============================================================${NC}"
+		echo -e "${CYAN} = = > File:${NC} ${GREEN}$file${NC}"
+		echo -e "${CYAN} = = > Window:${NC} ${YELLOW}${outro_scan_start}s → ${outro_limit}s${NC}"
+		echo
+
+		for hash_mode in "${hash_modes[@]}"; do
+			for anchors in "${anchor_sets[@]}"; do
+				PHASH_STDERR_LOG="${PHASH_STDERR_LOG:-phash_stderr.log}"
+				: > "$PHASH_STDERR_LOG"
+
+				echo -e "${CYAN} = = > Testing:${NC} ${YELLOW}${hash_mode}${NC} ${CYAN}Anchors:${NC} ${YELLOW}${anchors}${NC}"
+
+				t0="$(date +%s)"
+
+				outro_output="$(
+					python3 "$PHASH_ENGINE" \
+						"$outro_scan_start" \
+						"$outro_limit" \
+						"${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}}" \
+						"$file" \
+						"${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}" \
+						"$anchors" \
+						"$OUTRO_TEMPLATE" \
+						"$hash_mode" \
+						2> >(tee "$PHASH_STDERR_LOG" | run_phash_engine_colored >&2)
+				)"
+
+				t1="$(date +%s)"
+				elapsed="$((t1 - t0))"
+
+				outro_result="$(printf '%s\n' "$outro_output" | awk '
+					/^(MATCH\|.*|NO_MATCH)$/ { line=$0 }
+					END { print line }
+				')"
+
+				result_status="NO_MATCH"
+				start_val=""
+				diff_val=""
+
+				if [[ "$outro_result" == MATCH* ]]; then
+					IFS='|' read -r _ start_val _template_end _template_used diff_val <<< "$outro_result"
+					result_status="MATCH"
+					echo -e "${GR} = = > MATCH:${NC} ${YELLOW}${hash_mode}${NC} ${CYAN}start=${NC}${YELLOW}${start_val}${NC} ${CYAN}diff=${NC}${YELLOW}${diff_val}${NC} ${CYAN}time=${NC}${YELLOW}${elapsed}s${NC}"
+				else
+					echo -e "${YE} = = > NO MATCH:${NC} ${YELLOW}${hash_mode}${NC} ${CYAN}time=${NC}${YELLOW}${elapsed}s${NC}"
+				fi
+
+				printf '%s,%s,%s,%s,%s,%s,%s\n' \
+					"$file" "$hash_mode" "$anchors" "$result_status" "$start_val" "$diff_val" "$elapsed" >> "$log_file"
+			done
+		done
+	done
+
+	echo
+	echo -e "${GR} = = > Outro Hash Compare Complete.${NC}"
+	echo -e "${CYAN} = = > Log:${NC} ${YELLOW}$log_file${NC}"
+	echo
+	pause
+	return 0
+}
+
+
 # end of  HELPERS maybe get em all in here if poss
+
 # and all menus here if poss
 
 # =========================
@@ -19603,392 +20353,12 @@ fi
 # PHASH ENGINE v2.0
 # BEST-MATCH / MULTI-ANCHOR / SUB-SECOND SCAN
 # =========================
-cat << 'EOF' > .phash_engine.py
-import cv2, imagehash, glob, os, sys, re
-from PIL import Image
 
-# ============================================================
-# ARGUMENT CONTRACT
-# ------------------------------------------------------------
-# KEEP THE ORIGINAL FOUR POSITIONS EXACTLY AS THEY WERE:
-#
-#   sys.argv[1] = SCAN_START
-#   sys.argv[2] = LIMIT
-#   sys.argv[3] = HASH_DIFF
-#   sys.argv[4] = FILE
-#
-# OPTIONAL ADDITIONS AFTER THAT:
-#
-#   sys.argv[5] = STEP SIZE         (example: "0.5")
-#   sys.argv[6] = ANCHOR SECONDS    (example: "3,5,7")
-#
-# Stdout contract must remain:
-#   MATCH|start|end|template|diff
-#   NO_MATCH
-# ============================================================
-
-SCAN_START = float(sys.argv[1])
-LIMIT      = float(sys.argv[2])
-HASH_DIFF  = int(sys.argv[3])
-FILE       = sys.argv[4]
-
-# ============================================================
-# OPTIONAL TUNING INPUTS
-# ------------------------------------------------------------
-# Safe defaults if Bash does not pass the extra knobs.
-# ============================================================
-
-DEFAULT_STEP = 0.5
-DEFAULT_ANCHORS = [3.0, 5.0, 7.0]
-
-STEP = DEFAULT_STEP
-ANCHOR_OFFSETS = DEFAULT_ANCHORS[:]
-
-if len(sys.argv) >= 6:
-    try:
-        STEP = float(sys.argv[5])
-    except Exception:
-        print(f"WARN|bad step arg '{sys.argv[5]}', using default {DEFAULT_STEP}", file=sys.stderr)
-        STEP = DEFAULT_STEP
-
-if len(sys.argv) >= 7:
-    raw_anchor_arg = sys.argv[6].strip()
-    if raw_anchor_arg:
-        try:
-            parsed = []
-            for piece in raw_anchor_arg.split(","):
-                piece = piece.strip()
-                if not piece:
-                    continue
-                parsed.append(float(piece))
-
-            parsed = [x for x in parsed if x >= 0]
-
-            if parsed:
-                ANCHOR_OFFSETS = parsed
-            else:
-                print(f"WARN|anchor arg '{raw_anchor_arg}' produced no valid offsets, using default", file=sys.stderr)
-        except Exception:
-            print(f"WARN|bad anchor arg '{raw_anchor_arg}', using default {DEFAULT_ANCHORS}", file=sys.stderr)
-            ANCHOR_OFFSETS = DEFAULT_ANCHORS[:]
-
-TEMPLATE_GLOB = "intro_template/intro_template*.mkv"
-
-if len(sys.argv) >= 8:
-    TEMPLATE_GLOB = sys.argv[7]
-
-if STEP <= 0:
-    print(f"WARN|non-positive STEP {STEP}, forcing default {DEFAULT_STEP}", file=sys.stderr)
-    STEP = DEFAULT_STEP
-
-# ============================================================
-# TEMPLATE SORTING
-# ============================================================
-
-def template_sort_key(p):
-    name = os.path.basename(p)
-
-    if name == "intro_template.mkv":
-        return (0, 0, "")
-
-    m = re.match(r"^intro_template_(\d+)\.mkv$", name)
-    if m:
-        return (1, int(m.group(1)), "")
-
-    m = re.match(r"^intro_template(\d+)\.mkv$", name)
-    if m:
-        return (2, int(m.group(1)), "")
-
-    return (9, 0, name.lower())
-
-TEMPLATES = glob.glob(TEMPLATE_GLOB)
-
-if not TEMPLATES and TEMPLATE_GLOB == "intro_template/intro_template*.mkv":
-    TEMPLATES = glob.glob("intro_template*.mkv")
-
-TEMPLATES.sort(key=template_sort_key)
-
-print("TEMPLATE_ORDER|" + "|".join(TEMPLATES), file=sys.stderr)
-print(f"ENGINE_CFG|SCAN_START={SCAN_START}|LIMIT={LIMIT}|HASH_DIFF={HASH_DIFF}|STEP={STEP}|ANCHORS={ANCHOR_OFFSETS}", file=sys.stderr)
-
-# ============================================================
-# HASH CACHE
-# ------------------------------------------------------------
-# Cache per (path,time) so repeated candidate/anchor checks do not
-# reopen/hash the same exact frame over and over.
-# ============================================================
-
-hash_cache = {}
-
-def get_hash(path, sec):
-    cache_key = (path, round(sec, 3))
-    if cache_key in hash_cache:
-        return hash_cache[cache_key]
-
-    cap = cv2.VideoCapture(path)
-    cap.set(cv2.CAP_PROP_POS_MSEC, sec * 1000.0)
-    res, frame = cap.read()
-    cap.release()
-
-    if not res or frame is None:
-        hash_cache[cache_key] = None
-        return None
-
-    try:
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        ph = imagehash.phash(Image.fromarray(rgb))
-        hash_cache[cache_key] = ph
-        return ph
-    except Exception:
-        hash_cache[cache_key] = None
-        return None
-
-# ============================================================
-# TEMPLATE PREP
-# ------------------------------------------------------------
-# Build per-template:
-#   - duration
-#   - anchor hashes
-#
-# IMPORTANT TIMING MODEL:
-# - We are scanning CANDIDATE INTRO STARTS, not candidate "matched frame"
-#   positions.
-# - For a candidate start S:
-#       template anchor at 3s  -> compare to episode frame at S+3
-#       template anchor at 5s  -> compare to episode frame at S+5
-#       template anchor at 7s  -> compare to episode frame at S+7
-#
-# This fixes the prior broken behavior where all template anchors were
-# compared against one single episode frame.
-# ============================================================
-
-template_data = []
-
-for template in TEMPLATES:
-    cap_temp = cv2.VideoCapture(template)
-    fps = cap_temp.get(cv2.CAP_PROP_FPS)
-    frame_count = int(cap_temp.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap_temp.release()
-
-    duration = 0.0
-    if fps and fps > 0:
-        duration = frame_count / fps
-
-    anchors = []
-    skipped_anchor_count = 0
-
-    for anchor_sec in ANCHOR_OFFSETS:
-        # Skip anchor points beyond the template duration.
-        if duration > 0 and anchor_sec > duration:
-            skipped_anchor_count += 1
-            continue
-
-        h = get_hash(template, anchor_sec)
-        if h is not None:
-            anchors.append((anchor_sec, h))
-        else:
-            skipped_anchor_count += 1
-
-    if not anchors:
-        print(f"SKIP_TEMPLATE|{template}|reason=no_valid_anchor_hashes", file=sys.stderr)
-        continue
-
-    template_data.append({
-        "path": template,
-        "duration": duration,
-        "anchors": anchors,
-        "max_anchor": max(a for a, _ in anchors),
-    })
-
-    print(
-        f"TEMPLATE_READY|{template}|duration={duration:.3f}|anchors_ok={len(anchors)}|anchors_skipped={skipped_anchor_count}",
-        file=sys.stderr
-    )
-
-if not template_data:
-    print("NO_MATCH")
-    sys.exit(0)
-
-# ============================================================
-# FLOAT RANGE
-# ============================================================
-
-def frange(start, stop, step):
-    count = 0
-    value = start
-    epsilon = step / 1000.0
-
-    while value < stop + epsilon:
-        yield round(value, 3)
-        count += 1
-        value = start + (count * step)
-
-# ============================================================
-# SCORING MODEL
-# ------------------------------------------------------------
-# For each candidate INTRO START and each template:
-#   - compare every template anchor hash against episode frame at:
-#         candidate_start + anchor_sec
-#   - compute:
-#         avg_diff
-#         best_anchor_diff
-#         best_anchor_sec
-#
-# Global lowest avg_diff under threshold wins.
-# ============================================================
-
-best_match = None
-second_best_score = None
-candidate_count = 0
-
-for candidate_start in frange(SCAN_START, LIMIT, STEP):
-    for t in template_data:
-        diffs = []
-        best_anchor_diff = None
-        best_anchor_sec = None
-
-        for anchor_sec, template_hash in t["anchors"]:
-            episode_sample_time = candidate_start + anchor_sec
-
-            # Do not sample beyond the requested scan ceiling.
-            if episode_sample_time > LIMIT:
-                continue
-
-            episode_hash = get_hash(FILE, episode_sample_time)
-            if episode_hash is None:
-                continue
-
-            diff = template_hash - episode_hash
-            diffs.append(diff)
-
-            if best_anchor_diff is None or diff < best_anchor_diff:
-                best_anchor_diff = diff
-                best_anchor_sec = anchor_sec
-
-        if not diffs:
-            continue
-
-        avg_diff = sum(diffs) / float(len(diffs))
-        candidate_count += 1
-
-        candidate_info = {
-            "start_time": candidate_start,
-            "template": t["path"],
-            "duration": t["duration"],
-            "avg_diff": avg_diff,
-            "best_anchor_diff": best_anchor_diff,
-            "best_anchor_sec": best_anchor_sec,
-            "anchor_count": len(diffs),
-        }
-
-        if best_match is None or avg_diff < best_match["avg_diff"]:
-            if best_match is not None:
-                prior_best = best_match["avg_diff"]
-                if second_best_score is None or prior_best < second_best_score:
-                    second_best_score = prior_best
-
-            best_match = candidate_info
-        else:
-            if second_best_score is None or avg_diff < second_best_score:
-                second_best_score = avg_diff
-
-# ============================================================
-# DECISION / OUTPUT
-# ============================================================
-
-print(f"SCAN_DONE|candidates_scored={candidate_count}", file=sys.stderr)
-
-# ============================================================
-# DEBUG: TOP CANDIDATE WINDOW
-# ------------------------------------------------------------
-# PURPOSE:
-# - Show the best few candidates so we can see:
-#     - how close non-winners are
-#     - whether threshold is too strict
-#     - whether matches cluster tightly or are noisy
-#
-# NOTE:
-# - stderr only (does NOT affect Bash parsing)
-# ============================================================
-
-try:
-    # Re-run lightweight ranking from collected candidates
-    # We reconstruct from best_match + second_best_score is not enough,
-    # so we track top candidates manually during scan.
-
-    # This requires capturing candidates during scan
-    # (we kept minimal memory earlier, so rebuild cheaply)
-
-    debug_candidates = []
-
-    # Re-scan lightly (cheap because of hash cache)
-    for candidate_start in frange(SCAN_START, LIMIT, STEP):
-        for t in template_data:
-            diffs = []
-
-            for anchor_sec, template_hash in t["anchors"]:
-                episode_sample_time = candidate_start + anchor_sec
-                if episode_sample_time > LIMIT:
-                    continue
-
-                episode_hash = get_hash(FILE, episode_sample_time)
-                if episode_hash is None:
-                    continue
-
-                diffs.append(template_hash - episode_hash)
-
-            if not diffs:
-                continue
-
-            avg = sum(diffs) / float(len(diffs))
-
-            debug_candidates.append((avg, candidate_start, t["path"]))
-
-    # Sort best first
-    debug_candidates.sort(key=lambda x: x[0])
-
-    print("TOP_CANDIDATES|showing_best_5", file=sys.stderr)
-
-    for i, (avg, tstart, tpath) in enumerate(debug_candidates[:5]):
-        print(
-            f"  #{i+1}|start={tstart:.3f}|avg_diff={avg:.3f}|template={tpath}",
-            file=sys.stderr
-        )
-
-except Exception as e:
-    print(f"DEBUG_WINDOW_FAILED|{e}", file=sys.stderr)
-
-if best_match is not None and best_match["avg_diff"] < HASH_DIFF:
-    start = best_match["start_time"]
-    if start < 0:
-        start = 0.0
-
-    end = start + best_match["duration"]
-
-    print(
-        f"MATCH|{int(start)}|{int(end)}|{best_match['template']}|{int(best_match['avg_diff'])}"
-    )
-
-    delta_to_next = None
-    if second_best_score is not None:
-        delta_to_next = second_best_score - best_match["avg_diff"]
-
-    print(
-        "BEST_MATCH"
-        f"|start={best_match['start_time']:.3f}"
-        f"|template={best_match['template']}"
-        f"|avg_diff={best_match['avg_diff']:.3f}"
-        f"|best_anchor_diff={best_match['best_anchor_diff']}"
-        f"|best_anchor_sec={best_match['best_anchor_sec']}"
-        f"|anchors_used={best_match['anchor_count']}"
-        f"|delta_to_next={delta_to_next}",
-        file=sys.stderr
-    )
-
-    sys.exit(0)
-
-print("NO_MATCH")
-EOF
+	ensure_phash_engine || {
+		echo -e "${REB} = = > Could Not Build Hash Engine.${NC}"
+		pause
+		continue
+	}
 
     # =========================
     # #MARKER: PHASH RESULT PARSE HARDENING
@@ -20027,6 +20397,7 @@ EOF
             "${STEP_SIZE:-1}" \
             "${ANCHOR_SECONDS:-3,5,7}" \
 			"intro_template/intro_template*.mkv" \
+			"${INTRO_HASH_MODE:-phash}" \
             2> >(tee "$PHASH_STDERR_LOG" | run_phash_engine_colored >&2)
     )"
     phash_status=$?
@@ -20094,7 +20465,7 @@ EOF
         start_hms="$(seconds_to_hms "$start")"
         end_hms="$(seconds_to_hms "$end")"
 
-        echo -e "${GREEN} = = > Perceptual Match Found.${NC}"
+        echo -e "${GRB} = = >${NC}${GREEN} Perceptual Match Found.${NC}"
         echo -e "${CYAN} = = > Start:${NC}${YELLOW} $start ${NC}${GREEN}(${start_hms})${NC}"
         echo -e "${CYAN} = = > End:${NC}${YELLOW}   $end ${NC}${GREEN}(${end_hms})${NC}"
 
@@ -20126,6 +20497,12 @@ EOF
 		# #MARKER: OPTIONAL OUTROFIND PASS
 		# ================================================================
 		if [[ -f "$OUTRO_TEMPLATE" ]]; then
+
+			if already_outro_processed "$raw" || already_outro_processed "$file"; then
+				echo -e "${YELLOW} = = > Outro Already Mapped By RAW / Working Name. Skipping Optional OutroFind:${NC} ${GREEN}$raw${NC}"
+				continue
+			fi
+
 			duration=""
 			outro_scan_start=""
 			outro_limit=""
@@ -20143,7 +20520,7 @@ EOF
 			duration="$(get_file_duration_seconds "$file")"
 			outro_limit="$duration"
 
-			outro_scan_start="$(awk -v d="$duration" -v back="$OUTRO_SCAN_BACK_SECONDS" 'BEGIN{
+			outro_scan_start="$(awk -v d="$duration" -v back="${OUTRO_TAIL_SCAN_SECONDS:-120}" 'BEGIN{
 				v=d-back
 				if (v < 0) v=0
 				printf "%.3f", v
@@ -20156,16 +20533,18 @@ EOF
 
 			outro_find_t0="$(date +%s)"
 
-			echo -e "${CYAN} = = > OutroFind Settings:${NC} ${YELLOW}Diff=${OUTRO_HASH_DIFF:-${HASH_DIFF:-12}} Step=${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}} Anchors=${OUTRO_ANCHOR_SECONDS:-${ANCHOR_SECONDS:-8,12,16}}${NC}"
+			echo -e "${CYAN} = = > OutroFind Settings:${NC} ${YELLOW}Mode=${OUTRO_HASH_MODE:-dhash} Diff=${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}} Step=${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}} Anchors=${OUTRO_ANCHOR_SECONDS:-8,12,16}${NC}"
+
 			outro_output="$(
 				python3 "$PHASH_ENGINE" \
 					"$outro_scan_start" \
 					"$outro_limit" \
-					"${OUTRO_HASH_DIFF:-${HASH_DIFF:-12}}" \
+					"${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}}" \
 					"$file" \
 					"${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}" \
-					"${OUTRO_ANCHOR_SECONDS:-${ANCHOR_SECONDS:-8,12,16}}" \
+					"${OUTRO_ANCHOR_SECONDS:-8,12,16}" \
 					"$OUTRO_TEMPLATE" \
+					"${OUTRO_HASH_MODE:-dhash}" \
 					2> >(tee "$PHASH_STDERR_LOG" | run_phash_engine_colored >&2)
 			)"
 
