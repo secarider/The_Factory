@@ -612,6 +612,54 @@ twisted_load_sticky_theme() {
 # ----- LOAD SAVED TWISTED THEME AFTER STICKY HELPERS EXIST --------------------
 twisted_load_sticky_theme
 
+# ========================================================
+# #MARKER: SMARTCUT STICKY SESSION SETTINGS
+# ========================================================
+SMARTCUT_SESSION_CONFIG_FILE=".factory_smartcut_session.conf"
+
+smartcut_save_sticky_session() {
+	cat > "$SMARTCUT_SESSION_CONFIG_FILE" <<EOF
+INTRO_SCAN_START="${INTRO_SCAN_START:-${DEFAULT_SCAN_START:-30}}"
+INTRO_MAX_SCAN="${INTRO_MAX_SCAN:-${DEFAULT_MAX_SCAN:-601}}"
+INTRO_HASH_DIFF="${INTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-16}}"
+INTRO_STEP_SIZE="${INTRO_STEP_SIZE:-${STEP_SIZE:-1}}"
+INTRO_ANCHOR_SECONDS="${INTRO_ANCHOR_SECONDS:-${ANCHOR_SECONDS:-3,5,7}}"
+INTRO_HASH_MODE="${INTRO_HASH_MODE:-phash}"
+
+OUTRO_TAIL_SCAN_SECONDS="${OUTRO_TAIL_SCAN_SECONDS:-200}"
+OUTRO_HASH_DIFF="${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-16}}"
+OUTRO_STEP_SIZE="${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}"
+OUTRO_ANCHOR_SECONDS="${OUTRO_ANCHOR_SECONDS:-8,12,16}"
+OUTRO_HASH_MODE="${OUTRO_HASH_MODE:-dhash}"
+
+TIP_TRIM_SECONDS="${TIP_TRIM_SECONDS:-0}"
+TAIL_TRIM_SECONDS="${TAIL_TRIM_SECONDS:-0}"
+TIP_OFFSET_SECONDS="${TIP_OFFSET_SECONDS:-0}"
+INTRO_PAD_BEFORE_SECONDS="${INTRO_PAD_BEFORE_SECONDS:-0}"
+INTRO_PAD_AFTER_SECONDS="${INTRO_PAD_AFTER_SECONDS:-0}"
+OUTRO_PAD_BEFORE_SECONDS="${OUTRO_PAD_BEFORE_SECONDS:-0}"
+
+SMC_BARFIX_LITE_ENABLED="${SMC_BARFIX_LITE_ENABLED:-1}"
+SMC_BARFIX_AUDIO_LANG="${SMC_BARFIX_AUDIO_LANG:-eng}"
+SMC_BARFIX_SUBS_OFF="${SMC_BARFIX_SUBS_OFF:-1}"
+SMC_BARFIX_TITLE_MODE="${SMC_BARFIX_TITLE_MODE:-after_sxxexx}"
+SMC_BARFIX_TITLE_SEGMENT="${SMC_BARFIX_TITLE_SEGMENT:-3}"
+
+REKEY_CRF="${REKEY_CRF:-24}"
+EOF
+
+	echo -e "${GR} = = > SmartCut Session VarZ Saved:${NC} ${YELLOW}$SMARTCUT_SESSION_CONFIG_FILE${NC}"
+}
+
+smartcut_load_sticky_session() {
+	[[ -f "$SMARTCUT_SESSION_CONFIG_FILE" ]] || return 0
+
+	# shellcheck disable=SC1090
+	source "$SMARTCUT_SESSION_CONFIG_FILE" 2>/dev/null || return 0
+
+	echo -e "${CYAN} = = > SmartCut Session VarZ Loaded:${NC} ${YELLOW}$SMARTCUT_SESSION_CONFIG_FILE${NC}"
+}
+
 # ------------------ DEFAULTS ------------------
 # ========================================================
 # ARCHIVE TEMP WORKDIR (SAFE WRITE AREA)
@@ -676,6 +724,7 @@ TARGET_MAX_GROWTH=10
 TARGET_MAX_SHRINK=5
 REKEY_CRF=24
 ARRAY_MAX_JOBS=2
+smartcut_load_sticky_session
 
 # - Helpers
 
@@ -5650,10 +5699,6 @@ show_space_overview() {
 
 # end of Show How Much Space Current Working Directory And OEM Folder
 
-
-#==================================================================================
-# start of INFO CSV LOOKUP BY WORKING NAME
-
 # =========================
 # #MARKER: INFO CSV LOOKUP BY WORKING NAME
 # =========================
@@ -6067,6 +6112,117 @@ get_file_duration_seconds() {
 	awk '{printf "%.3f", $1}'
 }
 
+# ================================================================
+# #MARKER: AUTO HASH ANCHORS FROM TEMPLATE DURATION
+# ================================================================
+# PURPOSE:
+# - Allow IntroFind / OutroFind anchor input to be "auto".
+# - Derive stable, spread-out anchor seconds from template duration.
+# - Keep Python hash engine simple: it still receives normal CSV seconds.
+#
+# DESIGN:
+# - Deterministic, not random.
+# - Avoids the first/last edge of the template when practical.
+# - Uses 3 anchors for intro-style matching.
+# - Uses 5 anchors for outro/full-credit matching.
+#
+# INPUT:
+#   $1 = template path or glob
+#   $2 = intro | outro
+#   $3 = requested anchors value
+#
+# OUTPUT:
+#   CSV anchor seconds
+# ================================================================
+auto_anchor_csv_from_duration() {
+	local template_ref="$1"
+	local mode="${2:-outro}"
+	local requested="${3:-auto}"
+	local template_file=""
+	local duration=""
+	local count=5
+	local csv=""
+
+	# Manual CSV passes through unchanged.
+	if [[ "${requested,,}" != "auto" ]]; then
+		printf '%s\n' "$requested"
+		return 0
+	fi
+
+	case "$mode" in
+		intro)
+			count="${INTRO_AUTO_ANCHOR_COUNT:-3}"
+			;;
+		outro|*)
+			count="${OUTRO_AUTO_ANCHOR_COUNT:-5}"
+			;;
+	esac
+
+	# Resolve first matching template from either a direct file or glob.
+	if [[ -f "$template_ref" ]]; then
+		template_file="$template_ref"
+	else
+		shopt -s nullglob
+		local -a matches=( $template_ref )
+		shopt -u nullglob
+		if (( ${#matches[@]} > 0 )); then
+			template_file="${matches[0]}"
+		fi
+	fi
+
+	if [[ -z "$template_file" || ! -f "$template_file" ]]; then
+		echo -e "${YE} = = > AUTO Anchors Could Not Find Template. Falling Back.${NC}" >&2
+		if [[ "$mode" == "intro" ]]; then
+			printf '%s\n' "${ANCHOR_SECONDS:-3,5,7}"
+		else
+			printf '%s\n' "8,12,16"
+		fi
+		return 0
+	fi
+
+	duration="$(get_file_duration_seconds "$template_file" 2>/dev/null || true)"
+
+	if [[ -z "$duration" || ! "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+		echo -e "${YE} = = > AUTO Anchors Could Not Read Template Duration. Falling Back.${NC}" >&2
+		if [[ "$mode" == "intro" ]]; then
+			printf '%s\n' "${ANCHOR_SECONDS:-3,5,7}"
+		else
+			printf '%s\n' "8,12,16"
+		fi
+		return 0
+	fi
+
+	case "$count" in
+		3)
+			csv="$(awk -v d="$duration" 'BEGIN {
+				a[1]=0.20; a[2]=0.50; a[3]=0.80
+				for (i=1; i<=3; i++) {
+					v=d*a[i]
+					if (d > 6 && v < 2) v=2
+					if (d > 6 && v > d-2) v=d-2
+					if (i > 1) printf ","
+					printf "%.3f", v
+				}
+			}')"
+			;;
+		5|*)
+			csv="$(awk -v d="$duration" 'BEGIN {
+				a[1]=0.12; a[2]=0.30; a[3]=0.50; a[4]=0.70; a[5]=0.88
+				for (i=1; i<=5; i++) {
+					v=d*a[i]
+					if (d > 6 && v < 2) v=2
+					if (d > 6 && v > d-2) v=d-2
+					if (i > 1) printf ","
+					printf "%.3f", v
+				}
+			}')"
+			;;
+	esac
+
+	echo -e "${CYAN} = = > AUTO Anchors:${NC} ${YELLOW}$csv${NC} ${CYAN}from${NC} ${GREEN}$template_file${NC}" >&2
+	printf '%s\n' "$csv"
+}
+
 # =========================
 # #MARKER: GLOBAL TIME INPUT NORMALIZER
 # =========================
@@ -6182,33 +6338,6 @@ to_seconds() {
 }
 
 # #MARKER: END GLOBAL TEXT / COMMAND HELPERS
-
-
-
-    # ------------------ DEP CHECK ------------------
-
-resolve_smc_bin() {
-	# Prefer local Smart Media Cutter AppImage beside factory.sh.
-	if [[ -x "./smc.app" ]]; then
-		SMC_BIN="./smc.app"
-		HAS_SMC=1
-		echo -e "${GR} = = > SmartCut Engine:${NC} ${YELLOW}./smc.app${NC}"
-		return 0
-	fi
-
-	# Fallback to old pipx / PATH smartcut.
-	if have_cmd smartcut; then
-		SMC_BIN="$(command -v smartcut)"
-		HAS_SMC=1
-		echo -e "${YE} = = > SmartCut Engine Fallback:${NC} ${YELLOW}$SMC_BIN${NC}"
-		return 0
-	fi
-
-	SMC_BIN=""
-	HAS_SMC=0
-	print_missing_optional_dep "smc.app / smartcut" "SmartCut / Smart Media Cutter missions will be unavailable."
-	return 1
-}
 
     # ------------------ DEP CHECK ------------------
 
@@ -6464,7 +6593,7 @@ detect_optional_tools() {
 	else
 		print_missing_optional_dep "iconv" "Some title detox transliteration behavior may be reduced."
 	fi
-		resolve_smc_bin
+		#resolve_smc_bin
 }
 
     # ============================================================
@@ -10363,43 +10492,7 @@ finalize_strip_workflow_prefixes() {
 #
 run_finalize_menu() {
 
-	show_space_overview() {
-		local cwd wd_size OEM_size drive_display
-		local free total free_color free_gb
-
-		cwd="$(pwd)"
-		drive_display="$(get_drive_display "$cwd")"
-        cwd_display="$(trim_working_path_display "$cwd" 3)"
-
-		echo -e "${CYAN}================================================${NC}"
-		echo -e "${CYAN}        SPACE OVERVIEW / WORKING CONTEXT         ${NC}"
-		echo -e "${CYAN}================================================${NC}"
-
-		echo -e "${GREEN} = = > Working Drive/Folder:${NC} [${YELLOW}$drive_display${NC}] ${YELLOW}$cwd_display${NC}"
-
-		free_gb=$(df -BG . | awk 'NR==2 {gsub("G","",$4); print $4}')
-
-		if (( free_gb < 20 )); then
-			free_color=$RED
-		elif (( free_gb < 50 )); then
-			free_color=$YELLOW
-		else
-			free_color=$GREEN
-		fi
-
-		read -r free total <<< "$(df -h . | awk 'NR==2 {print $4, $2}')"
-
-        echo -e "${free_color} = = > $free${NC} ${YELLOW}<-- Total${NC}"
-        echo -e "${YELLOW} = = >  ^ Free Space${NC}"
-
-		wd_size="$(get_folder_size_human ".")"
-		echo -e "${CYAN} = = > Working Dir Size:${NC} ${YELLOW}$wd_size${NC}"
-
-		OEM_size="$(get_folder_size_human "./OEM")"
-		echo -e "${CYAN} = = > OEM Folder Size:${NC} ${YELLOW}$OEM_size${NC}"
-
-		echo
-	}
+	show_space_overview
 
 	cleanup_print_targets() {
 		local label="$1"
@@ -13637,21 +13730,6 @@ run_subtox_extract() {
 	return 0
 }
 
-run_subtox_rename() {
-    clear
-    echo -e "${CYAN}================================================${NC}"
-    echo -e "${CYAN}             RENAME / DETOX FILE TOOLS          ${NC}"
-    echo -e "${CYAN}================================================${NC}"
-    echo
-    echo -e "${YELLOW} = = > Current Implementation Still Lives Inside SUBTOX.${NC}"
-    echo -e "${CYAN} = = > Use SUBTOX Mission 1 For Rename / Detox Operations.${NC}"
-    echo
-
-    if ask_yes_no " = = > Open SUBTOX Now? (y/n or 1/2): "; then
-    	run_subtox
-    fi
-}
-
 # ================================================================
 # #MARKER: SMARTGAP TRIM-ONLY BATCH MAP BUILDER
 # ================================================================
@@ -14768,7 +14846,7 @@ smartcut_session_varz_menu() {
 				prompt_read " = = > Intro Step Size Seconds (current ${INTRO_STEP_SIZE:-${STEP_SIZE:-1}}): " input
 				[[ -n "$input" ]] && INTRO_STEP_SIZE="$input"
 
-				prompt_read " = = > Intro Anchor Seconds CSV (current ${INTRO_ANCHOR_SECONDS:-${ANCHOR_SECONDS:-3,5,7}}): " input
+				prompt_read " = = > Intro Anchor Seconds CSV (CSV or auto) (current ${INTRO_ANCHOR_SECONDS:-${ANCHOR_SECONDS:-3,5,7}}): " input
 				[[ -n "$input" ]] && INTRO_ANCHOR_SECONDS="$input"
 
 				echo
@@ -14811,7 +14889,7 @@ smartcut_session_varz_menu() {
 				prompt_read " = = > Outro Step Size Seconds (current ${OUTRO_STEP_SIZE:-${INTRO_STEP_SIZE:-${STEP_SIZE:-1}}}): " input
 				[[ -n "$input" ]] && OUTRO_STEP_SIZE="$input"
 
-				prompt_read " = = > Outro Anchor Seconds CSV (current ${OUTRO_ANCHOR_SECONDS:-8,12,16}): " input
+				prompt_read " = = > Outro Anchor Seconds CSV (CSV or auto) (current ${OUTRO_ANCHOR_SECONDS:-8,12,16}): " input
 				[[ -n "$input" ]] && OUTRO_ANCHOR_SECONDS="$input"
 
 				echo
@@ -14845,6 +14923,7 @@ smartcut_session_varz_menu() {
 				esac
 				echo
 				echo -e "${GR} = = > Intro/Outro Find Vars Updated.${NC}"
+				smartcut_save_sticky_session
 				pause
 
 				if [[ -n "$auto_jump" ]]; then
@@ -14882,6 +14961,7 @@ smartcut_session_varz_menu() {
 
 				echo
 				echo -e "${GR} = = > SmartCut Cut Vars Updated.${NC}"
+				smartcut_save_sticky_session
 				pause
 				choice=""
 				;;
@@ -14948,6 +15028,7 @@ smartcut_session_varz_menu() {
 				echo
 
 				echo -e "${GR} = = > Barfix Lite Vars Updated.${NC}"
+				smartcut_save_sticky_session
 				pause
 				choice=""
 				;;
@@ -14989,7 +15070,6 @@ run_smartcut_menu() {
 	SMC_BARFIX_TITLE_MODE="${SMC_BARFIX_TITLE_MODE:-after_sxxexx}"
 	# Segment start (only used if mode=segment)
 	SMC_BARFIX_TITLE_SEGMENT="${SMC_BARFIX_TITLE_SEGMENT:-3}"
-
 
 	while true; do
 		clear
@@ -19213,7 +19293,6 @@ cached_rekey_is_known_bad_for_raw() {
 
 # end of NEGATIVE REKEY CACHE CHECK
 
-
 ensure_phash_engine() {
 	# During engine development, always rebuild from the current Factory source.
 	rm -f -- "$PHASH_ENGINE"
@@ -19691,6 +19770,8 @@ run_outrofind_selected_files() {
 			printf "%.3f", v
 		}')"
 
+		resolved_outro_anchors="$(auto_anchor_csv_from_duration "$OUTRO_TEMPLATE" "outro" "${OUTRO_ANCHOR_SECONDS:-8,12,16}")"
+
 		echo
 		echo -e "${CYAN} = = > DEBUG HASH_MODE:${NC} ${YELLOW}${OUTRO_HASH_MODE:-phash}${NC}"
 		echo -e "${CYAN} = = > DEBUG OUTRO_HASH_DIFF:${NC} ${YELLOW}${OUTRO_HASH_DIFF:-unset}${NC}"
@@ -19702,7 +19783,7 @@ run_outrofind_selected_files() {
 		echo -e "${CYAN}============================================================${NC}"
 		echo -e "${CYAN} = = > File:${NC} ${GREEN}$file${NC}"
 		echo -e "${CYAN} = = > Window:${NC} ${YELLOW}${outro_scan_start}s → ${outro_limit}s${NC}"
-		echo -e "${CYAN} = = > Settings:${NC} ${YELLOW}Diff=${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}} Step=${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}} Anchors=${OUTRO_ANCHOR_SECONDS:-8,12,16}${NC}"
+		echo -e "${CYAN} = = > Settings:${NC} ${YELLOW}Diff=${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}} Step=${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}} Anchors=$resolved_outro_anchors"
 		echo
 
 		echo
@@ -19724,9 +19805,9 @@ run_outrofind_selected_files() {
 				"${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}}" \
 				"$file" \
 				"${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}" \
-				"${OUTRO_ANCHOR_SECONDS:-8,12,16}" \
+				"$resolved_outro_anchors" \
 				"$OUTRO_TEMPLATE" \
-				"${OUTRO_HASH_MODE:-phash}" \
+				"${OUTRO_HASH_MODE:-dhash}" \
 				2> >(tee "$PHASH_STDERR_LOG" | run_phash_engine_colored >&2)
 		)"
 
@@ -20011,7 +20092,8 @@ run_intro_detection_menu() {
                 echo -ne "${YELLOW} = = > Anchor Seconds Comma List? (Default 3,5,7): ${NC}${GREEN}"
                 read -r ANCHOR_SECONDS
 			    echo -e "${NC}"
-                ANCHOR_SECONDS=${ANCHOR_SECONDS:-3,5,7}
+                ANCHOR_SECONDS="${ANCHOR_SECONDS:-3,5,7}"
+                INTRO_ANCHOR_SECONDS="$ANCHOR_SECONDS"
 
                 echo -ne "${YELLOW} = = > If You Chose Blackdetect Then Set Its Duration? (Default ${DEFAULT_BLACK_DURATION}): ${NC}${GREEN}"
                 read -r BLACK_DUR
@@ -20348,6 +20430,8 @@ fi
 
   echo -e "${CYAN} = = > Running Perceptual Hash Detection...${NC}"
 
+resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_template*.mkv" "intro" "${INTRO_ANCHOR_SECONDS:-${ANCHOR_SECONDS:-3,5,7}}")"
+
     # --- Generate temporary Python engine ---
 # =========================
 # PHASH ENGINE v2.0
@@ -20395,7 +20479,7 @@ fi
             "$HASH_DIFF" \
             "$file" \
             "${STEP_SIZE:-1}" \
-            "${ANCHOR_SECONDS:-3,5,7}" \
+            "$resolved_intro_anchors" \
 			"intro_template/intro_template*.mkv" \
 			"${INTRO_HASH_MODE:-phash}" \
             2> >(tee "$PHASH_STDERR_LOG" | run_phash_engine_colored >&2)
@@ -20533,7 +20617,8 @@ fi
 
 			outro_find_t0="$(date +%s)"
 
-			echo -e "${CYAN} = = > OutroFind Settings:${NC} ${YELLOW}Mode=${OUTRO_HASH_MODE:-dhash} Diff=${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}} Step=${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}} Anchors=${OUTRO_ANCHOR_SECONDS:-8,12,16}${NC}"
+				resolved_outro_anchors="$(auto_anchor_csv_from_duration "$OUTRO_TEMPLATE" "outro" "${OUTRO_ANCHOR_SECONDS:-8,12,16}")"
+			echo -e "${CYAN} = = > OutroFind Settings:${NC} ${YELLOW}Mode=${OUTRO_HASH_MODE:-dhash} Diff=${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}} Step=${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}} Anchors=$resolved_outro_anchors${NC}"
 
 			outro_output="$(
 				python3 "$PHASH_ENGINE" \
@@ -20542,7 +20627,7 @@ fi
 					"${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}}" \
 					"$file" \
 					"${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}" \
-					"${OUTRO_ANCHOR_SECONDS:-8,12,16}" \
+					"$resolved_outro_anchors" \
 					"$OUTRO_TEMPLATE" \
 					"${OUTRO_HASH_MODE:-dhash}" \
 					2> >(tee "$PHASH_STDERR_LOG" | run_phash_engine_colored >&2)
