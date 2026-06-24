@@ -139,6 +139,34 @@ REV=$'\033[7m'           # Reverse Video Style
 NC=$'\033[0m'            # Reset / No Color
 # MARKER: COLOR DEFINITIONS END =============================================
 
+# ========================================================
+# #MARKER: FACTORY PORTABLE HOME / WORKDIR ROOTS
+# ========================================================
+# FACTORY_HOME:
+# - Where factory.sh lives.
+# - After TOOLBOX migration, this IS the TOOLBOX directory.
+#
+# FACTORY_WORKDIR:
+# - Where the user launched Factory from.
+# - This remains the media / season working folder.
+# ========================================================
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+FACTORY_HOME="${FACTORY_HOME:-$SCRIPT_DIR}"
+FACTORY_WORKDIR="${FACTORY_WORKDIR:-$PWD}"
+FACTORY_CONFIG_FILE="${FACTORY_CONFIG_FILE:-$FACTORY_HOME/factory.conf}"
+
+# ========================================================
+# #MARKER: LEGACY STICKY WRITE FILES / SAFE BRIDGE MODE
+# ========================================================
+# PURPOSE:
+# - factory.conf is now the central config/read target.
+# - Old Twisted and SmartCut save helpers still rewrite whole files.
+# - Keep their write targets separate until factory_conf_set_var exists.
+#
+TWISTED_CONFIG_FILE="${TWISTED_CONFIG_FILE:-$FACTORY_HOME/factory_twisted.conf}"
+SMARTCUT_SESSION_CONFIG_FILE="${SMARTCUT_SESSION_CONFIG_FILE:-$FACTORY_HOME/.factory_smartcut_session.conf}"
+
 # ===== COLOR SYSTEM / TWISTED THEME ENGINE ===================================
 # PURPOSE:
 # Centralize all standard display colors in one place so the script can:
@@ -581,7 +609,7 @@ run_twisted_menu() {
 # ========================================================
 # #MARKER: TWISTED STICKY SETTINGS
 # ========================================================
-TWISTED_CONFIG_FILE=".factory_twisted.conf"
+TWISTED_CONFIG_FILE="$FACTORY_CONFIG_FILE"
 
 twisted_save_theme() {
 	local theme_name="$1"
@@ -615,7 +643,7 @@ twisted_load_sticky_theme
 # ========================================================
 # #MARKER: SMARTCUT STICKY SESSION SETTINGS
 # ========================================================
-SMARTCUT_SESSION_CONFIG_FILE=".factory_smartcut_session.conf"
+SMARTCUT_SESSION_CONFIG_FILE="$FACTORY_CONFIG_FILE"
 
 smartcut_save_sticky_session() {
 	cat > "$SMARTCUT_SESSION_CONFIG_FILE" <<EOF
@@ -626,7 +654,10 @@ INTRO_STEP_SIZE="${INTRO_STEP_SIZE:-${STEP_SIZE:-1}}"
 INTRO_ANCHOR_SECONDS="${INTRO_ANCHOR_SECONDS:-${ANCHOR_SECONDS:-3,5,7}}"
 INTRO_HASH_MODE="${INTRO_HASH_MODE:-phash}"
 
-OUTRO_TAIL_SCAN_SECONDS="${OUTRO_TAIL_SCAN_SECONDS:-200}"
+OUTRO_TAIL_SCAN_SECONDS="${OUTRO_TAIL_SCAN_SECONDS:-auto}"
+OUTRO_TAIL_SCAN_PAD_SECONDS="${OUTRO_TAIL_SCAN_PAD_SECONDS:-10}"
+OUTRO_TAIL_SCAN_MIN_SECONDS="${OUTRO_TAIL_SCAN_MIN_SECONDS:-45}"
+OUTRO_TAIL_SCAN_MAX_SECONDS="${OUTRO_TAIL_SCAN_MAX_SECONDS:-160}"
 OUTRO_HASH_DIFF="${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-16}}"
 OUTRO_STEP_SIZE="${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}"
 OUTRO_ANCHOR_SECONDS="${OUTRO_ANCHOR_SECONDS:-8,12,16}"
@@ -677,9 +708,12 @@ DEFAULT_BLACK_PIXTH=0.10
 INTRO_MAP="intro_map.csv"
 output="intro_template.mkv"
 INFO_MAP="info.csv"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PHASH_ENGINE="${SCRIPT_DIR}/.phash_engine.py"
-OUTRO_TEMPLATE="intro_template/outro.mkv"
+
+PHASH_ENGINE="${FACTORY_HOME}/.phash_engine.py"
+INTRO_TEMPLATE_DIR="${INTRO_TEMPLATE_DIR:-${FACTORY_HOME}/intro_template}"
+OUTRO_TEMPLATE="${OUTRO_TEMPLATE:-${INTRO_TEMPLATE_DIR}/outro.mkv}"
+OUTRO_TEMPLATE_GLOB="${OUTRO_TEMPLATE_GLOB:-${INTRO_TEMPLATE_DIR}/outro*.mkv}"
+OUTRO_MULTIKEY_DURATION_TOLERANCE_SECONDS="${OUTRO_MULTIKEY_DURATION_TOLERANCE_SECONDS:-1.0}"
 
 # =========================
 # #MARKER: REKEY BATCH DEFAULTS / SANITY BAND
@@ -744,6 +778,39 @@ canonical_factory_path() {
 	while [[ "$p" == ./* ]]; do
 		p="${p#./}"
 	done
+
+	printf '%s\n' "$p"
+}
+
+# ================================================================
+# #MARKER: TEMPLATE PATH DISPLAY / MAP NORMALIZER
+# ================================================================
+factory_template_map_path() {
+	local p="${1:-}"
+	local base
+
+	[[ -z "$p" ]] && return 0
+
+	base="$(basename "$p")"
+
+	case "$p" in
+		"${INTRO_TEMPLATE_DIR:-${FACTORY_HOME}/intro_template}"/*)
+			printf 'intro_template/%s\n' "$base"
+			return 0
+			;;
+		"${FACTORY_HOME}/intro_template"/*)
+			printf 'intro_template/%s\n' "$base"
+			return 0
+			;;
+		*/TOOLBOX/intro_template/*)
+			printf 'intro_template/%s\n' "$base"
+			return 0
+			;;
+		intro_template/*)
+			printf '%s\n' "$p"
+			return 0
+			;;
+	esac
 
 	printf '%s\n' "$p"
 }
@@ -2201,28 +2268,52 @@ run_batch_normalizer_throughput() {
 # #MARKER: AUDIO SYNC RESCUE
 # ================================================================
 run_audio_sync_rescue() {
-	local offset direction
+	local offset direction mode
 	local -a targets=()
+	local -a full_targets=()
+	local -a pilot_outputs=()
 	local file out_file
 	local rescued_run_dir
 	local ff_offset
+	local total current
+	local choice
 
 	clear
 	echo -e "${CYAN}================================================${NC}"
 	echo -e "${CYAN}             AUDIO SYNC RESCUE                  ${NC}"
 	echo -e "${CYAN}================================================${NC}"
 	echo
-	echo -e "${YELLOW} = = > Batch Constant Audio Offset Repair.${NC}"
+	echo -e "${YELLOW} = = > Constant Audio Offset Repair.${NC}"
 	echo -e "${YELLOW} = = > Stream-Copy Remux Only (No Reencode).${NC}"
+	echo -e "${YELLOW} = = > Pilot Mode Leaves Originals In Place For Review.${NC}"
 	echo -e "${YELLOW} = = > Return / Cancel Token: 0.${NC}"
 	echo
 
 	shopt -s nullglob nocaseglob
-	targets=(*.mkv)
+	full_targets=(*.mkv)
 	shopt -u nullglob nocaseglob
 
-	if (( ${#targets[@]} == 0 )); then
+	if (( ${#full_targets[@]} == 0 )); then
 		echo -e "${REB} = = > No MKV Targets Found.${NC}"
+		echo
+		return 0
+	fi
+
+	# ------------------------------------------------------------
+	# FILTER GENERATED / INTERNAL FILES
+	# ------------------------------------------------------------
+	targets=()
+	for file in "${full_targets[@]}"; do
+		case "$file" in
+			REKEY_*|SMC_*|PILOT_SMC_*|BARFIX_*|SUBPACKED_*|SUBTOX_*|ARCHIVE_*|RESCUE_*|PILOT_RESCUE_*|AUDIOFIX_*|intro_template*|custom_cut*)
+				continue
+				;;
+		esac
+		targets+=("$file")
+	done
+
+	if (( ${#targets[@]} == 0 )); then
+		echo -e "${REB} = = > No Eligible MKV Source Targets Found.${NC}"
 		echo
 		return 0
 	fi
@@ -2266,6 +2357,41 @@ run_audio_sync_rescue() {
 
 	echo
 	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}          AUDIO SYNC RESCUE TARGET MODE          ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW}     1) Pilot First File Only${NC}"
+	echo -e "${YELLOW}     2) Pilot First 3 Files${NC}"
+	echo -e "${YELLOW}     3) Full Batch${NC}"
+	echo
+	echo -e "${YELLOW}     0.) Return${NC}"
+	echo
+
+	prompt_menu_choice " = = > Choose Mode [1-3 | 0.=return]: " mode
+
+	if is_exit_token "$mode"; then
+		echo -e "${YE} = = > Audio Sync Rescue Cancelled.${NC}"
+		return 0
+	fi
+
+	case "$mode" in
+		1)
+			targets=("${targets[@]:0:1}")
+			;;
+		2)
+			targets=("${targets[@]:0:3}")
+			;;
+		3)
+			:
+			;;
+		*)
+			echo -e "${REB} = = > Invalid Mode.${NC}"
+			return 0
+			;;
+	esac
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
 	echo -e "${CYAN}                PREVIEW PLAN                    ${NC}"
 	echo -e "${CYAN}================================================${NC}"
 	echo
@@ -2279,6 +2405,12 @@ run_audio_sync_rescue() {
 	echo
 	echo -e "${CYAN} = = > Targets:${NC} ${YELLOW}${#targets[@]}${NC}"
 	echo -e "${CYAN} = = > Audio Offset:${NC} ${YELLOW}${ff_offset}${NC}"
+
+	if [[ "$mode" == "1" || "$mode" == "2" ]]; then
+		echo -e "${YE} = = > PILOT MODE:${NC} ${YELLOW}Originals Will Stay In Working Folder Until Accepted.${NC}"
+	else
+		echo -e "${YE} = = > FULL BATCH:${NC} ${YELLOW}Successful Originals Will Be Archived Immediately.${NC}"
+	fi
 	echo
 
 	if ! ask_yes_no " = = > Proceed With Audio Rescue? (y/n or 1/2): "; then
@@ -2287,11 +2419,11 @@ run_audio_sync_rescue() {
 		return 0
 	fi
 
-	rescued_run_dir="OEM/AUDIO_SYNC/run_$(date '+%Y%m%d_%H%M%S')"
+	rescued_run_dir="OEM/AUDIO_SYNC/$(date '+%Y-%m')"
 	mkdir -p "$rescued_run_dir"
 
-	local total="${#targets[@]}"
-	local current=0
+	total="${#targets[@]}"
+	current=0
 
 	for file in "${targets[@]}"; do
 		((current+=1)) || :
@@ -2302,7 +2434,12 @@ run_audio_sync_rescue() {
 		echo -e "${CYAN}[${current} / ${total}] TARGET:${NC} ${GREEN}$file${NC}"
 		echo -e "${CYAN} = = > Output:${NC} ${YELLOW}$out_file${NC}"
 
+		rm -f -- "$out_file"
+
 		if ffmpeg \
+			-hide_banner \
+			-nostats \
+			-loglevel error \
 			-y \
 			-itsoffset "$ff_offset" -i "$file" \
 			-i "$file" \
@@ -2312,15 +2449,100 @@ run_audio_sync_rescue() {
 			-c copy \
 			"$out_file"
 		then
-			mv -- "$file" "$rescued_run_dir/"
+			pilot_outputs+=("$out_file")
 
-			echo -e "${GR} = = > AUDIO SYNC RESCUE COMPLETE:${NC} ${GREEN}$out_file${NC}"
-			echo -e "${CYAN} = = > OEM AUDIO_SYNC Archive:${NC} ${YELLOW}$rescued_run_dir${NC}"
+			if [[ "$mode" == "3" ]]; then
+				mv -- "$file" "$rescued_run_dir/"
+				echo -e "${GR} = = > AUDIO SYNC RESCUE COMPLETE:${NC} ${GREEN}$out_file${NC}"
+				echo -e "${CYAN} = = > OEM AUDIO_SYNC Archive:${NC} ${YELLOW}$rescued_run_dir${NC}"
+			else
+				echo -e "${GR} = = > PILOT AUDIOFIX CREATED:${NC} ${GREEN}$out_file${NC}"
+				echo -e "${YE} = = > Original Kept For Review:${NC} ${YELLOW}$file${NC}"
+			fi
 		else
 			echo -e "${REB} = = > AUDIO SYNC RESCUE FAILED:${NC} ${YELLOW}$file${NC}"
 			rm -f -- "$out_file"
 		fi
 	done
+
+	# ------------------------------------------------------------
+	# PILOT REVIEW GATE
+	# ------------------------------------------------------------
+	if [[ "$mode" == "1" || "$mode" == "2" ]]; then
+		if (( ${#pilot_outputs[@]} == 0 )); then
+			echo
+			echo -e "${REB} = = > No Pilot Outputs Were Created.${NC}"
+			return 0
+		fi
+
+		while true; do
+			echo
+			echo -e "${CYAN}============================================================${NC}"
+			echo -e "${ORANGE}              AUDIO SYNC PILOT REVIEW ${NC}"
+			echo -e "${YEB}        GO CHECK THE AUDIOFIX FILE(S) RIGHT NOW! ${NC}"
+			echo -e "${CYAN}============================================================${NC}"
+			echo
+			echo -e "${CYAN} = = > Offset Used:${NC} ${YELLOW}${ff_offset}${NC}"
+			echo -e "${CYAN} = = > Pilot Output(s):${NC}"
+			for out_file in "${pilot_outputs[@]}"; do
+				echo -e "${GREEN}     $out_file${NC}"
+			done
+			echo
+			echo -e "${YELLOW}     1) Accept Pilot And Archive Original(s)${NC}"
+			echo -e "${YELLOW}     2) Delete AUDIOFIX Output(s), Keep Original(s), Return For Redo${NC}"
+			echo -e "${YELLOW}     3) Keep Both For Manual Review${NC}"
+			echo
+			echo -e "${YELLOW}     0.) Return / Do Nothing${NC}"
+			echo
+
+			prompt_menu_choice " = = > Choose Pilot Result [1-3 | 0.=return]: " choice
+
+			if is_exit_token "$choice"; then
+				echo -e "${YE} = = > Audio Sync Pilot Review Skipped. Nothing Changed.${NC}"
+				return 0
+			fi
+
+			case "$choice" in
+				1)
+					echo
+					echo -e "${CYAN} = = > Accepting Audio Sync Pilot Result(s)...${NC}"
+					for file in "${targets[@]}"; do
+						if [[ -f "$file" ]]; then
+							mv -- "$file" "$rescued_run_dir/"
+							echo -e "${CYAN} = = > Archived Original:${NC} ${YELLOW}$file${NC}"
+						fi
+					done
+					echo -e "${GR} = = > Audio Sync Pilot Accepted.${NC}"
+					echo -e "${CYAN} = = > OEM AUDIO_SYNC Archive:${NC} ${YELLOW}$rescued_run_dir${NC}"
+					return 0
+					;;
+
+				2)
+					echo
+					echo -e "${CYAN} = = > Deleting AudioFix Pilot Output(s)...${NC}"
+					for out_file in "${pilot_outputs[@]}"; do
+						if [[ -f "$out_file" ]]; then
+							rm -f -- "$out_file"
+							echo -e "${YE} = = > Deleted:${NC} ${YELLOW}$out_file${NC}"
+						fi
+					done
+					echo -e "${GR} = = > Originals Remain In Working Folder For Redo.${NC}"
+					return 0
+					;;
+
+				3)
+					echo
+					echo -e "${YE} = = > Keeping Both Original(s) And AUDIOFIX Output(s).${NC}"
+					echo -e "${YE} = = > No Originals Archived.${NC}"
+					return 0
+					;;
+
+				*)
+					echo -e "${REB} = = > Invalid Selection.${NC}"
+					;;
+			esac
+		done
+	fi
 
 	echo
 	echo -e "${GR} = = > Audio Rescue Pass Complete.${NC}"
@@ -2496,6 +2718,7 @@ PILOT_SESSION_DIR=""
 PILOT_RESTORE_CSV=""
 PILOT_OUTPUTS_CSV=""
 PILOT_TEMPS_CSV=""
+PILOT_CUTS_TXT=""
 PILOT_HISTORY_CSV="${PILOT_HISTORY_CSV:-pilot_history.csv}"
 
 pilot_is_active() {
@@ -2519,12 +2742,14 @@ pilot_begin_session() {
 	PILOT_RESTORE_CSV="$PILOT_SESSION_DIR/pilot_restore.csv"
 	PILOT_OUTPUTS_CSV="$PILOT_SESSION_DIR/pilot_outputs.csv"
 	PILOT_TEMPS_CSV="$PILOT_SESSION_DIR/pilot_temps.csv"
+	PILOT_CUTS_TXT="$PILOT_SESSION_DIR/pilot_cut_plans.txt"
 
 	mkdir -p "$PILOT_SESSION_DIR/BACKUPS"
 
 	printf '%s\n' "live_file,backup_path,reason,source_sig,registered_at" > "$PILOT_RESTORE_CSV"
 	printf '%s\n' "output_file,profile,registered_at" > "$PILOT_OUTPUTS_CSV"
 	printf '%s\n' "temp_file,reason,registered_at" > "$PILOT_TEMPS_CSV"
+	printf '%s\n' "SMC PILOT CUT PLAN REVIEW" > "$PILOT_CUTS_TXT"
 
 	if [[ ! -f "$PILOT_HISTORY_CSV" ]]; then
 		printf '%s\n' "time,session,action,target,detail,status" > "$PILOT_HISTORY_CSV"
@@ -2611,6 +2836,58 @@ pilot_register_output() {
 }
 
 # ================================================================
+# #MARKER: PILOT SMC CUT PLAN REPORT HELPER
+# ================================================================
+pilot_register_smc_cut_plan() {
+	local source_file="${1:-}"
+	local output_file="${2:-}"
+	local cut_args="${3:-}"
+
+	pilot_is_active || return 0
+	[[ -n "${PILOT_CUTS_TXT:-}" ]] || return 0
+
+	source_file="$(canonical_factory_path "$source_file")"
+	output_file="$(canonical_factory_path "$output_file")"
+
+	{
+		echo
+		echo "============================================================"
+		echo "SOURCE : $source_file"
+		echo "OUTPUT : $output_file"
+		echo "CUTS   : $cut_args"
+		echo "------------------------------------------------------------"
+
+		IFS=',' read -r -a tokens <<< "$cut_args"
+
+		local n=0
+		local i start end
+
+		for ((i=0; i<${#tokens[@]}; i+=2)); do
+			start="${tokens[$i]:-}"
+			end="${tokens[$((i+1))]:-}"
+
+			((n+=1)) || :
+
+			echo "[$n] REMOVE SEGMENT"
+			echo "    Start : $start"
+			echo "    End   : $end"
+
+			if [[ "$start" != "end" && "$start" != -* ]]; then
+				echo "    Start HMS : $(format_seconds_hms "$start")"
+			fi
+
+			if [[ "$end" != "end" && "$end" != -* ]]; then
+				echo "    End HMS   : $(format_seconds_hms "$end")"
+			fi
+
+			echo
+		done
+	} >> "$PILOT_CUTS_TXT"
+
+	pilot_history_log "REGISTER_SMC_CUT_PLAN" "$output_file" "$cut_args" "OK"
+}
+
+# ================================================================
 # #MARKER: SMC PILOT REVIEW HANDLER
 # ================================================================
 # PURPOSE:
@@ -2651,6 +2928,18 @@ handle_smc_pilot_review() {
 	echo
 	echo -e "${CYAN} = = > Pilot Session:${NC} ${GREEN}${PILOT_SESSION_DIR}${NC}"
 	echo
+
+	if [[ -f "${PILOT_CUTS_TXT:-}" ]]; then
+		echo -e "${CYAN}============================================================${NC}"
+		echo -e "${CYAN}              PILOT CUT PLAN SUMMARY                       ${NC}"
+		echo -e "${CYAN}============================================================${NC}"
+		echo -e "${YELLOW}"
+		cat "$PILOT_CUTS_TXT"
+		echo -e "${NC}"
+		echo -e "${CYAN}============================================================${NC}"
+		echo
+	fi
+
 	echo -e "${YELLOW}     1) Accept Pilot And Archive Original(s)${NC}"
 	echo -e "${YELLOW}     2) Delete Pilot Output(s), Keep Original(s), Return For Redo${NC}"
 	echo -e "${YELLOW}     3) Keep Both For Manual Review${NC}"
@@ -4480,7 +4769,1426 @@ run_avi_rescue_menu() {
 		echo
 	}
 
-#duplicate detox title check after testing
+# ========================================================
+# #MARKER: COLLECTION DETOX PLAYLIST REPAIR EXECUTION
+# ========================================================
+
+collection_detox_playlist_backup_path() {
+	local scan_root="$1"
+	local run_dir="$2"
+	local playlist="$3"
+	local rel backup
+
+	rel="${playlist#"$scan_root"/}"
+	[[ "$rel" == "$playlist" ]] && rel="$(basename "$playlist")"
+
+	backup="$run_dir/OLD_PLAYLISTS/$rel"
+	mkdir -p "$(dirname "$backup")"
+
+	printf '%s\n' "$backup"
+}
+
+collection_detox_write_playlist_repair_report() {
+	local run_dir="$1"
+	local repair_plan="$run_dir/detox_playlist_repair_plan.csv"
+	local repair_report="$run_dir/detox_playlist_repair_report.txt"
+	local playlist match_type old_ref new_ref status confidence
+	local count=0
+
+	{
+		echo "================================================"
+		echo "        PLAYLIST REPAIR REVIEW REPORT"
+		echo "================================================"
+		echo "Generated: $(date)"
+		echo
+		echo "Repair Plan:"
+		echo " $repair_plan"
+		echo
+	} > "$repair_report"
+
+	[[ -f "$repair_plan" ]] || {
+		echo "No playlist repair plan found." >> "$repair_report"
+		return 0
+	}
+
+	while IFS='|' read -r playlist match_type old_ref new_ref status; do
+		[[ "$playlist" == "PLAYLIST" ]] && continue
+		[[ -z "${playlist:-}" ]] && continue
+
+		case "$match_type" in
+			FULL_PATH) confidence="HIGH" ;;
+			BASENAME) confidence="MEDIUM" ;;
+			*) confidence="LOW" ;;
+		esac
+
+		((count+=1)) || :
+
+		{
+			echo "PLAYLIST:"
+			echo " $playlist"
+			echo
+			echo "MATCH TYPE:"
+			echo " $match_type"
+			echo
+			echo "CONFIDENCE:"
+			echo " $confidence"
+			echo
+			echo "OLD REF:"
+			echo " $old_ref"
+			echo
+			echo "NEW REF:"
+			echo " $new_ref"
+			echo
+			echo "STATUS:"
+			echo " $status"
+			echo
+			echo "------------------------------------------------"
+		} >> "$repair_report"
+	done < "$repair_plan"
+
+	{
+		echo
+		echo "================================================"
+		echo "SUMMARY"
+		echo "================================================"
+		echo "Repair Candidates: $count"
+		echo
+		echo "NOTE:"
+		echo "Playlist repair execution will backup original"
+		echo "playlist files into OLD_PLAYLISTS/ before writing"
+		echo "repaired playlists back to their original names."
+	} >> "$repair_report"
+
+	echo -e "${CYAN} = = > Playlist Repair Report:${NC} ${GREEN}$repair_report${NC}"
+}
+
+collection_detox_execute_playlist_repairs() {
+	local scan_root="$1"
+	local run_dir="$2"
+	local repair_plan="$run_dir/detox_playlist_repair_plan.csv"
+	local exec_log="$run_dir/playlist_repair_execute_log.csv"
+	local undo_map="$run_dir/playlist_repair_undo_map.csv"
+	local tmp_file
+
+	local playlist match_type old_ref new_ref status
+	local backup repaired=0 skipped=0 failed=0
+	local -A touched_playlists=()
+
+	[[ -f "$repair_plan" ]] || {
+		echo -e "${YE} = = > No Playlist Repair Plan Found.${NC}"
+		pause
+		return 0
+	}
+
+	echo
+	echo -e "${YE} = = > Playlist Repair Will Modify Playlist Files In Place.${NC}"
+	echo -e "${YE} = = > Originals Will Be Backed Up Under OLD_PLAYLISTS/.${NC}"
+	echo
+
+	if ! ask_yes_no " = = > Execute Playlist Repairs? (y/n or 1/2): "; then
+		echo -e "${YE} = = > Playlist Repair Cancelled.${NC}"
+		pause
+		return 0
+	fi
+
+	printf '%s\n' "STATUS|PLAYLIST|BACKUP|MATCH_TYPE|OLD_REF|NEW_REF|NOTES" > "$exec_log"
+	: > "$undo_map"
+
+	while IFS='|' read -r playlist match_type old_ref new_ref status; do
+		[[ "$playlist" == "PLAYLIST" ]] && continue
+		[[ -z "${playlist:-}" ]] && continue
+
+		if [[ ! -f "$playlist" ]]; then
+			printf '%s|%s|%s|%s|%s|%s|%s\n' \
+				"SKIPPED_MISSING_PLAYLIST" "$playlist" "" "$match_type" "$old_ref" "$new_ref" "playlist missing" >> "$exec_log"
+			((skipped+=1)) || :
+			continue
+		fi
+
+		if [[ -z "${touched_playlists[$playlist]:-}" ]]; then
+			backup="$(collection_detox_playlist_backup_path "$scan_root" "$run_dir" "$playlist")"
+
+			if [[ ! -f "$backup" ]]; then
+				cp -- "$playlist" "$backup" || {
+					printf '%s|%s|%s|%s|%s|%s|%s\n' \
+						"FAILED_BACKUP" "$playlist" "$backup" "$match_type" "$old_ref" "$new_ref" "backup failed" >> "$exec_log"
+					((failed+=1)) || :
+					continue
+				}
+			fi
+
+			printf '%s|%s\n' "$playlist" "$backup" >> "$undo_map"
+			touched_playlists["$playlist"]="$backup"
+		fi
+
+		if ! grep -Fq -- "$old_ref" "$playlist" 2>/dev/null; then
+			printf '%s|%s|%s|%s|%s|%s|%s\n' \
+				"SKIPPED_REF_NOT_FOUND" "$playlist" "${touched_playlists[$playlist]}" "$match_type" "$old_ref" "$new_ref" "old ref not found" >> "$exec_log"
+			((skipped+=1)) || :
+			continue
+		fi
+
+		tmp_file="${playlist}.repair_tmp_$$"
+
+		if sed "s|$(printf '%s\n' "$old_ref" | sed 's/[\/&]/\\&/g')|$(printf '%s\n' "$new_ref" | sed 's/[\/&]/\\&/g')|g" "$playlist" > "$tmp_file"; then
+			mv -- "$tmp_file" "$playlist"
+			printf '%s|%s|%s|%s|%s|%s|%s\n' \
+				"REPAIRED" "$playlist" "${touched_playlists[$playlist]}" "$match_type" "$old_ref" "$new_ref" "ok" >> "$exec_log"
+			((repaired+=1)) || :
+		else
+			rm -f -- "$tmp_file"
+			printf '%s|%s|%s|%s|%s|%s|%s\n' \
+				"FAILED_REPAIR" "$playlist" "${touched_playlists[$playlist]}" "$match_type" "$old_ref" "$new_ref" "sed failed" >> "$exec_log"
+			((failed+=1)) || :
+		fi
+
+	done < "$repair_plan"
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}        PLAYLIST REPAIR SUMMARY                 ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > Repaired References:${NC} ${YELLOW}$repaired${NC}"
+	echo -e "${CYAN} = = > Skipped:${NC} ${YELLOW}$skipped${NC}"
+	echo -e "${CYAN} = = > Failed:${NC} ${YELLOW}$failed${NC}"
+	echo -e "${CYAN} = = > OLD Playlist Backups:${NC} ${GREEN}$run_dir/OLD_PLAYLISTS${NC}"
+	echo -e "${CYAN} = = > Execute Log:${NC} ${GREEN}$exec_log${NC}"
+	echo -e "${CYAN} = = > Undo Map:${NC} ${GREEN}$undo_map${NC}"
+	echo
+
+	pause
+}
+
+collection_detox_undo_playlist_repairs() {
+	local run_dir="$1"
+	local undo_map="$run_dir/playlist_repair_undo_map.csv"
+	local playlist backup
+	local restored=0 skipped=0
+
+	[[ -f "$undo_map" ]] || {
+		echo -e "${YE} = = > No Playlist Repair Undo Map Found.${NC}"
+		pause
+		return 0
+	}
+
+	echo
+	echo -e "${YE} = = > This Will Restore Playlists From OLD_PLAYLISTS Backups.${NC}"
+	echo
+
+	if ! ask_yes_no " = = > Undo Playlist Repairs? (y/n or 1/2): "; then
+		echo -e "${YE} = = > Playlist Undo Cancelled.${NC}"
+		pause
+		return 0
+	fi
+
+	while IFS='|' read -r playlist backup; do
+		[[ -z "${playlist:-}" || -z "${backup:-}" ]] && continue
+
+		if [[ ! -f "$backup" ]]; then
+			echo -e "${YE} = = > [UNDO SKIP MISSING BACKUP]${NC} ${YELLOW}$backup${NC}"
+			((skipped+=1)) || :
+			continue
+		fi
+
+		cp -- "$backup" "$playlist"
+		echo -e "${GREEN} = = > [RESTORED PLAYLIST]${NC} ${YELLOW}$playlist${NC}"
+		((restored+=1)) || :
+	done < "$undo_map"
+
+	echo
+	echo -e "${GR} = = > Playlist Undo Complete.${NC}"
+	echo -e "${CYAN} = = > Restored:${NC} ${YELLOW}$restored${NC}"
+	echo -e "${CYAN} = = > Skipped:${NC} ${YELLOW}$skipped${NC}"
+	echo
+
+	pause
+}
+
+
+collection_detox_execute_plan() {
+	local run_dir="$1"
+	local scan_root="$2"
+	local plan_file="$run_dir/detox_plan.csv"
+	local exec_log="$run_dir/detox_execute_log.csv"
+	local success_map="$run_dir/detox_successful_renames.map"
+
+	local status old_path new_path source reason notes
+	local total_pending=0 executed=0 skipped=0 failed=0
+	local dir folder_count=0 recommended_mode="NORMAL"
+	local choice folder_choice remaining_no_pause=0
+	local current_dir="" row_dir
+	local -A folder_counts=()
+	local -a folder_order=()
+
+	[[ -f "$plan_file" ]] || {
+		echo -e "${REB} = = > Missing Plan:${NC} ${YELLOW}$plan_file${NC}"
+		pause
+		return 1
+	}
+
+	# --------------------------------------------------------
+	# ANALYZE PLAN SCOPE
+	# --------------------------------------------------------
+	while IFS='|' read -r status old_path new_path source reason notes; do
+		[[ "$status" == "STATUS" ]] && continue
+		[[ "$status" == "PENDING" ]] || continue
+
+		((total_pending+=1)) || :
+
+		dir="$(dirname "$old_path")"
+
+		if [[ -z "${folder_counts[$dir]:-}" ]]; then
+			folder_order+=("$dir")
+			folder_counts["$dir"]=0
+		fi
+
+		((folder_counts["$dir"]+=1)) || :
+	done < "$plan_file"
+
+	folder_count="${#folder_order[@]}"
+
+	if (( total_pending == 0 )); then
+		echo -e "${YE} = = > No Pending Renames Found In Plan.${NC}"
+		pause
+		return 0
+	fi
+
+	if (( total_pending > 75 && folder_count > 1 )); then
+		recommended_mode="COLLECTION"
+	elif (( total_pending > 50 && folder_count > 1 )); then
+		recommended_mode="LARGE"
+	else
+		recommended_mode="NORMAL"
+	fi
+
+	while true; do
+		clear
+		echo -e "${CYAN}================================================${NC}"
+		echo -e "${CYAN}        COLLECTION DETOX :: EXECUTE PLAN        ${NC}"
+		echo -e "${CYAN}================================================${NC}"
+		echo
+		echo -e "${CYAN} = = > Plan:${NC} ${GREEN}$plan_file${NC}"
+		echo -e "${CYAN} = = > Pending Renames:${NC} ${YELLOW}$total_pending${NC}"
+		echo -e "${CYAN} = = > Folders With Renames:${NC} ${YELLOW}$folder_count${NC}"
+		echo -e "${CYAN} = = > Recommended Mode:${NC} ${YELLOW}$recommended_mode${NC}"
+		echo
+		echo -e "${CYAN} = = > Folder Groups:${NC}"
+		for dir in "${folder_order[@]}"; do
+			echo -e "${YELLOW}     ${folder_counts[$dir]}${NC} ${GREEN}$dir${NC}"
+		done
+		echo
+		echo -e "  ${YELLOW}1)= = > Execute Recommended Mode${NC}"
+		echo -e "  ${YELLOW}2)= = > Execute All Pending Renames Now${NC}"
+		echo -e "  ${YELLOW}3)= = > Execute Folder-By-Folder${NC}"
+		echo -e "  ${YELLOW}4)= = > Undo Successful Renames From This Run${NC}"
+		echo -e "  ${YELLOW}0.) Return${NC}"
+		echo
+		echo -ne "${YELLOW} = = > Select Option: ${NC}${GREEN}"
+		read -r choice
+		echo -e "${NC}"
+
+		if is_exit_token "$choice"; then
+			return 0
+		fi
+
+		case "$choice" in
+			1)
+				if [[ "$recommended_mode" == "NORMAL" ]]; then
+					choice="2"
+				else
+					choice="3"
+				fi
+				;;
+
+			2|3|4)
+				:
+				;;
+
+			*)
+				echo -e "${YE} = = > Invalid Selection.${NC}"
+				pause
+				continue
+				;;
+		esac
+
+		break
+	done
+
+	# --------------------------------------------------------
+	# UNDO MODE
+	# --------------------------------------------------------
+	if [[ "$choice" == "4" ]]; then
+		[[ -f "$success_map" ]] || {
+			echo -e "${YE} = = > No Successful Rename Map Found For This Run.${NC}"
+			pause
+			return 0
+		}
+
+		echo
+		echo -e "${YE} = = > This Will Rename Files Back Using:${NC}"
+		echo -e "${GREEN} $success_map${NC}"
+		echo
+
+		if ! ask_yes_no " = = > Undo Successful Renames From This Run? (y/n or 1/2): "; then
+			echo -e "${YE} = = > Undo Cancelled.${NC}"
+			pause
+			return 0
+		fi
+
+		while IFS='|' read -r old_path new_path; do
+			[[ -z "${old_path:-}" || -z "${new_path:-}" ]] && continue
+
+			if [[ ! -e "$new_path" ]]; then
+				echo -e "${YE} = = > [UNDO SKIP MISSING]${NC} ${YELLOW}$new_path${NC}"
+				continue
+			fi
+
+			if [[ -e "$old_path" ]]; then
+				echo -e "${YE} = = > [UNDO SKIP EXISTS]${NC} ${YELLOW}$old_path${NC}"
+				continue
+			fi
+
+			echo -e "${GREEN} = = > [UNDO]${NC} ${YELLOW}$new_path${NC}"
+			echo -e "${CYAN}        -->${NC} ${GREEN}$old_path${NC}"
+			mv -- "$new_path" "$old_path"
+		done < "$success_map"
+
+		echo
+		echo -e "${GR} = = > Undo Complete.${NC}"
+		pause
+		return 0
+	fi
+
+	echo
+	echo -e "${YE} = = > Existing Playlist Files Are NOT Modified.${NC}"
+	echo -e "${YE} = = > Execute Log And Undo Map Will Be Written In Run Folder.${NC}"
+	echo
+
+	if ! ask_yes_no " = = > Begin Rename Execution? (y/n or 1/2): "; then
+		echo -e "${YE} = = > Execute Cancelled.${NC}"
+		pause
+		return 0
+	fi
+
+	printf '%s\n' "STATUS|OLD_PATH|NEW_PATH|SOURCE|REASON|NOTES" > "$exec_log"
+	: > "$success_map"
+
+	# --------------------------------------------------------
+	# FULL EXECUTE MODE
+	# --------------------------------------------------------
+	if [[ "$choice" == "2" ]]; then
+		while IFS='|' read -r status old_path new_path source reason notes; do
+			[[ "$status" == "STATUS" ]] && continue
+			[[ "$status" == "PENDING" ]] || continue
+
+			if [[ ! -e "$old_path" ]]; then
+				printf '%s|%s|%s|%s|%s|%s\n' \
+					"SKIPPED_MISSING_SOURCE" "$old_path" "$new_path" "$source" "SOURCE_MISSING" "$notes" >> "$exec_log"
+				((skipped+=1)) || :
+				continue
+			fi
+
+			if [[ -e "$new_path" ]]; then
+				printf '%s|%s|%s|%s|%s|%s\n' \
+					"SKIPPED_TARGET_EXISTS" "$old_path" "$new_path" "$source" "TARGET_EXISTS" "$notes" >> "$exec_log"
+				((skipped+=1)) || :
+				continue
+			fi
+
+			echo -e "${GREEN} = = > [RENAMING]${NC} ${YELLOW}$old_path${NC}"
+			echo -e "${CYAN}        -->${NC} ${GREEN}$new_path${NC}"
+
+			if mv -- "$old_path" "$new_path"; then
+				printf '%s|%s|%s|%s|%s|%s\n' \
+					"RENAMED" "$old_path" "$new_path" "$source" "OK" "$notes" >> "$exec_log"
+				printf '%s|%s\n' "$old_path" "$new_path" >> "$success_map"
+				((executed+=1)) || :
+			else
+				printf '%s|%s|%s|%s|%s|%s\n' \
+					"FAILED" "$old_path" "$new_path" "$source" "MV_FAILED" "$notes" >> "$exec_log"
+				((failed+=1)) || :
+			fi
+		done < "$plan_file"
+	fi
+
+	# --------------------------------------------------------
+	# FOLDER-BY-FOLDER EXECUTE MODE
+	# --------------------------------------------------------
+	if [[ "$choice" == "3" ]]; then
+		for current_dir in "${folder_order[@]}"; do
+			if (( remaining_no_pause == 0 )); then
+				clear
+				echo -e "${CYAN}================================================${NC}"
+				echo -e "${CYAN}      COLLECTION DETOX :: FOLDER EXECUTION      ${NC}"
+				echo -e "${CYAN}================================================${NC}"
+				echo
+				echo -e "${CYAN} = = > Folder:${NC}"
+				echo -e "${GREEN} $current_dir${NC}"
+				echo
+				echo -e "${CYAN} = = > Pending In Folder:${NC} ${YELLOW}${folder_counts[$current_dir]}${NC}"
+				echo
+				echo -e "  ${YELLOW}1)= = > Execute This Folder${NC}"
+				echo -e "  ${YELLOW}2)= = > Skip This Folder${NC}"
+				echo -e "  ${YELLOW}3)= = > Execute This And All Remaining Folders Without Pauses${NC}"
+				echo -e "  ${YELLOW}0.) Stop Execution${NC}"
+				echo
+				echo -ne "${YELLOW} = = > Select Option: ${NC}${GREEN}"
+				read -r folder_choice
+				echo -e "${NC}"
+
+				if is_exit_token "$folder_choice"; then
+					break
+				fi
+
+				case "$folder_choice" in
+					1)
+						:
+						;;
+					2)
+						echo -e "${YE} = = > Folder Skipped:${NC} ${YELLOW}$current_dir${NC}"
+						pause
+						continue
+						;;
+					3)
+						remaining_no_pause=1
+						;;
+					*)
+						echo -e "${YE} = = > Invalid Selection. Folder Skipped.${NC}"
+						pause
+						continue
+						;;
+				esac
+			fi
+
+			while IFS='|' read -r status old_path new_path source reason notes; do
+				[[ "$status" == "STATUS" ]] && continue
+				[[ "$status" == "PENDING" ]] || continue
+
+				row_dir="$(dirname "$old_path")"
+				[[ "$row_dir" == "$current_dir" ]] || continue
+
+				if [[ ! -e "$old_path" ]]; then
+					printf '%s|%s|%s|%s|%s|%s\n' \
+						"SKIPPED_MISSING_SOURCE" "$old_path" "$new_path" "$source" "SOURCE_MISSING" "$notes" >> "$exec_log"
+					((skipped+=1)) || :
+					continue
+				fi
+
+				if [[ -e "$new_path" ]]; then
+					printf '%s|%s|%s|%s|%s|%s\n' \
+						"SKIPPED_TARGET_EXISTS" "$old_path" "$new_path" "$source" "TARGET_EXISTS" "$notes" >> "$exec_log"
+					((skipped+=1)) || :
+					continue
+				fi
+
+				echo -e "${GREEN} = = > [RENAMING]${NC} ${YELLOW}$old_path${NC}"
+				echo -e "${CYAN}        -->${NC} ${GREEN}$new_path${NC}"
+
+				if mv -- "$old_path" "$new_path"; then
+					printf '%s|%s|%s|%s|%s|%s\n' \
+						"RENAMED" "$old_path" "$new_path" "$source" "OK" "$notes" >> "$exec_log"
+					printf '%s|%s\n' "$old_path" "$new_path" >> "$success_map"
+					((executed+=1)) || :
+				else
+					printf '%s|%s|%s|%s|%s|%s\n' \
+						"FAILED" "$old_path" "$new_path" "$source" "MV_FAILED" "$notes" >> "$exec_log"
+					((failed+=1)) || :
+				fi
+			done < "$plan_file"
+
+			if (( remaining_no_pause == 0 )); then
+				echo
+				echo -e "${GR} = = > Folder Complete:${NC} ${YELLOW}$current_dir${NC}"
+				pause
+			fi
+		done
+	fi
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}        COLLECTION DETOX EXECUTION SUMMARY      ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > Renamed:${NC} ${YELLOW}$executed${NC}"
+	echo -e "${CYAN} = = > Skipped:${NC} ${YELLOW}$skipped${NC}"
+	echo -e "${CYAN} = = > Failed:${NC} ${YELLOW}$failed${NC}"
+	echo -e "${CYAN} = = > Execute Log:${NC} ${GREEN}$exec_log${NC}"
+	echo -e "${CYAN} = = > Undo Map:${NC} ${GREEN}$success_map${NC}"
+	echo
+
+	collection_detox_build_playlist_repair_plan "$scan_root" "$run_dir" "$success_map"
+
+	pause
+}
+
+collection_detox_titlecase_words() {
+	local raw="${1:-}"
+
+	printf '%s\n' "$raw" \
+		| awk -F'_' '{
+			out=""
+			for (i=1; i<=NF; i++) {
+				if ($i == "") continue
+
+				# Preserve normalized episode codes exactly.
+				if ($i ~ /^S[0-9][0-9]E[0-9][0-9]$/) {
+					word=$i
+				} else {
+					word=tolower($i)
+					word=toupper(substr(word,1,1)) substr(word,2)
+				}
+
+				out = (out == "" ? word : out "_" word)
+			}
+			print out
+		}'
+}
+
+# ========================================================
+# #MARKER: COLLECTION DETOX ENGINE V1
+# ========================================================
+# PURPOSE:
+# - Recursive large-folder filename naming/detox scanner
+# - Uses existing detox_title()
+# - Recognizes and normalizes SxxExx
+# - Uses exact-name episodes.csv as optional naming authority
+# - Detects playlist impact
+# - Writes plan + human report
+# - DOES NOT RENAME FILES YET
+# ========================================================
+
+collection_detox_make_run_dir() {
+	local root="${1:-COLLECTION_DETOX}"
+	local run_id
+
+	run_id="$(date '+%Y%m%d_%H%M%S')"
+
+	mkdir -p "$root/$run_id"
+
+	printf '%s\n' "$root/$run_id"
+}
+
+collection_detox_find_files() {
+	local scan_root="$1"
+
+	find "$scan_root" \
+		\( -path "$scan_root/reports/COLLECTION_DETOX" -o \
+		   -path "$scan_root/reports/COLLECTION_DETOX/*" \) -prune -o \
+		-type f -print0 \
+		| LC_ALL=C sort -z
+}
+
+collection_detox_is_supported_media_file() {
+	local f="${1:-}"
+	local ext="${f##*.}"
+	ext="${ext,,}"
+
+	case "$ext" in
+		mkv|mp4|avi|m4v|mov|webm|mpg|mpeg|ts|ogv|flv|3gp|divx|xvid|wmv|lrv|srt|ass|ssa|sub|idx|nfo|txt)
+			return 0
+			;;
+	esac
+
+	return 1
+}
+
+collection_detox_is_playlist_file() {
+	local f="${1:-}"
+	local ext="${f##*.}"
+	ext="${ext,,}"
+
+	case "$ext" in
+		m3u|m3u8)
+			return 0
+			;;
+	esac
+
+	return 1
+}
+
+collection_detox_extract_epcode() {
+	local s="${1:-}"
+	local season episode
+
+	if [[ "$s" =~ [sS]([0-9]{1,2})[eE]([0-9]{1,3}) ]]; then
+		season="$((10#${BASH_REMATCH[1]}))"
+		episode="$((10#${BASH_REMATCH[2]}))"
+		printf 'S%02dE%02d\n' "$season" "$episode"
+		return 0
+	fi
+
+	return 1
+}
+
+collection_detox_normalize_sxxexx_in_stem() {
+	local stem="${1:-}"
+	local prefix suffix season episode ep_code
+
+	if [[ "$stem" =~ ^(.*)[sS]([0-9]{1,2})[eE]([0-9]{1,3})(.*)$ ]]; then
+		prefix="${BASH_REMATCH[1]}"
+		season="$((10#${BASH_REMATCH[2]}))"
+		episode="$((10#${BASH_REMATCH[3]}))"
+		suffix="${BASH_REMATCH[4]}"
+
+		printf -v ep_code 'S%02dE%02d' "$season" "$episode"
+		printf '%s%s%s\n' "$prefix" "$ep_code" "$suffix"
+		return 0
+	fi
+
+	printf '%s\n' "$stem"
+}
+
+collection_detox_build_show_prefix() {
+	local stem="${1:-}"
+	local prefix
+
+	prefix="$stem"
+
+	if [[ "$prefix" =~ ^(.*)[sS][0-9]{1,2}[eE][0-9]{1,3}.*$ ]]; then
+		prefix="${BASH_REMATCH[1]}"
+	fi
+
+	prefix="${prefix%"${prefix##*[!_ .-]}"}"
+	prefix="$(detox_title "$prefix")"
+	prefix="$(collection_detox_titlecase_words "$prefix")"
+	prefix="${prefix%_}"
+
+	if [[ -z "$prefix" ]]; then
+		prefix="$(basename "$PWD")"
+		prefix="$(detox_title "$prefix")"
+		prefix="$(collection_detox_titlecase_words "$prefix")"
+	fi
+
+	printf '%s\n' "$prefix"
+}
+
+collection_detox_load_episodes_csv() {
+	local csv_file="$1"
+	local -n _title_ref="$2"
+	local -n _season_ref="$3"
+	local -n _loaded_ref="$4"
+	local -n _invalid_ref="$5"
+
+	local line raw_ep raw_title ep_code season
+	local loaded=0 invalid=0 line_num=0
+
+	[[ -f "$csv_file" ]] || return 1
+
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		((line_num+=1)) || :
+
+		line="${line//$'\r'/}"
+		[[ -z "${line//[[:space:]]/}" ]] && continue
+
+		raw_ep="${line%%,*}"
+		raw_title="${line#*,}"
+
+		raw_ep="${raw_ep//\"/}"
+		raw_title="${raw_title%\"}"
+		raw_title="${raw_title#\"}"
+
+		raw_ep="${raw_ep//[[:space:]]/}"
+
+		# Header support.
+		case "${raw_ep,,}" in
+			episode|ep|sxxexx|code)
+				continue
+				;;
+		esac
+
+		if ! ep_code="$(collection_detox_extract_epcode "$raw_ep" 2>/dev/null)"; then
+			((invalid+=1)) || :
+			continue
+		fi
+
+		raw_title="$(printf '%s\n' "$raw_title" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+
+		if [[ -z "$raw_title" ]]; then
+			((invalid+=1)) || :
+			continue
+		fi
+
+		season="${ep_code%%E*}"
+
+		_title_ref["$ep_code"]="$raw_title"
+		_season_ref["$season"]=1
+
+		((loaded+=1)) || :
+	done < "$csv_file"
+
+	_loaded_ref="$loaded"
+	_invalid_ref="$invalid"
+	(( loaded > 0 ))
+}
+
+collection_detox_scan_build_plan() {
+	local scan_root="$1"
+	local run_dir="$2"
+	local plan_file="$run_dir/detox_plan.csv"
+	local report_file="$run_dir/detox_report.txt"
+	local playlist_report="$run_dir/detox_playlist_impact.txt"
+
+	local file dir base stem ext new_stem new_base new_path
+	local ep_code season show_prefix raw_title detoxed_title
+	local status reason notes source rules
+	local csv_file csv_status="NOT_FOUND"
+	local detected_show_prefix=""
+	local scanned=0 unsupported=0 pending=0 exists_count=0 collision_count=0 detox_only=0 csv_matches=0 sxxexx_found=0
+	local playlists_found=0 playlist_ref_hits=0
+	local report_version="1"
+
+	local csv_rows_loaded=0
+	local csv_rows_rejected=0
+	local -A csv_titles=()
+	local -A csv_seasons=()
+	local -A file_seasons=()
+	local -A planned_targets=()
+	local -A basename_rewrite_map=()
+
+	local -a plan_rows=()
+	local -a playlist_files=()
+	local -a unsupported_files=()
+
+	csv_file="$scan_root/episodes.csv"
+
+	if [[ -f "$csv_file" ]]; then
+		if collection_detox_load_episodes_csv \
+			"$csv_file" \
+			csv_titles \
+			csv_seasons \
+			csv_rows_loaded \
+			csv_rows_rejected; then
+			csv_status="ACCEPTED"
+		else
+			csv_status="REJECTED"
+		fi
+	fi
+
+	printf '%s\n' "STATUS|OLD_PATH|NEW_PATH|SOURCE|REASON|NOTES" > "$plan_file"
+
+	# --------------------------------------------------------
+	# PASS 1: SCAN FILES AND BUILD SEASON SET
+	# --------------------------------------------------------
+	while IFS= read -r -d '' file; do
+		collection_detox_is_playlist_file "$file" && {
+			playlist_files+=("$file")
+			((playlists_found+=1)) || :
+			continue
+		}
+
+		collection_detox_is_supported_media_file "$file" || {
+			((unsupported+=1)) || :
+			unsupported_files+=("$file")
+			continue
+		}
+
+		((scanned+=1)) || :
+
+		base="$(basename "$file")"
+		stem="${base%.*}"
+		if [[ -z "$detected_show_prefix" ]]; then
+			detected_show_prefix="$(collection_detox_build_show_prefix "$stem")"
+		fi
+
+		if ep_code="$(collection_detox_extract_epcode "$stem" 2>/dev/null)"; then
+			season="${ep_code%%E*}"
+			file_seasons["$season"]=1
+			((sxxexx_found+=1)) || :
+		fi
+	done < <(collection_detox_find_files "$scan_root")
+
+	# --------------------------------------------------------
+	# PASS 2: BUILD PLAN
+	# --------------------------------------------------------
+	while IFS= read -r -d '' file; do
+		collection_detox_is_playlist_file "$file" && continue
+		collection_detox_is_supported_media_file "$file" || continue
+
+		dir="$(dirname "$file")"
+		base="$(basename "$file")"
+		ext="${base##*.}"
+		stem="${base%.*}"
+
+		ep_code=""
+		source="DETOX_ONLY"
+		rules="detox applied"
+		new_stem=""
+
+		if ep_code="$(collection_detox_extract_epcode "$stem" 2>/dev/null)"; then
+			season="${ep_code%%E*}"
+
+			if [[ "$csv_status" == "ACCEPTED" && -n "${csv_titles[$ep_code]:-}" && -n "${file_seasons[$season]:-}" ]]; then
+				show_prefix="$(collection_detox_build_show_prefix "$stem")"
+				raw_title="${csv_titles[$ep_code]}"
+				detoxed_title="$(detox_title "$raw_title")"
+
+				new_stem="${show_prefix}_${ep_code}_${detoxed_title}"
+				source="EPISODES_CSV"
+				rules="SxxExx normalized; title applied from episodes.csv; detox applied"
+				((csv_matches+=1)) || :
+			else
+				new_stem="$(collection_detox_normalize_sxxexx_in_stem "$stem")"
+				new_stem="$(detox_title "$new_stem")"
+				new_stem="$(collection_detox_titlecase_words "$new_stem")"
+				source="DETOX_ONLY"
+				rules="SxxExx normalized if present; detox applied; title case applied"
+				((detox_only+=1)) || :
+			fi
+		else
+			new_stem="$(detox_title "$stem")"
+			new_stem="$(collection_detox_titlecase_words "$new_stem")"
+			source="DETOX_ONLY"
+			rules="detox applied; title case applied"
+			((detox_only+=1)) || :
+		fi
+
+		new_base="${new_stem}.${ext}"
+		new_path="$dir/$new_base"
+
+		[[ "$file" == "$new_path" ]] && continue
+
+		status="PENDING"
+		reason="READY"
+		notes="$rules"
+
+		if [[ -e "$new_path" ]]; then
+			status="SKIPPED_EXISTS"
+			reason="TARGET_EXISTS"
+			notes="Target already exists"
+			((exists_count+=1)) || :
+		elif [[ -n "${planned_targets[$new_path]:-}" ]]; then
+			status="SKIPPED_COLLISION"
+			reason="PLAN_COLLISION"
+			notes="Another planned rename already targets this path"
+			((collision_count+=1)) || :
+		else
+			planned_targets["$new_path"]="$file"
+			basename_rewrite_map["$base"]="$new_base"
+			((pending+=1)) || :
+		fi
+
+		printf '%s|%s|%s|%s|%s|%s\n' \
+			"$status" "$file" "$new_path" "$source" "$reason" "$notes" >> "$plan_file"
+
+		plan_rows+=("$status|$file|$new_path|$source|$reason|$notes")
+
+	done < <(collection_detox_find_files "$scan_root")
+
+	# --------------------------------------------------------
+	# PASS 3: PLAYLIST IMPACT SCAN
+	# --------------------------------------------------------
+	{
+		echo "================================================"
+		echo "          PLAYLIST IMPACT REPORT"
+		echo "================================================"
+		echo
+		echo "Root:"
+		echo " $scan_root"
+		echo
+		echo "NOTE:"
+		echo " This report only detects possible references."
+		echo " No playlist files are modified by V1."
+		echo
+	} > "$playlist_report"
+
+	for file in "${playlist_files[@]}"; do
+		local plist_hits=0 old_base
+
+		for old_base in "${!basename_rewrite_map[@]}"; do
+			if grep -Fq -- "$old_base" "$file" 2>/dev/null; then
+				((plist_hits+=1)) || :
+				((playlist_ref_hits+=1)) || :
+			fi
+		done
+
+		{
+			echo "PLAYLIST:"
+			echo " $file"
+			echo "Possible References:"
+			echo " $plist_hits"
+			echo "------------------------------------------------"
+		} >> "$playlist_report"
+	done
+
+	# --------------------------------------------------------
+	# HUMAN REPORT
+	# --------------------------------------------------------
+	{
+		echo "================================================"
+		echo "          COLLECTION DETOX REPORT"
+		echo "================================================"
+		echo "Version: $report_version"
+		echo "Generated: $(date)"
+		echo
+		echo "Root:"
+		echo " $scan_root"
+		echo
+		echo "Run Folder:"
+		echo " $run_dir"
+		echo
+		echo "================================================"
+		echo "          AUTHORITY SUMMARY"
+		echo "================================================"
+		echo
+		echo "episodes.csv:"
+		echo " $csv_status"
+
+		echo
+		echo "CSV Rows Loaded:"
+		echo " $csv_rows_loaded"
+
+		echo
+		echo "CSV Rows Rejected:"
+		echo " $csv_rows_rejected"
+		if [[ "$csv_status" == "ACCEPTED" ]]; then
+			echo
+			echo "CSV Seasons Found:"
+			printf ' %s\n' "${!csv_seasons[@]}" | sort
+		fi
+		echo
+		echo "Detected Show Prefix:"
+		echo " $detected_show_prefix"
+		echo
+		echo "File Seasons Found:"
+		if (( ${#file_seasons[@]} > 0 )); then
+			printf ' %s\n' "${!file_seasons[@]}" | sort
+		else
+			echo " NONE"
+		fi
+		echo
+		echo "CSV Authority Matches:"
+		echo " $csv_matches"
+		echo
+		echo "Detox-Only Candidates:"
+		echo " $detox_only"
+		echo
+		echo "================================================"
+		echo "          RENAME PLAN"
+		echo "================================================"
+		echo
+	} > "$report_file"
+
+	for row in "${plan_rows[@]}"; do
+		IFS='|' read -r status file new_path source reason notes <<< "$row"
+
+		{
+			echo "STATUS:"
+			echo " $status"
+			echo
+			echo "OLD:"
+			echo " $file"
+			echo
+			echo "NEW:"
+			echo " $new_path"
+			echo
+			echo "SOURCE:"
+			echo " $source"
+			echo
+			echo "REASON:"
+			echo " $reason"
+			echo
+			echo "NOTES:"
+			echo " $notes"
+			echo
+			echo "------------------------------------------------"
+		} >> "$report_file"
+	done
+
+	{
+
+		echo
+		echo "================================================"
+		echo "NON-MEDIA / NOT RENAMED FILES"
+		echo "================================================"
+		echo
+
+		if (( ${#unsupported_files[@]} > 0 )); then
+			for file in "${unsupported_files[@]}"; do
+				echo "$file"
+			done
+		else
+			echo "NONE"
+		fi
+		echo
+		echo "================================================"
+		echo "SUMMARY"
+		echo "================================================"
+		echo "Files Scanned:          $scanned"
+		echo "Unsupported Skipped:    $unsupported"
+		echo "SxxExx Tokens Found:    $sxxexx_found"
+		echo "Pending Renames:        $pending"
+		echo "Skipped Exists:         $exists_count"
+		echo "Skipped Collisions:     $collision_count"
+		echo "CSV Authority Matches:  $csv_matches"
+		echo "Detox-Only Changes:     $detox_only"
+		echo "Playlist Files Found:   $playlists_found"
+		echo "Playlist Ref Hits:      $playlist_ref_hits"
+		echo
+		echo "Plan:"
+		echo " $plan_file"
+		echo
+		echo "Report:"
+		echo " $report_file"
+		echo
+		echo "Playlist Impact Report:"
+		echo " $playlist_report"
+		echo
+		echo "================================================"
+		echo "NOTICE"
+		echo "================================================"
+		echo
+		echo "Collection Detox Plans Filename Changes."
+		echo
+		echo "Any existing multimedia playlists created with the"
+		echo "previous filenames may require regeneration or repair"
+		echo "after rename execution."
+		echo
+		echo "Examples include:"
+		echo "  *.m3u"
+		echo "  *.m3u8"
+		echo "  Plex / Kodi / Jellyfin / Emby custom playlists"
+		echo
+		echo "V1 does NOT modify playlists or media files."
+		echo "It only reports possible impact."
+	} >> "$report_file"
+
+	echo -e "${GREEN} = = > Collection Detox Scan Complete.${NC}"
+	echo -e "${CYAN} = = > Files Scanned:${NC} ${YELLOW}$scanned${NC}"
+	echo -e "${CYAN} = = > Pending Renames:${NC} ${YELLOW}$pending${NC}"
+	echo -e "${CYAN} = = > CSV Matches:${NC} ${YELLOW}$csv_matches${NC}"
+	echo -e "${CYAN} = = > Playlist Files:${NC} ${YELLOW}$playlists_found${NC}"
+	echo -e "${CYAN} = = > Plan:${NC} ${GREEN}$plan_file${NC}"
+	echo -e "${CYAN} = = > Report:${NC} ${GREEN}$report_file${NC}"
+	echo -e "${CYAN} = = > Playlist Impact:${NC} ${GREEN}$playlist_report${NC}"
+}
+
+# ========================================================
+# #MARKER: COLLECTION DETOX REVIEW MENU
+# ========================================================
+# PURPOSE:
+# - After scan/plan/report completes, keep user inside Factory
+# - Let user review the generated files without hunting manually
+# - No rename execution yet
+# ========================================================
+
+collection_detox_review_menu() {
+	local run_dir="$1"
+	local scan_root="${2:-$PWD}"
+	local choice
+	local plan_file report_file playlist_report
+	local playlist_repair_plan playlist_repair_report
+
+	plan_file="$run_dir/detox_plan.csv"
+	report_file="$run_dir/detox_report.txt"
+	playlist_report="$run_dir/detox_playlist_impact.txt"
+	playlist_repair_plan="$run_dir/detox_playlist_repair_plan.csv"
+	playlist_repair_report="$run_dir/detox_playlist_repair_report.txt"
+
+	while true; do
+		clear
+		echo -e "${CYAN}================================================${NC}"
+		echo -e "${CYAN}        COLLECTION DETOX :: REVIEW RESULTS      ${NC}"
+		echo -e "${CYAN}================================================${NC}"
+		echo
+		echo -e "${CYAN} = = > Run Folder:${NC}"
+		echo -e "${GREEN} $run_dir${NC}"
+		echo
+		echo -e "  ${YELLOW}1)= = > View Human Report q To Exit${NC}"
+		echo -e "  ${YELLOW}2)= = > View Plan CSV q To Exit${NC}"
+		echo -e "  ${YELLOW}3)= = > View Playlist Impact Report q To Exit${NC}"
+		echo -e "  ${YELLOW}4)= = > Print Report Folder Path${NC}"
+		echo -e "  ${YELLOW}5)= = > Show Quick Summary Files${NC}"
+		echo -e "  ${YELLOW}6)= = > Execute Rename Plan-Adaptive Mode / Undo Menu${NC}"
+		echo -e "  ${YELLOW}7)= = > View Playlist Repair Plan CSV${NC}"
+		echo -e "  ${YELLOW}8)= = > View Playlist Repair Report${NC}"
+		echo -e "  ${YELLOW}9)= = > Execute Playlist Repairs${NC}"
+		echo -e "  ${YELLOW}10)= = > Undo Playlist Repairs${NC}"
+		echo -e "  ${YELLOW}0.) Return${NC}"
+		echo
+		echo -ne "${YELLOW} = = > Select Option: ${NC}${GREEN}"
+		read -r choice
+		echo -e "${NC}"
+
+		if is_exit_token "$choice"; then
+			return 0
+		fi
+
+		case "$choice" in
+			1)
+				clear
+				if [[ -f "$report_file" ]]; then
+					echo
+					echo -e "${CYAN} = = > Viewer Opens Next. Press 'q' To Exit Viewer.${NC}"
+					echo -e "${YE} = = > Press Enter To Open Viewer...${NC}"
+					read -r _
+					less "$report_file"
+				else
+					echo -e "${REB} = = > Missing Report:${NC} ${YELLOW}$report_file${NC}"
+					pause
+				fi
+				;;
+
+			2)
+				clear
+				if [[ -f "$plan_file" ]]; then
+					echo
+					echo -e "${CYAN} = = > Viewer Opens Next. Press 'q' To Exit Viewer.${NC}"
+					echo -e "${YE} = = > Press Enter To Open Viewer...${NC}"
+					read -r _
+					less "$plan_file"
+				else
+					echo -e "${REB} = = > Missing Plan:${NC} ${YELLOW}$plan_file${NC}"
+					pause
+				fi
+				;;
+
+			3)
+				clear
+				if [[ -f "$playlist_report" ]]; then
+					echo
+					echo -e "${CYAN} = = > Viewer Opens Next. Press 'q' To Exit Viewer.${NC}"
+					echo -e "${YE} = = > Press Enter To Open Viewer...${NC}"
+					read -r _
+					less "$playlist_report"
+				else
+					echo -e "${REB} = = > Missing Playlist Report:${NC} ${YELLOW}$playlist_report${NC}"
+					pause
+				fi
+				;;
+
+			4)
+				echo
+				echo -e "${CYAN} = = > Report Folder:${NC}"
+				echo -e "${GREEN}$run_dir${NC}"
+				echo
+				pause
+				;;
+
+			5)
+				echo
+				echo -e "${CYAN} = = > Files Created:${NC}"
+				[[ -f "$plan_file" ]] && echo -e "${GREEN} $plan_file${NC}"
+				[[ -f "$report_file" ]] && echo -e "${GREEN} $report_file${NC}"
+				[[ -f "$playlist_report" ]] && echo -e "${GREEN} $playlist_report${NC}"
+				echo
+				pause
+				;;
+
+			6)
+				collection_detox_execute_plan "$run_dir" "$scan_root"
+				;;
+
+			7)
+				clear
+				if [[ -f "$playlist_repair_plan" ]]; then
+					echo
+					echo -e "${CYAN} = = > Viewer Opens Next. Press 'q' To Exit Viewer.${NC}"
+					echo -e "${YE} = = > Press Enter To Open Viewer...${NC}"
+					read -r _
+					less "$playlist_repair_plan"
+				else
+					echo -e "${YE} = = > Playlist Repair Plan Not Found Yet.${NC}"
+					pause
+				fi
+				;;
+
+			8)
+				clear
+				collection_detox_write_playlist_repair_report "$run_dir"
+				if [[ -f "$playlist_repair_report" ]]; then
+					echo
+					echo -e "${CYAN} = = > Viewer Opens Next. Press 'q' To Exit Viewer.${NC}"
+					echo -e "${YE} = = > Press Enter To Open Viewer...${NC}"
+					read -r _
+					less "$playlist_repair_report"
+				else
+					echo -e "${YE} = = > Playlist Repair Report Not Found.${NC}"
+					pause
+				fi
+				;;
+
+			9)
+				collection_detox_execute_playlist_repairs "$scan_root" "$run_dir"
+				;;
+
+			10)
+				collection_detox_undo_playlist_repairs "$run_dir"
+				;;
+
+			*)
+				echo -e "${YE} = = > Invalid Selection.${NC}"
+				pause
+				;;
+		esac
+	done
+}
+
+# ========================================================
+# #MARKER: COLLECTION DETOX EXECUTE MODE V1
+# ========================================================
+# PURPOSE:
+# - Execute PENDING rows from detox_plan.csv
+# - Pilot first N renames before full execution
+# - Log every action
+# - Build playlist repair plan only from successful renames
+# - Does NOT modify playlists
+# ========================================================
+
+collection_detox_build_playlist_repair_plan() {
+	local scan_root="$1"
+	local run_dir="$2"
+	local success_map="$3"
+	local repair_plan="$run_dir/detox_playlist_repair_plan.csv"
+
+	local playlist old_path new_path old_base new_base
+	local match_count=0
+
+	printf '%s\n' "PLAYLIST|MATCH_TYPE|OLD_REF|NEW_REF|STATUS" > "$repair_plan"
+
+	[[ -f "$success_map" ]] || return 0
+
+	while IFS= read -r -d '' playlist; do
+		collection_detox_is_playlist_file "$playlist" || continue
+
+		while IFS='|' read -r old_path new_path; do
+			[[ -z "${old_path:-}" || -z "${new_path:-}" ]] && continue
+
+			old_base="$(basename "$old_path")"
+			new_base="$(basename "$new_path")"
+
+			if grep -Fq -- "$old_path" "$playlist" 2>/dev/null; then
+				printf '%s|%s|%s|%s|%s\n' \
+					"$playlist" "FULL_PATH" "$old_path" "$new_path" "POSSIBLE_REPAIR" >> "$repair_plan"
+				((match_count+=1)) || :
+			fi
+
+			if grep -Fq -- "$old_base" "$playlist" 2>/dev/null; then
+				printf '%s|%s|%s|%s|%s\n' \
+					"$playlist" "BASENAME" "$old_base" "$new_base" "POSSIBLE_REPAIR" >> "$repair_plan"
+				((match_count+=1)) || :
+			fi
+
+		done < "$success_map"
+
+	done < <(collection_detox_find_files "$scan_root")
+
+	echo -e "${CYAN} = = > Playlist Repair Plan:${NC} ${GREEN}$repair_plan${NC}"
+	echo -e "${CYAN} = = > Playlist Repair Candidates:${NC} ${YELLOW}$match_count${NC}"
+}
+
+
+
+run_collection_detox_scan_only() {
+	local scan_root run_root run_dir choice dir_choice picked_dir
+	local -a dirs=()
+
+	while true; do
+		clear
+		echo -e "${CYAN}================================================${NC}"
+		echo -e "${CYAN}          COLLECTION DETOX :: SCAN / PLAN       ${NC}"
+		echo -e "${CYAN}================================================${NC}"
+		echo
+		echo -e "${CYAN} = = > Current Working Folder:${NC}"
+		echo -e "${GREEN} $PWD${NC}"
+		echo
+		echo -e "  ${YELLOW}1)= = > Scan Current Folder Recursively${NC}"
+		echo -e "  ${YELLOW}2)= = > Pick Folder From Current Location${NC}"
+		echo -e "  ${YELLOW}0.) Return${NC}"
+		echo
+		echo -ne "${YELLOW} = = > Select Option: ${NC}${GREEN}"
+		read -r choice
+		echo -e "${NC}"
+
+		if is_exit_token "$choice"; then
+			return 0
+		fi
+
+		case "$choice" in
+			1|"")
+				scan_root="$PWD"
+				break
+				;;
+
+			2)
+				while true; do
+					dirs=()
+					dirs+=(".")
+					dirs+=("..")
+
+					shopt -s nullglob
+					for picked_dir in */; do
+						[[ -d "$picked_dir" ]] || continue
+						dirs+=("${picked_dir%/}")
+					done
+					shopt -u nullglob
+
+					clear
+					echo -e "${CYAN}================================================${NC}"
+					echo -e "${CYAN}          COLLECTION DETOX :: FOLDER PICKER     ${NC}"
+					echo -e "${CYAN}================================================${NC}"
+					echo
+					echo -e "${CYAN} = = > Pick Folder To Scan Recursively:${NC}"
+					echo
+
+					for i in "${!dirs[@]}"; do
+						echo -e "  ${YELLOW}$((i+1)))${NC} ${GREEN}${dirs[$i]}${NC}"
+					done
+
+					echo
+					echo -e "  ${YELLOW}0.) Return${NC}"
+					echo
+					echo -ne "${YELLOW} = = > Folder Number: ${NC}${GREEN}"
+					read -r dir_choice
+					echo -e "${NC}"
+
+					dir_choice="${dir_choice//[[:space:]]/}"
+
+					if is_exit_token "$dir_choice"; then
+						break
+					fi
+
+					if ! [[ "$dir_choice" =~ ^[0-9]+$ ]] || \
+					   (( dir_choice < 1 || dir_choice > ${#dirs[@]} )); then
+						echo -e "${REB} = = > Invalid Folder Selection.${NC}"
+						pause
+						continue
+					fi
+
+					scan_root="${dirs[$((dir_choice-1))]}"
+
+					if [[ "$scan_root" == "." ]]; then
+						scan_root="$PWD"
+					else
+						scan_root="$(cd -- "$scan_root" && pwd)"
+					fi
+
+					break 2
+				done
+				;;
+
+			*)
+				echo -e "${YE} = = > Invalid Selection.${NC}"
+				pause
+				;;
+		esac
+	done
+
+	[[ -d "$scan_root" ]] || {
+		echo -e "${REB} = = > Folder Not Found:${NC} ${YELLOW}$scan_root${NC}"
+		pause
+		return 1
+	}
+
+	run_root="${COLLECTION_DETOX_ROOT:-${FACTORY_HOME:-.}/reports/COLLECTION_DETOX}"
+	run_dir="$(collection_detox_make_run_dir "$run_root")"
+
+	collection_detox_scan_build_plan "$scan_root" "$run_dir"
+
+	if ask_yes_no " = = > Review Collection Detox Reports Now? (y/n or 1/2): "; then
+		collection_detox_review_menu "$run_dir" "$scan_root"
+	else
+		pause
+	fi
+}
 
 detox_title() {
 	local raw="$1"
@@ -4490,34 +6198,22 @@ detox_title() {
 	# PHASE 1–4: CLEAN + SANITIZE
 	# ========================================================
 	# DIRECT DETOX RULES:
-	#
 	# - Preserve existing capitalization
 	# - Preserve existing underscores
+	# - Preserve hyphens for meaningful episode/title joins
 	# - Convert whitespace to underscores
-	# - Replace unsafe characters only
 	# - Remove apostrophes instead of turning them into "_"
-	#     it's      -> its
-	#     pilot's   -> pilots
-	#
-	# - Collapse common episode-part labels
-	#     Part_1 -> Part1
-	#     Part_2 -> Part2
-	#
-	# DESIGN NOTES:
-	#
-	# Apostrophes visually break filenames when converted to "_":
-	#     it_s
-	#
-	# which looks much worse than:
-	#     its
-	#
-	# Likewise:
-	#     Part_1
-	#
-	# is visually noisier than:
-	#     Part1
-	#
-	# These are targeted cleanup rules, NOT broad language parsing.
+	# - Collapse common episode-part labels:
+	#     Part_1   -> Part1
+	#     Part-1   -> Part1
+	#     Part 1   -> Part1
+	#     Part_I   -> PartI
+	#     Part II  -> PartII
+	#     Part-III -> PartIII
+	#     Part IV  -> PartIV
+	# - If Part1/Part2/PartI/PartII/etc is the trailing title suffix:
+	#     Equinox_Part2  -> Equinox-Part2
+	#     Equinox_PartII -> Equinox-PartII
 	# ========================================================
 
 	if have_cmd iconv; then
@@ -4527,8 +6223,10 @@ detox_title() {
 				| sed 's/[[:space:]]\+/_/g' \
 				| sed 's/&/And/g' \
 				| iconv -f utf8 -t ascii//TRANSLIT 2>/dev/null \
-				| sed 's/[^A-Za-z0-9_]/_/g' \
-				| sed -E 's/([Pp]art)_+([0-9]+)/\1\2/g' \
+				| sed 's/[^A-Za-z0-9_-]/_/g' \
+				| sed -E 's/([Pp][Aa][Rr][Tt])[_-]*([0-9]+)/Part\2/g' \
+				| sed -E 's/([Pp][Aa][Rr][Tt])[_-]*(I|II|III|IV|i|ii|iii|iv)([^A-Za-z0-9]|$)/Part\2\3/g' \
+				| sed -E 's/_+Part([0-9]+|I|II|III|IV|i|ii|iii|iv)$/-Part\1/g' \
 				| sed 's/__\+/_/g' \
 				| sed 's/^_//; s/_$//'
 		)"
@@ -4538,8 +6236,10 @@ detox_title() {
 				| sed "s/[’']//g" \
 				| sed 's/[[:space:]]\+/_/g' \
 				| sed 's/&/And/g' \
-				| sed 's/[^A-Za-z0-9_]/_/g' \
-				| sed -E 's/([Pp]art)_+([0-9]+)/\1\2/g' \
+				| sed 's/[^A-Za-z0-9_-]/_/g' \
+				| sed -E 's/([Pp][Aa][Rr][Tt])[_-]*([0-9]+)/Part\2/g' \
+				| sed -E 's/([Pp][Aa][Rr][Tt])[_-]*(I|II|III|IV|i|ii|iii|iv)([^A-Za-z0-9]|$)/Part\2\3/g' \
+				| sed -E 's/_+Part([0-9]+|I|II|III|IV|i|ii|iii|iv)$/-Part\1/g' \
 				| sed 's/__\+/_/g' \
 				| sed 's/^_//; s/_$//'
 		)"
@@ -5909,10 +7609,27 @@ have_cmd() {
     # #MARKER: ENSURE intro_template WORKDIR
     # =========================
 ensure_intro_template_dir() {
-	if [[ ! -d "intro_template" ]]; then
-		mkdir -p intro_template
-		#echo -e "${YELLOW} = = > Created intro_template/ working directory.${NC}"
+	local repo="${INTRO_TEMPLATE_DIR:-${FACTORY_HOME}/intro_template}"
+
+	mkdir -p "$repo"
+
+	# Compatibility bridge:
+	# Existing Factory paths still look for intro_template/... in the working dir.
+	# The real template repository now lives in TOOLBOX/intro_template.
+	if [[ -e "intro_template" && ! -L "intro_template" ]]; then
+		echo -e "${YE} = = > Working intro_template/ already exists. Leaving it in place.${NC}"
+		return 0
 	fi
+
+	if [[ -L "intro_template" ]]; then
+		rm -f "intro_template"
+	fi
+
+	ln -s "$repo" "intro_template" 2>/dev/null || {
+		echo -e "${YE} = = > Could Not Link intro_template -> TOOLBOX template repo.${NC}"
+		echo -e "${YE} = = > Falling back to working-folder intro_template/.${NC}"
+		mkdir -p intro_template
+	}
 }
 
 # ============================================================
@@ -5961,35 +7678,50 @@ titlecase_words() {
 # - This Helper Is For Metadata/Display-Title Generation Only.
 #
 make_title_from_filename() {
-  local file="${1:-}"
-  local seg="${2:-3}"
-  local base="${file%.*}"
-  local sliced
+	local file="${1:-}"
+	local seg="${2:-3}"
+	local base="${file%.*}"
+	local sliced
 
-  # ========================================================
-  # SAFETY:
-  # - This helper may be called from multiple missions.
-  # - Under set -u, a missing $2 would hard-crash if we used:
-  #     local seg="$2"
-  # - Default to segment 3, which matches the most common
-  #   "show_prefix + SxxExx + title..." filename layout.
-  # ========================================================
+	# ========================================================
+	# SAFETY:
+	# - This helper may be called from multiple missions.
+	# - Under set -u, a missing $2 would hard-crash if we used:
+	#     local seg="$2"
+	# - Default to segment 3, which matches the most common
+	#   "show_prefix + SxxExx + title..." filename layout.
+	#
+	# TWO-PART / JOINED EPISODE SUPPORT:
+	# - S04E08andE09_Title
+	# - S04E08-S04E09_Title
+	# - S04E08-E09_Title
+	# - S04E18_E19_Title
+	# ========================================================
 
-  base="$(echo "$base" | sed -E 's/_+/_/g; s/^_+//; s/_+$//')"
+	base="$(basename "$base")"
+	base="$(strip_workflow_prefixes "$base")"
+	base="$(echo "$base" | sed -E 's/_+/_/g; s/^_+//; s/_+$//')"
 
-  sliced="$(echo "$base" | awk -v s="$seg" -F'_' '
-    BEGIN{ IGNORECASE=1 }
-    {
-      if(s<1) s=1
-      out=""
-      for(i=s;i<=NF;i++){
-        if($i ~ /^S[0-9]{2}E[0-9]{2}$/) continue
-        out = out (out=="" ? "" : "_") $i
-      }
-      print out
-    }')"
+	# Prefer the explicit after-episode-block parser when an SxxExx token exists.
+	if [[ "$base" =~ [Ss][0-9]{2}[Ee][0-9]{2} ]]; then
+		barfix_title_after_episode_block "$base" | titlecase_words
+		return 0
+	fi
 
-  echo "$sliced" | tr '_' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | titlecase_words
+	# Fallback for non-SxxExx names: old segment-based behavior.
+	sliced="$(echo "$base" | awk -v s="$seg" -F'_' '
+		BEGIN{ IGNORECASE=1 }
+		{
+			if(s<1) s=1
+			out=""
+			for(i=s;i<=NF;i++){
+				if($i ~ /^S[0-9]{2}E[0-9]{2}$/) continue
+				out = out (out=="" ? "" : "_") $i
+			}
+			print out
+		}')"
+
+	echo "$sliced" | tr '_' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | titlecase_words
 }
 # End Of make_title_from_filename
 
@@ -6192,35 +7924,294 @@ auto_anchor_csv_from_duration() {
 		return 0
 	fi
 
+	# ----- DURATION-AWARE AUTO ANCHOR COUNT -------------------------------
+	# Short templates get fewer anchors.
+	# Longer templates get more spread anchors.
+	count="$(awk -v d="$duration" 'BEGIN {
+		if (d < 30) print 3;
+		else if (d < 90) print 5;
+		else print 7;
+	}')"
+
 	case "$count" in
 		3)
-			csv="$(awk -v d="$duration" 'BEGIN {
-				a[1]=0.20; a[2]=0.50; a[3]=0.80
+			csv="$(awk -v d="$duration" -v m="$mode" 'BEGIN {
+				if (m == "outro") {
+					a[1]=0.45; a[2]=0.70; a[3]=0.90
+				} else {
+					a[1]=0.20; a[2]=0.50; a[3]=0.80
+				}
+
 				for (i=1; i<=3; i++) {
-					v=d*a[i]
+					v=int((d*a[i]) + 0.5)
 					if (d > 6 && v < 2) v=2
-					if (d > 6 && v > d-2) v=d-2
+					if (d > 6 && v > d-2) v=int(d-2)
 					if (i > 1) printf ","
-					printf "%.3f", v
+					printf "%d", v
 				}
 			}')"
 			;;
-		5|*)
-			csv="$(awk -v d="$duration" 'BEGIN {
-				a[1]=0.12; a[2]=0.30; a[3]=0.50; a[4]=0.70; a[5]=0.88
+		5)
+			csv="$(awk -v d="$duration" -v m="$mode" 'BEGIN {
+				if (m == "outro") {
+					a[1]=0.35; a[2]=0.50; a[3]=0.65; a[4]=0.80; a[5]=0.92
+				} else {
+					a[1]=0.12; a[2]=0.30; a[3]=0.50; a[4]=0.70; a[5]=0.88
+				}
+
 				for (i=1; i<=5; i++) {
-					v=d*a[i]
+					v=int((d*a[i]) + 0.5)
 					if (d > 6 && v < 2) v=2
-					if (d > 6 && v > d-2) v=d-2
+					if (d > 6 && v > d-2) v=int(d-2)
 					if (i > 1) printf ","
-					printf "%.3f", v
+					printf "%d", v
+				}
+			}')"
+			;;
+		7|*)
+			csv="$(awk -v d="$duration" -v m="$mode" 'BEGIN {
+				if (m == "outro") {
+					a[1]=0.25; a[2]=0.38; a[3]=0.51; a[4]=0.64; a[5]=0.76; a[6]=0.88; a[7]=0.95
+				} else {
+					a[1]=0.10; a[2]=0.23; a[3]=0.36; a[4]=0.50; a[5]=0.64; a[6]=0.77; a[7]=0.90
+				}
+
+				for (i=1; i<=7; i++) {
+					v=int((d*a[i]) + 0.5)
+					if (d > 6 && v < 2) v=2
+					if (d > 6 && v > d-2) v=int(d-2)
+					if (i > 1) printf ","
+					printf "%d", v
 				}
 			}')"
 			;;
 	esac
 
-	echo -e "${CYAN} = = > AUTO Anchors:${NC} ${YELLOW}$csv${NC} ${CYAN}from${NC} ${GREEN}$template_file${NC}" >&2
+	echo -e "${CYAN} = = > AUTO Anchors:${NC} ${YELLOW}$csv${NC} ${CYAN}count=${NC}${YELLOW}$count${NC} ${CYAN}duration=${NC}${YELLOW}$duration${NC} ${CYAN}from${NC} ${GREEN}$template_file${NC}" >&2
 	printf '%s\n' "$csv"
+}
+
+# ================================================================
+# #MARKER: AUTO OUTRO TAIL SCAN DEPTH FROM TEMPLATE DURATION
+# ================================================================
+auto_outro_tail_scan_seconds() {
+	local template_file="${1:-$OUTRO_TEMPLATE}"
+	local requested="${2:-${OUTRO_TAIL_SCAN_SECONDS:-auto}}"
+	local duration=""
+	local pad="${OUTRO_TAIL_SCAN_PAD_SECONDS:-10}"
+	local min_scan="${OUTRO_TAIL_SCAN_MIN_SECONDS:-45}"
+	local max_scan="${OUTRO_TAIL_SCAN_MAX_SECONDS:-160}"
+	local result=""
+
+	if [[ "${requested,,}" != "auto" ]]; then
+		printf '%s\n' "$requested"
+		return 0
+	fi
+
+	if [[ ! -f "$template_file" ]]; then
+		echo -e "${YE} = = > AUTO Outro Tail Scan Could Not Find Template. Falling Back To 120.${NC}" >&2
+		printf '%s\n' "120"
+		return 0
+	fi
+
+	duration="$(get_file_duration_seconds "$template_file" 2>/dev/null || true)"
+
+	if [[ -z "$duration" || ! "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+		echo -e "${YE} = = > AUTO Outro Tail Scan Could Not Read Template Duration. Falling Back To 120.${NC}" >&2
+		printf '%s\n' "120"
+		return 0
+	fi
+
+	result="$(awk -v d="$duration" -v p="$pad" -v mn="$min_scan" -v mx="$max_scan" 'BEGIN {
+		v = d + p
+		if (v < mn) v = mn
+		if (v > mx) v = mx
+		printf "%.3f", v
+	}')"
+
+	echo -e "${CYAN} = = > AUTO Outro Tail Scan:${NC} ${YELLOW}$result${NC} ${CYAN}= template ${duration}s + pad ${pad}s${NC}" >&2
+	printf '%s\n' "$result"
+}
+
+# ================================================================
+# #MARKER: OUTRO MULTIKEY TEMPLATE HELPERS
+# ================================================================
+outro_template_list() {
+	local pattern="${1:-${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}}"
+
+	compgen -G "$pattern" | sort
+}
+
+outro_template_primary() {
+	local pattern="${1:-${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}}"
+	local first=""
+
+	first="$(outro_template_list "$pattern" | head -n 1 || true)"
+
+	if [[ -n "$first" ]]; then
+		printf '%s\n' "$first"
+		return 0
+	fi
+
+	if [[ -f "${OUTRO_TEMPLATE:-intro_template/outro.mkv}" ]]; then
+		printf '%s\n' "$OUTRO_TEMPLATE"
+		return 0
+	fi
+
+	return 1
+}
+
+outro_template_count() {
+	local pattern="${1:-${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}}"
+
+	outro_template_list "$pattern" | wc -l
+}
+
+auto_anchor_csv_from_seconds() {
+	local duration="$1"
+	local mode="${2:-outro}"
+	local fallback="${3:-8,12,16}"
+	local count csv
+
+	if [[ -z "$duration" || ! "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+		printf '%s\n' "$fallback"
+		return 0
+	fi
+
+	count="$(awk -v d="$duration" 'BEGIN {
+		if (d < 30) print 3;
+		else if (d < 90) print 5;
+		else print 7;
+	}')"
+
+	case "$count" in
+		3)
+			csv="$(awk -v d="$duration" -v m="$mode" 'BEGIN {
+				if (m == "outro") {
+					a[1]=0.45; a[2]=0.70; a[3]=0.90
+				} else {
+					a[1]=0.20; a[2]=0.50; a[3]=0.80
+				}
+
+				for (i=1; i<=3; i++) {
+					v=int((d*a[i]) + 0.5)
+					if (d > 6 && v < 2) v=2
+					if (d > 6 && v > d-2) v=int(d-2)
+					if (i > 1) printf ","
+					printf "%d", v
+				}
+			}')"
+			;;
+		5)
+			csv="$(awk -v d="$duration" -v m="$mode" 'BEGIN {
+				if (m == "outro") {
+					a[1]=0.35; a[2]=0.50; a[3]=0.65; a[4]=0.80; a[5]=0.92
+				} else {
+					a[1]=0.12; a[2]=0.30; a[3]=0.50; a[4]=0.70; a[5]=0.88
+				}
+
+				for (i=1; i<=5; i++) {
+					v=int((d*a[i]) + 0.5)
+					if (d > 6 && v < 2) v=2
+					if (d > 6 && v > d-2) v=int(d-2)
+					if (i > 1) printf ","
+					printf "%d", v
+				}
+			}')"
+			;;
+		*)
+			csv="$(awk -v d="$duration" -v m="$mode" 'BEGIN {
+				if (m == "outro") {
+					a[1]=0.25; a[2]=0.38; a[3]=0.51; a[4]=0.64; a[5]=0.76; a[6]=0.88; a[7]=0.95
+				} else {
+					a[1]=0.10; a[2]=0.23; a[3]=0.36; a[4]=0.50; a[5]=0.64; a[6]=0.77; a[7]=0.90
+				}
+
+				for (i=1; i<=7; i++) {
+					v=int((d*a[i]) + 0.5)
+					if (d > 6 && v < 2) v=2
+					if (d > 6 && v > d-2) v=int(d-2)
+					if (i > 1) printf ","
+					printf "%d", v
+				}
+			}')"
+			;;
+	esac
+
+	echo -e "${CYAN} = = > AUTO ${mode^} Global Anchors:${NC} ${YELLOW}$csv${NC} ${CYAN}From Average Template Duration ${duration}s${NC}" >&2
+	printf '%s\n' "$csv"
+}
+
+auto_outro_multikey_anchor_csv() {
+	local pattern="${1:-${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}}"
+	local fallback="${2:-${OUTRO_ANCHOR_SECONDS:-8,12,16}}"
+	local tolerance="${OUTRO_MULTIKEY_DURATION_TOLERANCE_SECONDS:-1.0}"
+
+	local -a templates=()
+	local template duration
+	local stats count min_d max_d avg_d spread
+
+	mapfile -t templates < <(outro_template_list "$pattern")
+
+	if (( ${#templates[@]} == 0 )); then
+		echo -e "${YE} = = > AUTO Outro Anchors: No Outro Templates Found For:${NC} ${YELLOW}$pattern${NC}" >&2
+		printf '%s\n' "$fallback"
+		return 0
+	fi
+
+	if (( ${#templates[@]} == 1 )); then
+		auto_anchor_csv_from_duration "${templates[0]}" "outro" "$fallback"
+		return 0
+	fi
+
+	stats="$(
+		for template in "${templates[@]}"; do
+			duration="$(get_file_duration_seconds "$template" 2>/dev/null || true)"
+			[[ "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]] || continue
+			printf '%s\n' "$duration"
+		done | awk '
+			NR == 1 {
+				min = $1
+				max = $1
+				sum = 0
+			}
+			{
+				if ($1 < min) min = $1
+				if ($1 > max) max = $1
+				sum += $1
+				count += 1
+			}
+			END {
+				if (count < 1) {
+					exit 1
+				}
+				printf "%d|%.3f|%.3f|%.3f|%.3f", count, min, max, sum/count, max-min
+			}
+		'
+	)" || {
+		echo -e "${YE} = = > AUTO Outro Anchors: Could Not Read MultiKey Durations. Falling Back.${NC}" >&2
+		printf '%s\n' "$fallback"
+		return 0
+	}
+
+	IFS='|' read -r count min_d max_d avg_d spread <<< "$stats"
+
+	if awk -v s="$spread" -v t="$tolerance" 'BEGIN { exit !(s <= t) }'; then
+		echo -e "${CYAN} = = > Outro MultiKey Templates:${NC} ${YELLOW}${#templates[@]}${NC}" >&2
+		echo -e "${CYAN} = = > Outro Duration Spread:${NC} ${YELLOW}${spread}s${NC} ${CYAN}(tolerance ${tolerance}s)${NC}" >&2
+		auto_anchor_csv_from_seconds "$avg_d" "outro" "$fallback"
+		return 0
+	fi
+
+	echo -e "${YE} = = > Outro MultiKey Duration Spread Too Wide:${NC} ${YELLOW}${spread}s${NC} ${YE}> ${tolerance}s${NC}" >&2
+	echo -e "${YE} = = > Falling Back To Primary Outro Template Anchors.${NC}" >&2
+
+	template="$(outro_template_primary "$pattern" 2>/dev/null || true)"
+	if [[ -n "$template" ]]; then
+		auto_anchor_csv_from_duration "$template" "outro" "$fallback"
+	else
+		printf '%s\n' "$fallback"
+	fi
 }
 
 # =========================
@@ -6812,16 +8803,16 @@ run_main_menu() {
     echo -e "${CYAN}----Systematically Prepare And Process Episodes To Remove Tips Tails And The Intro${NC}"
     echo -e "${YEB}-------------IntroFind-v2.1- ${NC}${BWHITE}https://github.com/secarider/The_Factory${NC}"
     echo -e "${YEB}--------Video SmartCut-v1.7- ${NC}${BWHITE}https://github.com/skeskinen/smartcut${NC}"
-    echo -e "${CYAN}--------------For A Cut Friendly Environment, Along Comes SmartCut----${NC}"
     echo -e "${RED}============================================================================${NC}"
-    echo
-
-    # ------------------ WORKING CONTEXT ------------------
     cwd="$(pwd)"
     drive_display="$(get_drive_display "$cwd")"
     cwd_display="$(trim_working_path_display "$cwd" 3)"
-
     echo -e "${GREEN} = = > Working Drive/Folder:${NC} [${YELLOW}$drive_display${NC}] ${YELLOW}$cwd_display${NC}"
+	echo -e "${CYAN} = = > Factory Home:${NC} ${YELLOW}$(trim_working_path_display "$FACTORY_HOME" 3)${NC}"
+	resolve_smc_bin >/dev/null 2>&1 || true
+	echo -e "${CYAN} = = > SmartCut:${NC} ${YELLOW}$(trim_working_path_display "${SMC_BIN:-not found}" 3)${NC}"
+	echo -e "${CYAN} = = > Template Repo:${NC} ${YELLOW}$(trim_working_path_display "${INTRO_TEMPLATE_DIR:-${FACTORY_HOME}/intro_template}" 3)${NC}"
+	echo -e "${CYAN} = = > Template Link:${NC} ${YELLOW}intro_template -> $(trim_working_path_display "${INTRO_TEMPLATE_DIR:-${FACTORY_HOME}/intro_template}" 3)${NC}"
 
     # Disk space (important due to normalization expansion)
 	local free_gb free_color free total
@@ -6840,7 +8831,6 @@ run_main_menu() {
 
     echo -e "${free_color} = = > $free${NC} ${YELLOW}<-- Total${NC}"
     echo -e "${free_color} = = >  ^ Free Space${NC}"
-    echo
 
     # ------------------ WORKFLOW ------------------
 
@@ -7091,6 +9081,126 @@ build_playback_fix_args() {
 		done
 	fi
 }
+
+# ================================================================
+# #MARKER: DETOX LITE FILENAME CONFORMANCE WARNING HELPER
+# ================================================================
+# PURPOSE:
+# - Report-only filename conformance checker.
+# - Does NOT rename files.
+# - Used during BARFIX Lite / normal workflow so naming problems
+#   do not silently become metadata titles.
+#
+# CURRENT WARNINGS:
+# - _Part_1 / _Part_2 / _Part_I / _Part_II / _Part_III / _Part_IV
+#   should become -Part1 / -Part2 / -PartI / -PartII / etc.
+# - S04E18_E19 should become S04E18-E19.
+# - S04E08andE09 should become S04E08-E09.
+# ================================================================
+detox_lite_suggest_filename() {
+	local file="${1:-}"
+	local dir base stem ext suggested
+
+	dir="$(dirname -- "$file")"
+	base="$(basename -- "$file")"
+
+	if [[ "$base" == *.* ]]; then
+		stem="${base%.*}"
+		ext=".${base##*.}"
+	else
+		stem="$base"
+		ext=""
+	fi
+
+	suggested="$stem"
+
+	# Normalize trailing Part suffix:
+	#   Title_Part_2   -> Title-Part2
+	#   Title_Part_II  -> Title-PartII
+	#   Title-Part-2   -> Title-Part2
+	#   Title Part 2   -> Title-Part2
+	suggested="$(printf '%s\n' "$suggested" | sed -E 's/[ _-]+[Pp][Aa][Rr][Tt][ _-]*(1|2|3|4|I|II|III|IV|i|ii|iii|iv)$/-Part\1/')"
+
+	# Normalize roman part suffix case only for the known small set.
+	suggested="$(printf '%s\n' "$suggested" \
+		| sed -E 's/-Parti$/-PartI/; s/-Partii$/-PartII/; s/-Partiii$/-PartIII/; s/-Partiv$/-PartIV/')"
+
+	# Normalize joined episode forms:
+	#   S04E18_E19     -> S04E18-E19
+	#   S04E18 E19     -> S04E18-E19
+	#   S04E08andE09   -> S04E08-E09
+	suggested="$(printf '%s\n' "$suggested" \
+		| sed -E 's/(S[0-9]{2}E[0-9]{2})[ _]+(E[0-9]{2})/\1-\2/I' \
+		| sed -E 's/(S[0-9]{2}E[0-9]{2})[ _-]*and[ _-]*(E[0-9]{2})/\1-\2/I')"
+
+	if [[ "$suggested" != "$stem" ]]; then
+		if [[ "$dir" == "." ]]; then
+			printf '%s%s\n' "$suggested" "$ext"
+		else
+			printf '%s/%s%s\n' "$dir" "$suggested" "$ext"
+		fi
+		return 0
+	fi
+
+	return 1
+}
+
+detox_lite_warn_filename() {
+	local file="${1:-}"
+	local suggested=""
+
+	suggested="$(detox_lite_suggest_filename "$file" 2>/dev/null || true)"
+
+	[[ -n "$suggested" ]] || return 0
+	[[ "$suggested" != "$file" ]] || return 0
+
+	echo -e "${YE} = = > DETOX LITE Filename Warning:${NC} ${YELLOW}$(basename -- "$file")${NC}"
+	echo -e "${CYAN} = = > Suggested Filename:${NC} ${GREEN}$(basename -- "$suggested")${NC}"
+	echo -e "${YE} = = > Report Only: No Rename Was Performed.${NC}"
+}
+
+# ================================================================
+# #MARKER: BARFIX TITLE EXTRACTION HELPER
+# ================================================================
+# PURPOSE:
+# - Build player title metadata from filenames.
+# - Support ordinary SxxExx and joined / two-part episode naming.
+#
+# SUPPORTED EPISODE BLOCKS:
+# - S04E08_Title
+# - S04E08andE09_Title
+# - S04E08-S04E09_Title
+# - S04E08-E09_Title
+# - S04E18_E19_Title
+#
+# RULE:
+# - In after_sxxexx mode, the title begins after the whole episode block,
+#   not merely after the first SxxExx token.
+# ================================================================
+barfix_title_after_episode_block() {
+	local name="$1"
+
+	name="${name%.*}"
+	name="$(strip_workflow_prefixes "$name")"
+
+	# Full range: S04E08-S04E09_Title
+	name="$(printf '%s\n' "$name" | sed -E 's/^.*S[0-9]{2}E[0-9]{2}[-_ .]+S[0-9]{2}E[0-9]{2}[_ .-]*(.*)$/\1/I')"
+
+	# Short range: S04E08-E09_Title
+	name="$(printf '%s\n' "$name" | sed -E 's/^.*S[0-9]{2}E[0-9]{2}[-_ .]+E[0-9]{2}[_ .-]*(.*)$/\1/I')"
+
+	# Word join: S04E08andE09_Title
+	name="$(printf '%s\n' "$name" | sed -E 's/^.*S[0-9]{2}E[0-9]{2}[[:space:]_.-]*and[[:space:]_.-]*E[0-9]{2}[_ .-]*(.*)$/\1/I')"
+
+	# Plain single: S04E08_Title
+	name="$(printf '%s\n' "$name" | sed -E 's/^.*S[0-9]{2}E[0-9]{2}[_ .-]*(.*)$/\1/I')"
+
+	name="${name//_/ }"
+	name="$(printf '%s\n' "$name" | sed -E 's/^[[:space:]-]+//; s/[[:space:]-]+$//; s/[[:space:]]+/ /g')"
+
+	printf '%s\n' "$name"
+}
+
 # ================================================================
 # #MARKER: BARFIX LITE FOR SMC OUTPUTS
 # ================================================================
@@ -7102,16 +9212,14 @@ run_barfix_lite_on_file() {
 
 	[[ -f "$file" ]] || return 1
 
+	detox_lite_warn_filename "$file"
+
 	ext="${file##*.}"
 	ext="${ext,,}"
 
 	case "${SMC_BARFIX_TITLE_MODE:-skip}" in
 		after_sxxexx)
-			title="$(basename "$file")"
-			title="${title%.*}"
-			title="$(strip_workflow_prefixes "$title")"
-			title="$(printf '%s\n' "$title" | sed -E 's/^.*S[0-9][0-9]E[0-9][0-9][_ .-]*(.*)$/\1/I')"
-			title="${title//_/ }"
+			title="$(barfix_title_after_episode_block "$(basename "$file")")"
 			;;
 		full_filename)
 			title="$(basename "$file")"
@@ -8848,84 +10956,28 @@ run_subtox_direct_detox() {
 
 	local -a vids=("$@")
 	local choice file new_name stem ext
-	local -a targets=()
-
-	clear
-	echo -e "${CYAN}================================================${NC}"
-	echo -e "${CYAN}        DIRECT FILENAME DETOX TOOL              ${NC}"
-	echo -e "${CYAN}================================================${NC}"
-	echo
-
-	echo -e "  ${YELLOW}1)= = > Detox One Selected File${NC}"
-	echo -e "  ${YELLOW}2)= = > Detox ALL Eligible Files${NC}"
-	echo -e "  ${YELLOW}0)= = > Return${NC}"
-	echo
-	echo -ne "${YELLOW} = = > Select Option: ${NC}${GREEN}"
-	read -r choice
-	echo -ne "${NC}"
-
-	if is_exit_token "$choice"; then
-		return 0
-	fi
-
-	# --------------------------------------------------------
-	# BUILD TARGET LIST
-	# --------------------------------------------------------
-	case "$choice" in
-		1)
-			echo -e "${YELLOW} = = > Select File Index:${NC}"
-			for i in "${!vids[@]}"; do
-				echo -e "  ${CYAN}$((i+1)))${NC} ${vids[$i]}"
-			done
-			read -r idx
-
-			if ! [[ "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#vids[@]} )); then
-				echo -e "${REB} = = > Invalid Selection${NC}"
-				pause
-				return 1
-			fi
-
-			targets=("${vids[$((idx-1))]}")
-			;;
-		2)
-			targets=("${vids[@]}")
-			;;
-		*)
-			return 0
-			;;
-	esac
-
-	# --------------------------------------------------------
-	# PREVIEW
-	# --------------------------------------------------------
-	echo
-	echo -e "${CYAN}================================================${NC}"
-	echo -e "${CYAN}           DETOX PREVIEW                        ${NC}"
-	echo -e "${CYAN}================================================${NC}"
-	echo
-
 	local -a plan=()
+	local -a selected_plan=()
 
-	for file in "${targets[@]}"; do
+	# --------------------------------------------------------
+	# BUILD DETOX PLAN FIRST
+	# --------------------------------------------------------
+	for file in "${vids[@]}"; do
 
 		# Skip factory outputs
 		[[ "$file" =~ ^(SMC_|SUBPACKED_) ]] && continue
+
+		[[ -f "$file" ]] || continue
 
 		ext="${file##*.}"
 		stem="${file%.*}"
 
 		new_name="$(detox_title "$stem").${ext}"
 
-		if [[ "$file" == "$new_name" ]]; then
-			echo -e "  ${CYAN}${file}${NC} ${GREEN}[ALREADY CLEAN]${NC}"
-			continue
-		fi
+		[[ "$file" == "$new_name" ]] && continue
 
-		echo -e "  ${GREEN}${file}${NC} ${YELLOW}-->${NC} ${GREEN}${new_name}${NC}"
 		plan+=("${file}|${new_name}")
 	done
-
-	echo
 
 	if (( ${#plan[@]} == 0 )); then
 		echo -e "${GREEN} = = > Nothing To Change.${NC}"
@@ -8933,49 +10985,91 @@ run_subtox_direct_detox() {
 		return 0
 	fi
 
+	# --------------------------------------------------------
+	# PREVIEW IS THE MENU
+	# --------------------------------------------------------
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}           DETOX PREVIEW                        ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+
+	for i in "${!plan[@]}"; do
+
+		IFS='|' read -r file new_name <<< "${plan[$i]}"
+
+		echo -e "  ${CYAN}$((i+1)))${NC} ${GREEN}$file${NC}"
+		echo -e "      ${YELLOW}-->${NC} ${GREEN}$new_name${NC}"
+		echo
+	done
+
+	echo -e "  ${YELLOW}A)= = > Apply ALL Changes${NC}"
+	echo -e "  ${YELLOW}0)= = > Return${NC}"
+	echo
+
+	echo -ne "${YELLOW} = = > File Number, A=All, 0.=Return: ${NC}${GREEN}"
+	read -r choice
+	echo -e "${NC}"
+
+	if is_exit_token "$choice"; then
+		return 0
+	fi
+
+	if [[ "${choice^^}" == "A" ]]; then
+
+		selected_plan=("${plan[@]}")
+
+	else
+
+		choice="${choice//[[:space:]]/}"
+
+		if ! [[ "$choice" =~ ^[0-9]+$ ]] || \
+		   (( choice < 1 || choice > ${#plan[@]} )); then
+
+			echo -e "${REB} = = > Invalid Selection${NC}"
+			pause
+			return 1
+		fi
+
+		selected_plan=("${plan[$((choice-1))]}")
+	fi
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}         SELECTED DETOX CHANGES                 ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+
+	for item in "${selected_plan[@]}"; do
+		IFS='|' read -r file new_name <<< "$item"
+		echo -e "  ${GREEN}${file}${NC} ${YELLOW}-->${NC} ${GREEN}${new_name}${NC}"
+	done
+
+	echo
+
 	if ! ask_yes_no " = = > Apply Detox Renames? (y/n or 1/2): "; then
 		echo -e "${YELLOW} = = > Detox Cancelled.${NC}"
 		pause
 		return 0
 	fi
 
-	# --------------------------------------------------------
-	# APPLY
-	# --------------------------------------------------------
-	local applied=0
-	local failed=0
+	for item in "${selected_plan[@]}"; do
 
-	for row in "${plan[@]}"; do
-		old="${row%%|*}"
-		new="${row#*|}"
+		IFS='|' read -r file new_name <<< "$item"
 
-		if [[ -e "$new" && "$new" != "$old" ]]; then
-			echo -e "${REB} = = > [TARGET EXISTS]${NC} $new"
-			((failed+=1))
+		if [[ -e "$new_name" ]]; then
+			echo -e "${REB} = = > [SKIP EXISTS]${NC} ${YELLOW}$new_name${NC}"
 			continue
 		fi
 
-		if mv -- "$old" "$new"; then
-			echo -e "${GREEN} = = > [RENAMED]${NC} $old ${YELLOW}-->${NC} $new"
-			((applied+=1))
-		else
-			echo -e "${REB} = = > [FAILED]${NC} $old"
-			((failed+=1))
-		fi
+		echo -e "${GREEN} = = > [RENAMING]${NC} ${YELLOW}$file${NC} ${CYAN}-->${NC} ${GREEN}$new_name${NC}"
+		mv -- "$file" "$new_name"
 	done
 
 	echo
-	echo -e "${CYAN}================================================${NC}"
-	echo -e "${CYAN}               DETOX SUMMARY                    ${NC}"
-	echo -e "${CYAN}================================================${NC}"
-	echo -e "${CYAN} = = > Renamed:${NC} $applied"
-	echo -e "${CYAN} = = > Failed :${NC} $failed"
-	echo
-	if (( applied > 0 && failed == 0 )); then
-	echo -e "${GR} = = > Direct Detox Completed Successfully.${NC}"
-	fi
-
+	echo -e "${GR} = = > Direct Detox Complete.${NC}"
 	pause
+	return 0
 }
 
 # =========================
@@ -10473,6 +12567,172 @@ finalize_strip_workflow_prefixes() {
 }
 
 # =========================
+# #MARKER: CSV / TEMPLATE ARCHIVE HELPER
+# =========================
+
+factory_slugify_name() {
+	local s="$1"
+	s="${s//[^A-Za-z0-9._-]/_}"
+	s="$(echo "$s" | sed -E 's/_+/_/g; s/^_+//; s/_+$//')"
+	[[ -z "$s" ]] && s="Unknown_Show"
+	printf '%s\n' "$s"
+}
+
+factory_detect_archive_show_name() {
+	local guess=""
+
+	# Prefer current folder name for now. Later this can inspect CSV series column.
+	guess="$(basename "$PWD")"
+	guess="$(factory_slugify_name "$guess")"
+
+	printf '%s\n' "$guess"
+}
+
+factory_collect_map_templates() {
+	local mapfile="$1"
+	[[ -f "$mapfile" ]] || return 0
+
+	while IFS= read -r t; do
+		[[ -f "$t" ]] && printf '%s\n' "$t"
+	done < <(get_templates_from_intro_map "$mapfile")
+}
+
+factory_review_loose_archive_files() {
+	local -n _loose_ref="$1"
+	local -n _chosen_ref="$2"
+
+	(( ${#_loose_ref[@]} == 0 )) && return 0
+
+	echo
+	echo -e "${CYAN} = = > Loose Files Detected:${NC}"
+	printf '  %s\n' "${_loose_ref[@]}"
+	echo
+	echo -e "${YELLOW} = = > These Are Not Required Factory Archive Assets.${NC}"
+	echo -e "${CYAN} = = > Include Loose Files In Archive?${NC}"
+	echo -e "${GREEN}  1) Include All${NC}"
+	echo -e "${YELLOW}  2) Skip Loose Files${NC}"
+	echo
+	echo -ne "${YELLOW} = = > Choice [2]: ${NC}"
+	read -r loose_choice
+
+	case "${loose_choice:-2}" in
+		1)
+			_chosen_ref+=("${_loose_ref[@]}")
+			;;
+		*)
+			echo -e "${YELLOW} = = > Loose Files Skipped.${NC}"
+			;;
+	esac
+}
+
+run_csv_template_archive() {
+	echo -e "${CYAN} = = > Building CSV + Template Archive...${NC}"
+
+	local show_name archive_root archive_dir tarname manifest
+	local -a archive_files map_templates loose_files chosen_loose
+
+	show_name="$(factory_detect_archive_show_name)"
+	archive_root="${FACTORY_TEMPLATE_ARCHIVE_ROOT:-template_archive}"
+	archive_dir="$archive_root/$show_name/$(date +%Y%m%d_%H%M%S)"
+
+	mkdir -p "$archive_dir" || {
+		echo -e "${RED} = = > Failed To Create Archive Folder:${NC} $archive_dir"
+		return 1
+	}
+
+	tarname="$archive_dir/csv_templates.tar.gz"
+	manifest="$archive_dir/manifest.txt"
+
+	shopt -s nullglob nocaseglob
+
+	archive_files=(
+		"$INTRO_MAP"
+		"${OUTRO_MAP:-outro_map.csv}"
+		intro_map.csv
+		outro_map.csv
+		launcher.conf
+		factory_session.conf
+		.factory_session.conf
+		*.episodes.csv
+		*_episodes.csv
+	)
+
+	loose_files=(
+		*.sh
+		*.srt
+		*.txt
+		*.doc
+		*.log
+		*.conf
+		.*.conf
+	)
+
+	shopt -u nullglob nocaseglob
+
+	map_templates=()
+
+	if [[ -f "$INTRO_MAP" ]]; then
+		while IFS= read -r t; do
+			map_templates+=("$t")
+		done < <(factory_collect_map_templates "$INTRO_MAP")
+	fi
+
+	if [[ -f "${OUTRO_MAP:-outro_map.csv}" ]]; then
+		while IFS= read -r t; do
+			map_templates+=("$t")
+		done < <(factory_collect_map_templates "${OUTRO_MAP:-outro_map.csv}")
+	fi
+
+	# Remove missing known files.
+	local -a clean_archive_files=()
+	local f
+	for f in "${archive_files[@]}" "${map_templates[@]}"; do
+		[[ -e "$f" ]] || continue
+		clean_archive_files+=("$f")
+	done
+
+	# Remove duplicates.
+	mapfile -t clean_archive_files < <(printf '%s\n' "${clean_archive_files[@]}" | awk '!seen[$0]++')
+	mapfile -t loose_files < <(printf '%s\n' "${loose_files[@]}" | awk '!seen[$0]++')
+
+	factory_review_loose_archive_files loose_files chosen_loose
+
+	echo
+	echo -e "${CYAN} = = > Archive Destination:${NC}"
+	echo -e "${GREEN} $archive_dir${NC}"
+	echo
+	echo -e "${CYAN} = = > Known Factory Assets:${NC}"
+	printf '  %s\n' "${clean_archive_files[@]}"
+	echo
+	if (( ${#chosen_loose[@]} > 0 )); then
+		echo -e "${CYAN} = = > Loose Files Included:${NC}"
+		printf '  %s\n' "${chosen_loose[@]}"
+		echo
+	fi
+
+	{
+		echo "Factory CSV / Template Archive"
+		echo "Created: $(date)"
+		echo "Show: $show_name"
+		echo "Source Folder: $PWD"
+		echo
+		echo "Known Factory Assets:"
+		printf '  %s\n' "${clean_archive_files[@]}"
+		echo
+		echo "Loose Files Included:"
+		printf '  %s\n' "${chosen_loose[@]}"
+	} > "$manifest"
+
+	if tar -czf "$tarname" "${clean_archive_files[@]}" "${chosen_loose[@]}" "$manifest"; then
+		echo -e "${GREEN} = = > Archive Created:${NC} $tarname"
+		return 0
+	else
+		echo -e "${RED} = = > Archive Failed.${NC}"
+		return 1
+	fi
+}
+
+# =========================
 # #MARKER: FINALIZE / CLEANUP MENU
 # =========================
 # PURPOSE:
@@ -11508,36 +13768,10 @@ cleanup_finalize_finished_replacements() {
 				cleanup_show_status
 				;;
 
-            2)
-            	echo -e "${CYAN} = = > Building CSV + Template Archive...${NC}"
-
-            	tarname="csv_templates_$(date +%Y%m%d_%H%M%S).tar.gz"
-
-				shopt -s nullglob nocaseglob
-				csv_files=( *.csv *.sh *.srt *.log )
-				shopt -u nullglob nocaseglob
-
-            	map_templates=()
-
-            	if [[ -f "$INTRO_MAP" ]]; then
-            		while IFS= read -r t; do
-            			[[ -f "$t" ]] && map_templates+=("$t")
-            		done < <(get_templates_from_intro_map "$INTRO_MAP")
-            	fi
-
-            	if [[ -f "${OUTRO_MAP:-outro_map.csv}" ]]; then
-            		while IFS= read -r t; do
-            			[[ -f "$t" ]] && map_templates+=("$t")
-            		done < <(get_templates_from_intro_map "${OUTRO_MAP:-outro_map.csv}")
-            	fi
-
-            	tar -czf "$tarname" \
-            		"${csv_files[@]}" \
-            		"${map_templates[@]}"
-
-            	echo -e "${GREEN} = = > Created: $tarname${NC}"
+			2)
+				run_csv_template_archive
 				pause
-            	;;
+				;;
 
 			3)
 				cleanup_templates
@@ -11812,9 +14046,9 @@ inspect_warn_non_mkv_sources() {
 	echo -e "${REB}        NON-MKV SOURCE CONTAINERS DETECTED       ${NC}"
 	echo -e "${REB}================================================${NC}"
 	echo
-	echo -e "${YE} = = > Factory works best when working sources are MKV.${NC}"
-	echo -e "${YE} = = > MP4 / AVI / MOV / TS / WEBM containers may limit metadata, subtitle, or stream handling.${NC}"
-	echo -e "${YE} = = > SmartCut / BARFIX / SUBTOX may behave differently on non-MKV sources.${NC}"
+	echo -e "${YE} = = > Factory Works Best When Working Sources Are MKV.${NC}"
+	echo -e "${YE} = = > MP4 / AVI / MOV / TS / WEBM Containers May Limit Metadata, Subtitle, Or Stream Handling.${NC}"
+	echo -e "${YE} = = > SmartCut / BARFIX / SUBTOX May Behave Differently On Non-MKV Sources.${NC}"
 	echo
 	echo -e "${CYAN} = = > Non-MKV Targets Found:${NC} ${YELLOW}${#non_mkv_targets[@]}${NC}"
 	echo -e "${CYAN} = = > First Target:${NC} ${YELLOW}${non_mkv_targets[0]}${NC}"
@@ -13261,8 +15495,9 @@ run_subtitlez_menu() {
         echo
         echo -e "${YELLOW}"
         echo "     1) SUBTOX"
-        echo "     2) Pack external.srt"
-        echo "     3) Extract Internal Subtitles"
+        echo "     2) Full Collection Filename Detox Scan"
+        echo "     3) Pack external.srt"
+        echo "     4) Extract Internal Subtitles"
         echo
         echo "     10-key exit > 0. (or q) Enter to quit"
         echo
@@ -13283,11 +15518,14 @@ run_subtitlez_menu() {
                 run_subtox
                 ;;
             2)
-                run_subtox_pack
+                run_collection_detox_scan_only
                 ;;
             3)
-                run_subtox_extract
+                run_subtox_pack
                 ;;
+			4)
+				run_subtox_extract
+				;;
             [Qq])
                 return 0
                 ;;
@@ -13937,7 +16175,7 @@ run_batch_normalize_to_mkv_tool() {
 		return 0
 	fi
 
-	rescued_run_dir="OEM/RESCUED/run_$(date '+%Y%m%d_%H%M%S')"
+	rescued_run_dir="OEM/AUDIO_SYNC/$(date '+%Y-%m')"
 
 	echo
 	echo -e "${CYAN}================================================${NC}"
@@ -14682,7 +16920,7 @@ while IFS=, read -r file start end _; do
 	smc_explain_cut_plan "$cut_args"
 	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
 	echo
-	echo -e "${CYAN} = = > ACTIVE SMC ENGINE:${NC} ${YELLOW}${SMC_BIN:-unset}${NC}"
+	echo -e "${CYAN} = = > ACTIVE SMC ENGINE:${NC} ${YELLOW}$(trim_working_path_display "$SMC_BIN" 3)${NC}"
 
 	if [[ -x "${SMC_BIN:-}" ]]; then
 		echo -e "${CYAN} = = > SMC VERSION:${NC} ${YELLOW}$("$SMC_BIN" --version 2>/dev/null | head -n1)${NC}"
@@ -14694,6 +16932,7 @@ while IFS=, read -r file start end _; do
 		if [[ "${PILOT_MODE:-0}" == "1" ]]; then
 			pilot_register_restore_point "$file" "SMC_CSV_PILOT_SOURCE"
 			pilot_register_output "$out" "SMC_CSV_PILOT_OUTPUT"
+			pilot_register_smc_cut_plan "$file" "$out" "$cut_args"
 			((pilot_outputs_created+=1)) || :
 			echo -e "${YE} = = > Pilot Mode: Original Left In Working Directory For Redo Safety.${NC}"
 		else
@@ -14736,7 +16975,7 @@ rm -f x265_2pass.log
 # - Fall Back To The Older pipx / PATH smartcut Command Only If Needed.
 #
 # ENGINE ORDER:
-#   1) $HOME/TOOLBOX_NOT_INTRO/smc.app
+#   1) $HOME/TOOLBOX/smc.app
 #      - Preferred portable Factory copy.
 #      - Rename current SmartMediaCutter AppImage to smc.app.
 #
@@ -14759,19 +16998,35 @@ rm -f x265_2pass.log
 # - Returns 1 If Not Found
 # ========================================================
 resolve_smc_bin() {
-	if [[ -x "$HOME/TOOLBOX_NOT_INTRO/smc.app" ]]; then
-		SMC_BIN="$HOME/TOOLBOX_NOT_INTRO/smc.app"
-		HAS_SMC=1
-		echo -e "${GR} = = > SmartCut Engine:${NC} ${YELLOW}$SMC_BIN${NC}"
-		return 0
-	fi
+	local candidate=""
 
-	if [[ -x "./smc.app" ]]; then
-		SMC_BIN="./smc.app"
-		HAS_SMC=1
-		echo -e "${GR} = = > SmartCut Engine:${NC} ${YELLOW}$SMC_BIN${NC}"
-		return 0
-	fi
+	# ========================================================
+	# #MARKER: PORTABLE SMARTCUT ENGINE RESOLVER
+	# ========================================================
+	# Search order:
+	#   1) FACTORY_HOME/smc.app        after TOOLBOX migration
+	#   2) FACTORY_WORKDIR/smc.app     temporary / emergency working copy
+	#   3) ./smc.app                  fallback if launched old-style
+	#   4) pipx / PATH smartcut
+	# ========================================================
+
+	local -a smc_candidates=(
+		"${FACTORY_HOME}/smc.app"
+		"${FACTORY_HOME}/SMC.app"
+		"${FACTORY_WORKDIR}/smc.app"
+		"${FACTORY_WORKDIR}/SMC.app"
+		"./smc.app"
+		"./SMC.app"
+	)
+
+	for candidate in "${smc_candidates[@]}"; do
+		if [[ -x "$candidate" ]]; then
+			SMC_BIN="$candidate"
+			HAS_SMC=1
+			echo -e "${GR} = = > SmartCut Engine:${NC} ${YELLOW}$(trim_working_path_display "$SMC_BIN" 3)${NC}"
+			return 0
+		fi
+	done
 
 	if have_cmd smartcut; then
 		SMC_BIN="$(command -v smartcut)"
@@ -14788,6 +17043,33 @@ resolve_smc_bin() {
 
 have_smartcut() {
 	resolve_smc_bin >/dev/null 2>&1
+}
+
+# ========================================================
+# #MARKER: FACTORY STARTUP ENVIRONMENT REPORT
+# ========================================================
+show_factory_environment_report() {
+	local cols lines smc_display template_display
+
+	cols="$(tput cols 2>/dev/null || printf '0')"
+	lines="$(tput lines 2>/dev/null || printf '0')"
+
+	resolve_smc_bin >/dev/null 2>&1 || true
+
+	smc_display="${SMC_BIN:-not found}"
+	template_display="${FACTORY_HOME}/intro_template"
+
+	echo
+	echo -e "${CYAN}============================================================${NC}"
+	echo -e "${CYAN}                 FACTORY ENVIRONMENT                        ${NC}"
+	echo -e "${CYAN}============================================================${NC}"
+	echo -e "${CYAN} = = > Factory Home:${NC} ${YELLOW}$(trim_working_path_display "$FACTORY_HOME" 3)${NC}"
+	echo -e "${CYAN} = = > Working Dir :${NC} ${YELLOW}$(trim_working_path_display "$FACTORY_WORKDIR" 3)${NC}"
+	echo -e "${CYAN} = = > SmartCut    :${NC} ${YELLOW}$(trim_working_path_display "$smc_display" 3)${NC}"
+	echo -e "${CYAN} = = > Templates   :${NC} ${YELLOW}$(trim_working_path_display "$template_display" 3)${NC}"
+	echo -e "${CYAN} = = > Terminal    :${NC} ${YELLOW}${cols} x ${lines}${NC}"
+	echo -e "${CYAN}============================================================${NC}"
+	echo
 }
 
 # ================================================================
@@ -14851,10 +17133,10 @@ smartcut_session_varz_menu() {
 
 				echo
 				echo -e "${CYAN} = = > Intro Hash Mode:${NC} ${YELLOW}${INTRO_HASH_MODE:-phash}${NC}"
-				echo -e "${CYAN}     1) pHash  ${YELLOW}(recommended for normal intros)${NC}"
-				echo -e "${CYAN}     2) dHash  ${YELLOW}(edge/text heavy experiment)${NC}"
-				echo -e "${CYAN}     3) aHash  ${YELLOW}(fast/simple scout)${NC}"
-				echo -e "${CYAN}     4) wHash  ${YELLOW}(wavelet experiment)${NC}"
+				echo -e "${CYAN}     1) dHash  ${YELLOW}(fastest for credits, high contrast)${NC}"
+				echo -e "${CYAN}     2) aHash  ${YELLOW}(fast/simple average hash)${NC}"
+				echo -e "${CYAN}     3) pHash  ${YELLOW}(heavier perceptual hash)${NC}"
+				echo -e "${CYAN}     4) wHash  ${YELLOW}(wavelet hash)${NC}"
 				echo
 
 				prompt_menu_choice " = = > Select Intro Hash Mode [1-4 | blank=keep current]: " input
@@ -14863,13 +17145,13 @@ smartcut_session_varz_menu() {
 					"")
 						;;
 					1)
-						INTRO_HASH_MODE="phash"
-						;;
-					2)
 						INTRO_HASH_MODE="dhash"
 						;;
-					3)
+					2)
 						INTRO_HASH_MODE="ahash"
+						;;
+					3)
+						INTRO_HASH_MODE="phash"
 						;;
 					4)
 						INTRO_HASH_MODE="whash"
@@ -14894,10 +17176,10 @@ smartcut_session_varz_menu() {
 
 				echo
 				echo -e "${CYAN} = = > Outro Hash Mode:${NC} ${YELLOW}${OUTRO_HASH_MODE:-dhash}${NC}"
-				echo -e "${CYAN}     1) dHash  ${YELLOW}(recommended for credits / outro text)${NC}"
-				echo -e "${CYAN}     2) pHash  ${YELLOW}(classic perceptual fallback)${NC}"
-				echo -e "${CYAN}     3) aHash  ${YELLOW}(fast/simple scout)${NC}"
-				echo -e "${CYAN}     4) wHash  ${YELLOW}(wavelet experiment)${NC}"
+				echo -e "${CYAN}     1) dHash  ${YELLOW}(fastest for credits, high contrast)${NC}"
+				echo -e "${CYAN}     2) aHash  ${YELLOW}(fast/simple average hash)${NC}"
+				echo -e "${CYAN}     3) pHash  ${YELLOW}(heavier perceptual hash)${NC}"
+				echo -e "${CYAN}     4) wHash  ${YELLOW}(wavelet hash)${NC}"
 				echo
 
 				prompt_menu_choice " = = > Select Outro Hash Mode [1-4 | blank=keep current]: " input
@@ -14909,10 +17191,10 @@ smartcut_session_varz_menu() {
 						OUTRO_HASH_MODE="dhash"
 						;;
 					2)
-						OUTRO_HASH_MODE="phash"
+						OUTRO_HASH_MODE="ahash"
 						;;
 					3)
-						OUTRO_HASH_MODE="ahash"
+						OUTRO_HASH_MODE="phash"
 						;;
 					4)
 						OUTRO_HASH_MODE="whash"
@@ -19724,13 +22006,13 @@ run_outrofind_selected_files() {
 	local outro_find_t0 outro_find_t1 outro_find_elapsed outro_find_elapsed_hms
 
 	ensure_phash_engine || {
-		echo -e "${REB} = = > Could Not Build pHash Engine.${NC}"
+		echo -e "${REB} = = > Could Not Build xHash Engine.${NC}"
 		pause
 		return 1
 	}
 
-		if [[ ! -f "$OUTRO_TEMPLATE" ]]; then
-		echo -e "${REB} = = > Outro Template Missing:${NC} ${YELLOW}$OUTRO_TEMPLATE${NC}"
+		if (( "$(outro_template_count "${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}")" == 0 )); then
+		echo -e "${REB} = = > Outro Template Missing:${NC} ${YELLOW}${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}${NC}"
 		pause
 		return 1
 	fi
@@ -19764,16 +22046,19 @@ run_outrofind_selected_files() {
 		duration="$(get_file_duration_seconds "$file")"
 		outro_limit="$duration"
 
-		outro_scan_start="$(awk -v d="$duration" -v back="${OUTRO_TAIL_SCAN_SECONDS:-200}" 'BEGIN{
+		primary_outro_template="$(outro_template_primary "${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}")"
+		resolved_outro_tail_scan="$(auto_outro_tail_scan_seconds "$primary_outro_template" "${OUTRO_TAIL_SCAN_SECONDS:-auto}")"
+
+		outro_scan_start="$(awk -v d="$duration" -v back="$resolved_outro_tail_scan" 'BEGIN{
 			v=d-back
 			if (v < 0) v=0
 			printf "%.3f", v
 		}')"
 
-		resolved_outro_anchors="$(auto_anchor_csv_from_duration "$OUTRO_TEMPLATE" "outro" "${OUTRO_ANCHOR_SECONDS:-8,12,16}")"
+		resolved_outro_anchors="$(auto_outro_multikey_anchor_csv "${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}" "${OUTRO_ANCHOR_SECONDS:-8,12,16}")"
 
 		echo
-		echo -e "${CYAN} = = > DEBUG HASH_MODE:${NC} ${YELLOW}${OUTRO_HASH_MODE:-phash}${NC}"
+		echo -e "${CYAN} = = > DEBUG HASH_MODE:${NC} ${YELLOW}${OUTRO_HASH_MODE:-dhash}${NC}"
 		echo -e "${CYAN} = = > DEBUG OUTRO_HASH_DIFF:${NC} ${YELLOW}${OUTRO_HASH_DIFF:-unset}${NC}"
 		echo -e "${CYAN} = = > DEBUG INTRO_HASH_DIFF:${NC} ${YELLOW}${INTRO_HASH_DIFF:-unset}${NC}"
 		echo -e "${CYAN} = = > DEBUG DEFAULT_HASH_DIFF:${NC} ${YELLOW}${DEFAULT_HASH_DIFF:-unset}${NC}"
@@ -19806,7 +22091,7 @@ run_outrofind_selected_files() {
 				"$file" \
 				"${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}" \
 				"$resolved_outro_anchors" \
-				"$OUTRO_TEMPLATE" \
+				"${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}" \
 				"${OUTRO_HASH_MODE:-dhash}" \
 				2> >(tee "$PHASH_STDERR_LOG" | run_phash_engine_colored >&2)
 		)"
@@ -19822,6 +22107,7 @@ run_outrofind_selected_files() {
 
 		if [[ "$outro_result" == MATCH* ]]; then
 			IFS='|' read -r _ outro_start _outro_template_duration_end outro_template_used outro_diff_used <<< "$outro_result"
+			outro_template_used="$(factory_template_map_path "$outro_template_used")"
 
 			outro_end="$duration"
 			outro_start_hms="$(seconds_to_hms "$outro_start")"
@@ -19830,12 +22116,14 @@ run_outrofind_selected_files() {
 			echo -e "${GR} = = > Outro Match Found.${NC}"
 			echo -e "${CYAN} = = > Outro Start:${NC} ${YELLOW}$outro_start${NC}${GREEN} (${outro_start_hms})${NC}"
 			echo -e "${CYAN} = = > Outro End:${NC}   ${YELLOW}$outro_end${NC}${GREEN} (${outro_end_hms})${NC}"
-			echo -e "${CYAN} = = > Outro Key:${NC}   ${GREEN}intro_template/outro.mkv${NC}"
+			outro_duration="$(awk -v s="$outro_start" -v e="$outro_end" 'BEGIN{printf "%.3f", e-s}')"
+			echo -e "${CYAN} = = > Outro Duration:${NC} ${YELLOW}${outro_duration}s${NC} ${GREEN}($(format_seconds_hms "$outro_duration"))${NC}"
+			echo -e "${CYAN} = = > Outro Key:${NC}   ${GREEN}${outro_template_used:-${OUTRO_TEMPLATE:-intro_template/outro.mkv}}${NC}"
 			echo -e "${CYAN} = = > Outro Diff:${NC}  ${YELLOW}${outro_diff_used:-}${NC}"
 			echo -e "${CYAN} = = > OutroFind Time:${NC}${YELLOW} ${outro_find_elapsed}s ${NC}${GREEN}(${outro_find_elapsed_hms})${NC}"
 
 			ensure_outro_map
-			echo "$file,$outro_start,$outro_end,$outro_start_hms,$outro_end_hms,intro_template/outro.mkv,${outro_diff_used:-}" >> "$OUTRO_MAP"
+			echo "$file,$outro_start,$outro_end,$outro_start_hms,$outro_end_hms,${outro_template_used:-${OUTRO_TEMPLATE:-intro_template/outro.mkv}},${outro_diff_used:-}" >> "$OUTRO_MAP"
 		else
 			echo -e "${REB} = = > No Outro Match Found For:${NC} ${GREEN}$file${NC}"
 		fi
@@ -19923,7 +22211,7 @@ run_outro_hash_compare_test() {
 						"$file" \
 						"${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}" \
 						"$anchors" \
-						"$OUTRO_TEMPLATE" \
+						"${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}" \
 						"$hash_mode" \
 						2> >(tee "$PHASH_STDERR_LOG" | run_phash_engine_colored >&2)
 				)"
@@ -19993,8 +22281,8 @@ run_intro_detection_menu() {
         echo
         echo -e "${YELLOW}"
         echo "     0) Create Introfind Keys outro And intro Template"
-        echo "     2) Multi Key Perceptual Use intro_template.mkv Find It (pHash detection)"
-        echo "     3) Hybrid detection Same As Above With Black Detect FallBack (pHash + Blackdetect)"
+        echo "     2) Multi Key xHash Detect Use intro_template.mkv Find It (xHash detection)"
+        echo "     3) Hybrid detection Same As Above With Black Detect FallBack (xHash + Blackdetect)"
         echo "     7) Blackdetect Only"
         echo
         echo "     10-key exit > 0. (or q) Enter to quit"
@@ -20220,7 +22508,7 @@ run_main_menu
 #
 # Detection Modes That Should Continue Into The File-Processing Loop:
 #   1 = Manual Duration
-#   2 = pHash
+#   2 = xHash
 #   4 = Multi-Pass Hybrid
 #   7 = Blackdetect
 #
@@ -20282,14 +22570,13 @@ if [[ "${MODE:-}" == "2" || "${MODE:-}" == "4" ]]; then
         exit 1
     }
 
-    echo -e "${CYAN} = = > Templates Detected:${NC}${GREEN}"
-    for t in "${TEMPLATES[@]}"; do
-        echo " - $t"
-	echo -e "${NC}"
-    done
-    echo
+		echo -e "${CYAN} = = > Templates Detected:${NC}"
+		for t in "${TEMPLATES[@]}"; do
+		    echo -e "${GREEN} - $t${NC}"
+		done
+		echo
 
-# ---- Precompute Template Fingerprints (currently informational; not used by pHash engine) ----
+# ---- Precompute Template Fingerprints (currently informational; not used by xHash engine) ----
     declare -A TEMPLATE_HASHES
     declare -A TEMPLATE_DURS
 
@@ -20422,13 +22709,13 @@ from PIL import Image
 import imagehash
 PY
 then
-  echo -e "${REB} = = > pHash Engine Missing Python Modules.${NC}"
+  echo -e "${REB} = = > xHash Engine Missing Python Modules.${NC}"
   echo -e "${YE} = = > Install:${NC} python3 -m pip install --user pillow python-imagehash opencv-python"
   pause
   continue
 fi
 
-  echo -e "${CYAN} = = > Running Perceptual Hash Detection...${NC}"
+  echo -e "${CYAN} = = > Running xHash Detection...${NC}"
 
 resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_template*.mkv" "intro" "${INTRO_ANCHOR_SECONDS:-${ANCHOR_SECONDS:-3,5,7}}")"
 
@@ -20502,7 +22789,7 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
     ')"
 
     if [[ $phash_status -ne 0 ]]; then
-        echo -e "${REB} = = > pHash Engine Failed For: $file${NC}"
+        echo -e "${REB} = = > xHash Engine Failed For: $file${NC}"
 
         # Helpful breadcrumb for future-you:
         if [[ -f "$PHASH_STDERR_LOG" ]]; then
@@ -20524,7 +22811,7 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
     #   treat that as an engine-side protocol failure.
     # ========================================================
     if [[ $phash_status -eq 0 && -z "$result" ]]; then
-        echo -e "${REB} = = > pHash Engine Returned No Parseable Result For: $file${NC}"
+        echo -e "${REB} = = > xHash Engine Returned No Parseable Result For: $file${NC}"
 
         if [[ -f "$PHASH_STDERR_LOG" ]]; then
             echo -e "${YE} = = > See Python stderr log:${NC} $PHASH_STDERR_LOG"
@@ -20545,6 +22832,7 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
 
     if [[ "$result" == MATCH* ]]; then
         IFS='|' read -r _ start end template_used diff_used <<< "$result"
+		template_used="$(factory_template_map_path "$template_used")"
 
         start_hms="$(seconds_to_hms "$start")"
         end_hms="$(seconds_to_hms "$end")"
@@ -20571,7 +22859,7 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
         # - start/end remain the machine-authoritative values
         # - *_hms remains display-only convenience
         # - template_used records which key won
-        # - diff records the selected pHash score returned by Python
+        # - diff records the selected xHash score returned by Python
         #
         echo "$raw,$start,$end,$start_hms,$end_hms,$template_used,${diff_used:-}" >> "$INTRO_MAP"
 
@@ -20580,7 +22868,7 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
 		# ================================================================
 		# #MARKER: OPTIONAL OUTROFIND PASS
 		# ================================================================
-		if [[ -f "$OUTRO_TEMPLATE" ]]; then
+		if (( "$(outro_template_count "${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}")" > 0 )); then
 
 			if already_outro_processed "$raw" || already_outro_processed "$file"; then
 				echo -e "${YELLOW} = = > Outro Already Mapped By RAW / Working Name. Skipping Optional OutroFind:${NC} ${GREEN}$raw${NC}"
@@ -20604,20 +22892,23 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
 			duration="$(get_file_duration_seconds "$file")"
 			outro_limit="$duration"
 
-			outro_scan_start="$(awk -v d="$duration" -v back="${OUTRO_TAIL_SCAN_SECONDS:-120}" 'BEGIN{
+			primary_outro_template="$(outro_template_primary "${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}")"
+			resolved_outro_tail_scan="$(auto_outro_tail_scan_seconds "$primary_outro_template" "${OUTRO_TAIL_SCAN_SECONDS:-auto}")"
+
+			outro_scan_start="$(awk -v d="$duration" -v back="$resolved_outro_tail_scan" 'BEGIN{
 				v=d-back
 				if (v < 0) v=0
 				printf "%.3f", v
 			}')"
 
 			echo
-			echo -e "${CYAN} = = > Outro Template Found:${NC} ${GREEN}intro_template/outro.mkv${NC}"
+			echo -e "${CYAN} = = > Outro Template Key(s):${NC} ${GREEN}${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}${NC}"
 			echo -e "${CYAN} = = > Running OutroFind Window:${NC} ${YELLOW}${outro_scan_start}s → ${outro_limit}s${NC}"
 			echo
 
 			outro_find_t0="$(date +%s)"
 
-				resolved_outro_anchors="$(auto_anchor_csv_from_duration "$OUTRO_TEMPLATE" "outro" "${OUTRO_ANCHOR_SECONDS:-8,12,16}")"
+				resolved_outro_anchors="$(auto_outro_multikey_anchor_csv "${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}" "${OUTRO_ANCHOR_SECONDS:-8,12,16}")"
 			echo -e "${CYAN} = = > OutroFind Settings:${NC} ${YELLOW}Mode=${OUTRO_HASH_MODE:-dhash} Diff=${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}} Step=${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}} Anchors=$resolved_outro_anchors${NC}"
 
 			outro_output="$(
@@ -20628,7 +22919,7 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
 					"$file" \
 					"${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}" \
 					"$resolved_outro_anchors" \
-					"$OUTRO_TEMPLATE" \
+					"${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}" \
 					"${OUTRO_HASH_MODE:-dhash}" \
 					2> >(tee "$PHASH_STDERR_LOG" | run_phash_engine_colored >&2)
 			)"
@@ -20643,6 +22934,7 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
 
 			if [[ "$outro_result" == MATCH* ]]; then
 				IFS='|' read -r _ outro_start _outro_template_duration_end outro_template_used outro_diff_used <<< "$outro_result"
+				outro_template_used="$(factory_template_map_path "$outro_template_used")"
 
 				outro_end="$duration"
 				outro_start_hms="$(seconds_to_hms "$outro_start")"
@@ -20652,21 +22944,25 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
 				echo -e "${CYAN} = = > Outro Start:${NC} ${YELLOW}$outro_start${NC}${GREEN} (${outro_start_hms})${NC}"
 				echo -e "${CYAN} = = > Outro End:${NC}   ${YELLOW}$outro_end${NC}${GREEN} (${outro_end_hms})${NC}"
 
-		        duration="$(awk -v s="$outro_start" -v e="$outro_end" 'BEGIN{printf "%.3f", e - s}')"
-		        duration_hms="$(seconds_to_hms "$duration")"
+		        outro_duration="$(awk -v s="$outro_start" -v e="$outro_end" 'BEGIN{printf "%.3f", e - s}')"
+		        outro_duration_hms="$(seconds_to_hms "$outro_duration")"
 
-		        echo -e "${CYAN} = = > Match Duration:${NC}${YELLOW} $duration ${NC}${GREEN}(${duration_hms})${NC}"
+		        echo -e "${CYAN} = = > Outro Duration:${NC}${YELLOW} $outro_duration ${NC}${GREEN}(${outro_duration_hms})${NC}"
 
-				echo -e "${CYAN} = = > Outro Key:${NC}   ${GREEN}intro_template/outro.mkv${NC}"
+				echo -e "${CYAN} = = > Outro Key:${NC}   ${GREEN}${outro_template_used:-${OUTRO_TEMPLATE:-intro_template/outro.mkv}}${NC}"
 				echo -e "${CYAN} = = > Outro Diff:${NC}  ${YELLOW}${outro_diff_used:-}${NC}"
 				echo -e "${CYAN} = = > OutroFind Time:${NC}${YELLOW} ${outro_find_elapsed}s ${NC}${GREEN}(${outro_find_elapsed_hms})${NC}"
 
 				ensure_outro_map
-				echo "$raw,$outro_start,$outro_end,$outro_start_hms,$outro_end_hms,intro_template/outro.mkv,${outro_diff_used:-}" >> "$OUTRO_MAP"
+				echo "$raw,$outro_start,$outro_end,$outro_start_hms,$outro_end_hms,${outro_template_used:-${OUTRO_TEMPLATE:-intro_template/outro.mkv}},${outro_diff_used:-}" >> "$OUTRO_MAP"
 			else
 				echo -e "${REB} = = > No Outro Match Found For:${NC} ${YE}$file${NC}"
 			fi
+
+		else
+			echo -e "${YE} = = > Optional OutroFind Skipped:${NC} ${YELLOW}$OUTRO_TEMPLATE not found.${NC}"
 		fi
+
 # outro stuff new pass end 
 
 
@@ -20679,12 +22975,12 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
     fi
 
     if [[ "$result" == "PHASH_ERROR" ]]; then
-        echo -e "${CYAN} = = > pHash Engine Error. Running Blackdetect...${NC}"
+        echo -e "${CYAN} = = > xHash Engine Error. Running Blackdetect...${NC}"
         ffmpeg -hide_banner -loglevel error -nostdin -i "$file" \
             -vf blackdetect=d=${BLACK_DUR}:pix_th=${BLACK_PIX} \
             -an -f null - 2>&1 | tee blackdetect.log
     elif [[ "$result" != MATCH* ]]; then
-        echo -e "${CYAN} = = > No pHash Match. Running Blackdetect...${NC}"
+        echo -e "${CYAN} = = > No xHash Match. Running Blackdetect...${NC}"
         ffmpeg -hide_banner -loglevel error -nostdin -i "$file" \
             -vf blackdetect=d=${BLACK_DUR}:pix_th=${BLACK_PIX} \
             -an -f null - 2>&1 | tee blackdetect.log
