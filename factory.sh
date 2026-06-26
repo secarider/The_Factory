@@ -782,6 +782,25 @@ canonical_factory_path() {
 	printf '%s\n' "$p"
 }
 
+factory_display_path() {
+	local p="${1:-}"
+
+	[[ -z "$p" ]] && return 0
+
+	case "$p" in
+		"$FACTORY_HOME"/*)
+			printf 'TOOLBOX/%s\n' "${p#"$FACTORY_HOME"/}"
+			return 0
+			;;
+		"$FACTORY_WORKDIR"/*)
+			printf './%s\n' "${p#"$FACTORY_WORKDIR"/}"
+			return 0
+			;;
+	esac
+
+	printf '%s\n' "$p"
+}
+
 # ================================================================
 # #MARKER: TEMPLATE PATH DISPLAY / MAP NORMALIZER
 # ================================================================
@@ -11276,10 +11295,11 @@ run_subtox_rename_menu() {
 		echo -e "${YELLOW}     3) Detox Existing File Names${NC}"
 		echo -e "${YELLOW}     4) CSV / Naming Authority Tools${NC}"
 		echo -e "${YELLOW}     5) Repair intro_map.csv / outro_map.csv Filenames Using episodes.csv${NC}"
+		echo -e "${YELLOW}     6) Full Collection Folder Recursive Filename Detox Scan${NC}"
 		echo
 		echo -e "${YELLOW}     0.) Return${NC}"
 		echo
-		echo -ne "${YELLOW} = = > Select Option [1-5 | 0.=return]: ${NC}${GREEN}"
+		echo -ne "${YELLOW} = = > Select Option [1-6 | 0.=return]: ${NC}${GREEN}"
 		read -r rename_choice
 		rename_choice="${rename_choice//[[:space:]]/}"
 		echo -e "${NC}"
@@ -11303,6 +11323,9 @@ run_subtox_rename_menu() {
 				;;
 			5)
 				repair_intro_map
+				;;
+			6) 
+				run_collection_detox_scan_only
 				;;
 			*)
 				echo
@@ -11939,6 +11962,7 @@ archival_encode_one_file() {
 				"${ARRAY_METADATA_ARGS[@]}" \
 				-c:v libx264 -preset slow -crf 21 \
 				"${ARRAY_AUDIO_ARGS[@]}" \
+				-c:s copy \
 				"$out"
 			;;
 		2)
@@ -11947,6 +11971,7 @@ archival_encode_one_file() {
 				"${ARRAY_METADATA_ARGS[@]}" \
 				-c:v libx264 -preset medium -crf 25 \
 				"${ARRAY_AUDIO_ARGS[@]}" \
+				-c:s copy \
 				"$out"
 			;;
 		3)
@@ -11955,6 +11980,7 @@ archival_encode_one_file() {
 				"${ARRAY_METADATA_ARGS[@]}" \
 				-c:v libx264 -preset medium -crf 29 \
 				"${ARRAY_AUDIO_ARGS[@]}" \
+				-c:s copy \
 				"$out"
 			;;
 		4)
@@ -11963,6 +11989,7 @@ archival_encode_one_file() {
 				"${ARRAY_METADATA_ARGS[@]}" \
 				-c:v libx264 -preset slow -crf 32 \
 				"${ARRAY_AUDIO_ARGS[@]}" \
+				-c:s copy \
 				"$out"
 			;;
 		*)
@@ -15495,7 +15522,7 @@ run_subtitlez_menu() {
         echo
         echo -e "${YELLOW}"
         echo "     1) SUBTOX"
-        echo "     2) Full Collection Filename Detox Scan"
+        echo "     2) Full Collection Folder Recursive Filename Detox Scan"
         echo "     3) Pack external.srt"
         echo "     4) Extract Internal Subtitles"
         echo
@@ -16921,6 +16948,7 @@ while IFS=, read -r file start end _; do
 	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
 	echo
 	echo -e "${CYAN} = = > ACTIVE SMC ENGINE:${NC} ${YELLOW}$(trim_working_path_display "$SMC_BIN" 3)${NC}"
+	echo -e "${GREEN} = = > Support Them Here: ${RE}https://${BW}smartmediacutter${CY}.com/${NC}"
 
 	if [[ -x "${SMC_BIN:-}" ]]; then
 		echo -e "${CYAN} = = > SMC VERSION:${NC} ${YELLOW}$("$SMC_BIN" --version 2>/dev/null | head -n1)${NC}"
@@ -21579,7 +21607,7 @@ ensure_phash_engine() {
 	# During engine development, always rebuild from the current Factory source.
 	rm -f -- "$PHASH_ENGINE"
 
-	echo -e "${YE} = = > Building Local xHash Engine:${NC} ${YELLOW}$PHASH_ENGINE${NC}"
+	echo -e "${YE} = = > Building Local xHash Engine:${NC} ${YELLOW}$(factory_display_path "$PHASH_ENGINE")${NC}"
 
 	# IMPORTANT:
 	# Move/copy the existing full:
@@ -22902,7 +22930,7 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
 			}')"
 
 			echo
-			echo -e "${CYAN} = = > Outro Template Key(s):${NC} ${GREEN}${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}${NC}"
+			echo -e "${CYAN} = = > Outro Template Key(s):${NC} ${GREEN}$(factory_template_map_path "${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}")${NC}"
 			echo -e "${CYAN} = = > Running OutroFind Window:${NC} ${YELLOW}${outro_scan_start}s → ${outro_limit}s${NC}"
 			echo
 
