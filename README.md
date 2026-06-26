@@ -658,7 +658,6 @@ These utilities exist to support exceptional cases, rescue operations, diagnosti
 
 The standard Factory path remains:
 
-```text
 Inspect
 → Repair (if needed)
 → Templates
