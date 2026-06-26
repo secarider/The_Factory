@@ -666,3 +666,141 @@ Inspect
 → Pilot Validation
 → SmartCut
 → Finalize
+
+Recent Development Highlights
+Collection Detox Reaches Production
+
+Collection Detox has matured into a complete planning and execution system for large media collections.
+
+Current capabilities include:
+
+Recursive collection scanning.
+Human-readable planning and review reports.
+Deterministic sequential processing.
+Filename detox and normalization.
+Automatic SxxExx normalization.
+Title Case cleanup.
+Optional episodes.csv authority.
+Season-aware CSV filtering.
+Collision detection.
+Playlist impact analysis.
+Adaptive execution modes.
+Folder-by-folder execution.
+Full execution logging.
+Complete rename undo support.
+
+Scan
+→ Review
+→ Execute
+→ Undo
+
+No collection modifications occur without first producing a reviewable plan.
+
+Playlist Repair System Begins
+
+Collection Detox now generates playlist repair plans identifying multimedia playlists affected by filename changes.
+
+Current capabilities:
+
+Playlist discovery.
+Impact reporting.
+Repair plan generation.
+
+Upcoming work extends this into a complete repair workflow using the same proven Factory methodology:
+
+Repair Plan
+→ Review
+→ Execute
+→ Undo
+
+Original playlists will be preserved inside an OLD_PLAYLISTS folder using mirrored directory structures before any modifications are made.
+
+Improved Human Readability
+
+Several areas now favor concise human-readable output instead of long filesystem paths.
+
+Factory continues moving toward presenting information intended for operators rather than developers.
+
+Examples include:
+
+Relative template locations.
+Simplified helper paths.
+Ordered reports.
+Cleaner execution summaries.
+Sequential Processing
+
+Collection Detox now performs deterministic sorted processing.
+
+Reports, execution plans, review screens, and rename operations all follow the same predictable episode order rather than filesystem enumeration order.
+
+This greatly improves review quality and makes anomalies immediately visible.
+
+Adaptive Execution
+
+Collection Detox now evaluates plan size before execution and recommends the most appropriate execution strategy.
+
+Small jobs can execute directly while larger collections may recommend staged execution.
+
+This architecture provides a foundation for future large-scale collection processing inside both Factory and Archie.
+
+Undo Infrastructure
+
+Factory now treats undo as a first-class operation rather than an afterthought.
+
+Successful rename operations produce dedicated mapping files that allow complete reversal of execution when required.
+
+This same architecture is being extended to future playlist repair operations.
+
+Archive Philosophy
+
+Factory and Archie continue evolving toward complementary roles.
+
+Factory emphasizes preservation of working media intended for editing while maintaining available streams whenever practical.
+
+Archie emphasizes efficient long-term storage reduction for large collections.
+
+Although both share technology and helper libraries, each tool now has a clearly defined operational philosophy.
+
+
+
+Intro/Outro Detection Improvements
+
+Factory's IntroFind engine continues to evolve beyond single-template matching.
+
+Recent improvements include:
+
+Support for multiple intro templates within a season.
+
+Support for multiple outro templates within a season.
+
+Automatic selection of the best matching template.
+
+Improved xHash engine generation and management.
+
+Duration-aware automatic anchor generation.
+
+Enhanced reporting of template selection and match quality.
+
+This capability proved particularly valuable for series where opening or closing sequences change subtly during a single season.
+
+For example, several productions introduced small changes to their intros between Seasons 3, 4, and 5. Rather than forcing a compromise template, Factory can maintain multiple template variations and automatically select the best match for each episode.
+
+The result is significantly more reliable automated detection while minimizing manual intervention during SmartCut processing.
+
+Intro/Outro Template Management
+
+Factory's IntroFind engine supports multiple intro and outro templates, allowing it to automatically select the best matching template for each episode.
+
+This capability is especially valuable for television series where intros or outros evolve over time. Even seemingly insignificant changes to logos, title cards, music timing, or studio credits can reduce matching accuracy.
+
+Factory does not automatically create these templates. The user is responsible for creating and maintaining appropriate intro and outro templates for each series or season.
+
+As a general guideline, never assume that a template created for one season will continue to work accurately in later seasons. Before beginning work on a new season, review the opening and closing sequences to determine whether they still match the existing templates.
+
+In many cases a single template may continue to work across multiple seasons. However, some productions introduce subtle changes every season—or even multiple variations within the same season.
+
+For the highest reliability, create dedicated intro and outro templates for every season unless you have verified that an existing template remains an accurate match.
+
+Taking a few moments to verify or create proper templates before processing a season will typically result in significantly better automated detection and reduce the need for manual correction later.
+
+
