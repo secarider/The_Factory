@@ -5086,14 +5086,14 @@ collection_detox_execute_plan() {
 		echo -e "${CYAN}        COLLECTION DETOX :: EXECUTE PLAN        ${NC}"
 		echo -e "${CYAN}================================================${NC}"
 		echo
-		echo -e "${CYAN} = = > Plan:${NC} ${GREEN}$plan_file${NC}"
+		echo -e "${CYAN} = = > Plan:${NC} ${GREEN}$(trim_working_path_display "$plan_file" 3)${NC}"
 		echo -e "${CYAN} = = > Pending Renames:${NC} ${YELLOW}$total_pending${NC}"
 		echo -e "${CYAN} = = > Folders With Renames:${NC} ${YELLOW}$folder_count${NC}"
 		echo -e "${CYAN} = = > Recommended Mode:${NC} ${YELLOW}$recommended_mode${NC}"
 		echo
 		echo -e "${CYAN} = = > Folder Groups:${NC}"
 		for dir in "${folder_order[@]}"; do
-			echo -e "${YELLOW}     ${folder_counts[$dir]}${NC} ${GREEN}$dir${NC}"
+			echo -e "${YELLOW}     ${folder_counts[$dir]}${NC} ${GREEN}$(trim_working_path_display "$dir" 3)${NC}"
 		done
 		echo
 		echo -e "  ${YELLOW}1)= = > Execute Recommended Mode${NC}"
@@ -5145,7 +5145,7 @@ collection_detox_execute_plan() {
 
 		echo
 		echo -e "${YE} = = > This Will Rename Files Back Using:${NC}"
-		echo -e "${GREEN} $success_map${NC}"
+		echo -e "${GREEN} $(trim_working_path_display "$success_map" 3)${NC}"
 		echo
 
 		if ! ask_yes_no " = = > Undo Successful Renames From This Run? (y/n or 1/2): "; then
@@ -5158,17 +5158,17 @@ collection_detox_execute_plan() {
 			[[ -z "${old_path:-}" || -z "${new_path:-}" ]] && continue
 
 			if [[ ! -e "$new_path" ]]; then
-				echo -e "${YE} = = > [UNDO SKIP MISSING]${NC} ${YELLOW}$new_path${NC}"
+				echo -e "${YE} = = > [UNDO SKIP MISSING]${NC} ${YELLOW}$(trim_working_path_display "$new_path" 3)${NC}"
 				continue
 			fi
 
 			if [[ -e "$old_path" ]]; then
-				echo -e "${YE} = = > [UNDO SKIP EXISTS]${NC} ${YELLOW}$old_path${NC}"
+				echo -e "${YE} = = > [UNDO SKIP EXISTS]${NC} ${YELLOW}$(trim_working_path_display "$old_path" 3)${NC}"
 				continue
 			fi
 
-			echo -e "${GREEN} = = > [UNDO]${NC} ${YELLOW}$new_path${NC}"
-			echo -e "${CYAN}        -->${NC} ${GREEN}$old_path${NC}"
+			echo -e "${GREEN} = = > [UNDO]${NC} ${YELLOW}$(trim_working_path_display "$new_path" 3)${NC}"
+			echo -e "${CYAN}        -->${NC} ${GREEN}$(trim_working_path_display "$old_path" 3)${NC}"
 			mv -- "$new_path" "$old_path"
 		done < "$success_map"
 
@@ -5214,8 +5214,8 @@ collection_detox_execute_plan() {
 				continue
 			fi
 
-			echo -e "${GREEN} = = > [RENAMING]${NC} ${YELLOW}$old_path${NC}"
-			echo -e "${CYAN}        -->${NC} ${GREEN}$new_path${NC}"
+			echo -e "${GREEN} = = > [RENAMING]${NC} ${YELLOW}$(trim_working_path_display "$old_path" 3)${NC}"
+			echo -e "${CYAN}        -->${NC} ${GREEN}$(trim_working_path_display "$new_path" 3)${NC}"
 
 			if mv -- "$old_path" "$new_path"; then
 				printf '%s|%s|%s|%s|%s|%s\n' \
@@ -5242,7 +5242,7 @@ collection_detox_execute_plan() {
 				echo -e "${CYAN}================================================${NC}"
 				echo
 				echo -e "${CYAN} = = > Folder:${NC}"
-				echo -e "${GREEN} $current_dir${NC}"
+				echo -e "${GREEN}$(trim_working_path_display "$current_dir" 3)${NC}"
 				echo
 				echo -e "${CYAN} = = > Pending In Folder:${NC} ${YELLOW}${folder_counts[$current_dir]}${NC}"
 				echo
@@ -5300,8 +5300,8 @@ collection_detox_execute_plan() {
 					continue
 				fi
 
-				echo -e "${GREEN} = = > [RENAMING]${NC} ${YELLOW}$old_path${NC}"
-				echo -e "${CYAN}        -->${NC} ${GREEN}$new_path${NC}"
+				echo -e "${GREEN} = = > [RENAMING]${NC} ${YELLOW}$(trim_working_path_display "$old_path" 3)${NC}"
+				echo -e "${CYAN}        -->${NC} ${GREEN}$(trim_working_path_display "$new_path" 3)${NC}"
 
 				if mv -- "$old_path" "$new_path"; then
 					printf '%s|%s|%s|%s|%s|%s\n' \
@@ -5317,7 +5317,7 @@ collection_detox_execute_plan() {
 
 			if (( remaining_no_pause == 0 )); then
 				echo
-				echo -e "${GR} = = > Folder Complete:${NC} ${YELLOW}$current_dir${NC}"
+				echo -e "${GR} = = > Folder Complete:${NC} ${YELLOW}$(trim_working_path_display "$current_dir" 3)${NC}"
 				pause
 			fi
 		done
@@ -5330,8 +5330,8 @@ collection_detox_execute_plan() {
 	echo -e "${CYAN} = = > Renamed:${NC} ${YELLOW}$executed${NC}"
 	echo -e "${CYAN} = = > Skipped:${NC} ${YELLOW}$skipped${NC}"
 	echo -e "${CYAN} = = > Failed:${NC} ${YELLOW}$failed${NC}"
-	echo -e "${CYAN} = = > Execute Log:${NC} ${GREEN}$exec_log${NC}"
-	echo -e "${CYAN} = = > Undo Map:${NC} ${GREEN}$success_map${NC}"
+	echo -e "${CYAN} = = > Execute Log:${NC} ${GREEN}$(trim_working_path_display "$exec_log" 3)${NC}"
+	echo -e "${CYAN} = = > Undo Map:${NC} ${GREEN}$(trim_working_path_display "$success_map" 3)${NC}"
 	echo
 
 	collection_detox_build_playlist_repair_plan "$scan_root" "$run_dir" "$success_map"
@@ -5638,11 +5638,18 @@ collection_detox_scan_build_plan() {
 			if [[ "$csv_status" == "ACCEPTED" && -n "${csv_titles[$ep_code]:-}" && -n "${file_seasons[$season]:-}" ]]; then
 				show_prefix="$(collection_detox_build_show_prefix "$stem")"
 				raw_title="${csv_titles[$ep_code]}"
+
+				# episodes.csv supplies title authority.
+				# Factory detox still supplies filename style:
+				# - safe characters
+				# - underscores
+				# - Title Case
 				detoxed_title="$(detox_title "$raw_title")"
+				detoxed_title="$(collection_detox_titlecase_words "$detoxed_title")"
 
 				new_stem="${show_prefix}_${ep_code}_${detoxed_title}"
 				source="EPISODES_CSV"
-				rules="SxxExx normalized; title applied from episodes.csv; detox applied"
+				rules="SxxExx normalized; title applied from episodes.csv; detox applied; title case applied"
 				((csv_matches+=1)) || :
 			else
 				new_stem="$(collection_detox_normalize_sxxexx_in_stem "$stem")"
@@ -5721,7 +5728,7 @@ collection_detox_scan_build_plan() {
 
 		{
 			echo "PLAYLIST:"
-			echo " $file"
+            echo " $(trim_working_path_display "$new_path" 3)"
 			echo "Possible References:"
 			echo " $plist_hits"
 			echo "------------------------------------------------"
@@ -5794,10 +5801,10 @@ collection_detox_scan_build_plan() {
 			echo " $status"
 			echo
 			echo "OLD:"
-			echo " $file"
+			echo " $(trim_working_path_display "$file" 3)"
 			echo
 			echo "NEW:"
-			echo " $new_path"
+			echo " $(trim_working_path_display "$new_path" 3)"
 			echo
 			echo "SOURCE:"
 			echo " $source"
@@ -5875,9 +5882,9 @@ collection_detox_scan_build_plan() {
 	echo -e "${CYAN} = = > Pending Renames:${NC} ${YELLOW}$pending${NC}"
 	echo -e "${CYAN} = = > CSV Matches:${NC} ${YELLOW}$csv_matches${NC}"
 	echo -e "${CYAN} = = > Playlist Files:${NC} ${YELLOW}$playlists_found${NC}"
-	echo -e "${CYAN} = = > Plan:${NC} ${GREEN}$plan_file${NC}"
-	echo -e "${CYAN} = = > Report:${NC} ${GREEN}$report_file${NC}"
-	echo -e "${CYAN} = = > Playlist Impact:${NC} ${GREEN}$playlist_report${NC}"
+	echo -e "${CYAN} = = > Plan:${NC} ${GREEN}$(trim_working_path_display "$plan_file" 3)${NC}"
+	echo -e "${CYAN} = = > Report:${NC} ${GREEN}$(trim_working_path_display "$report_file" 3)${NC}"
+	echo -e "${CYAN} = = > Playlist Impact:${NC} ${GREEN}$(trim_working_path_display "$playlist_report" 3)${NC}"
 }
 
 # ========================================================
@@ -5909,7 +5916,7 @@ collection_detox_review_menu() {
 		echo -e "${CYAN}================================================${NC}"
 		echo
 		echo -e "${CYAN} = = > Run Folder:${NC}"
-		echo -e "${GREEN} $run_dir${NC}"
+		echo -e "${GREEN} $(trim_working_path_display "$run_dir" 3)${NC}"
 		echo
 		echo -e "  ${YELLOW}1)= = > View Human Report q To Exit${NC}"
 		echo -e "  ${YELLOW}2)= = > View Plan CSV q To Exit${NC}"
@@ -6090,7 +6097,7 @@ collection_detox_build_playlist_repair_plan() {
 
 	done < <(collection_detox_find_files "$scan_root")
 
-	echo -e "${CYAN} = = > Playlist Repair Plan:${NC} ${GREEN}$repair_plan${NC}"
+	echo -e "${CYAN} = = > Playlist Repair Plan:${NC} ${GREEN}$(trim_working_path_display "$repair_plan" 3)${NC}"
 	echo -e "${CYAN} = = > Playlist Repair Candidates:${NC} ${YELLOW}$match_count${NC}"
 }
 
@@ -6107,7 +6114,7 @@ run_collection_detox_scan_only() {
 		echo -e "${CYAN}================================================${NC}"
 		echo
 		echo -e "${CYAN} = = > Current Working Folder:${NC}"
-		echo -e "${GREEN} $PWD${NC}"
+		echo -e "${GREEN} $(trim_working_path_display "$PWD" 3)${NC}"
 		echo
 		echo -e "  ${YELLOW}1)= = > Scan Current Folder Recursively${NC}"
 		echo -e "  ${YELLOW}2)= = > Pick Folder From Current Location${NC}"
@@ -7813,18 +7820,48 @@ get_drive_display() {
 }
 
 trim_working_path_display() {
-	local path="$1"
+	local path="${1:-}"
 	local start_seg="${2:-3}"
 
-	# Split on /
+	[[ -z "$path" ]] && return 0
+
+	# Prefer meaningful Factory-relative paths first.
+	case "$path" in
+		"$FACTORY_WORKDIR"/*)
+			printf './%s\n' "${path#"$FACTORY_WORKDIR"/}"
+			return 0
+			;;
+		"$FACTORY_HOME"/*)
+			printf 'TOOLBOX/%s\n' "${path#"$FACTORY_HOME"/}"
+			return 0
+			;;
+		"$HOME"/*)
+			printf '~/%s\n' "${path#"$HOME"/}"
+			return 0
+			;;
+	esac
+
+	# Trim Linux mount UUID / device root noise:
+	# /mnt/<uuid>/MEDIA/MOVIES/... -> MEDIA/MOVIES/...
+	case "$path" in
+		/mnt/*/*)
+			printf '%s\n' "${path#/mnt/*/}"
+			return 0
+			;;
+		/media/*/*)
+			printf '%s\n' "${path#/media/*/}"
+			return 0
+			;;
+	esac
+
+	# Fallback: old segment-based trimmer.
+	local -a parts=()
 	IFS='/' read -r -a parts <<< "$path"
 
-	# Remove empty leading segment from absolute paths
 	if [[ -z "${parts[0]:-}" ]]; then
 		parts=("${parts[@]:1}")
 	fi
 
-	# If path is long enough, trim from requested segment
 	if (( ${#parts[@]} >= start_seg )); then
 		printf '/%s\n' "$(printf '%s/' "${parts[@]:$((start_seg-1))}" | sed 's:/$::')"
 	else
