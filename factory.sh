@@ -11,43 +11,124 @@
 # -----------------------------------------------------------------------------------------
 #   OLD Setup Command Or Minimal If You Are On Any Of The New *NixZ This Will Likely Be Enough
 # sudo apt update && sudo apt install ffmpeg bc pipx mkvtoolnix -y && pipx install "scenedetect[opencv]"
-# -----------------------------------------------------------------------------------------/\IntroFind Magic Right Here Do It
-#   NEW Setup Command no word wrap with this baby,it installs the bathroom sink and all
-# sudo apt update && sudo apt install ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less -y && pipx install "scenedetect[opencv]"
-# -------------------------DEPENDENCY DESCRIPTIONS INSTALL THESE---------------------------
-# ffmpeg:       The Main Engine For Remuxing, Trimming, Joining, Rebuilding, And More.
-# -----------------------------------------------------------------------------------------
-# ffprobe:      The "Eyes" Used To Calculate Duration, Streams, FPS, And Probe Details.
-# -----------------------------------------------------------------------------------------
-# bc:           The "Brain" For Decimal Math And Timing Comparisons.
-# -----------------------------------------------------------------------------------------
-# awk:          Text Surgery Helper Used For Parsing, Formatting, And Field Work.
-# -----------------------------------------------------------------------------------------
-# sed:          Stream Editor Used For Cleanup, Input Normalization, And Text Fixups.
-# -----------------------------------------------------------------------------------------
-# grep:         Pattern Hunter Used For Matching, Filtering, And Decision Logic.
-# -----------------------------------------------------------------------------------------
-# df:           Disk Space Reporter So The Script Can Warn About Free Space.
-# -----------------------------------------------------------------------------------------
-# python3:      Needed For Python-Based Helper Paths And Related Tooling.
-# -----------------------------------------------------------------------------------------
-# pipx:         The Safe "Bubble" Environment For Python Apps Like Scenedetect.
-# -----------------------------------------------------------------------------------------
-# scenedetect:  The "Orbital Laser" For Automatic Intro Finding (Installed Via Pipx).
-# -----------------------------------------------------------------------------------------
-# iconv:        Character Transliteration Helper Used In Some Title Cleanup Paths.
-# -----------------------------------------------------------------------------------------
-# ffplay:       Quick Playback Checker For Manual Review / Sanity Checks.
-# -----------------------------------------------------------------------------------------
-# findmnt:      Friendly Drive Label / Mount Source Lookup Helper.
-# -----------------------------------------------------------------------------------------
-# less:         Scrollable Pager For Long Notes / Explain Screens.
-# -----------------------------------------------------------------------------------------
-# mkvpropedit:  Fast In-Place MKV Metadata Editor (Title Repair Without Remux).
-# -----------------------------------------------------------------------------------------
-# mkvpropedit:  Is part of mkvtoolnix. [mkvtoolnix.download](https://mkvtoolnix.download/)
-# -----------------------------------------------------------------------------------------
+# =========================================================================================
+# !!! FACTORY SETUP / DEPENDENCY CHECKLIST !!!
+# =========================================================================================
+# PURPOSE:
+# - Install the normal Linux-side tools Factory uses.
+# - Smart Media Cutter itself is NOT installed by apt or pipx.
+# - Factory prefers a portable Smart Media Cutter AppImage named:
+# TOOLBOX/smc.app
 #
+# QUICK INSTALL:
+# Copy the next command WITHOUT the leading "# " and run it in a terminal:
+#
+# sudo apt update && sudo apt install -y ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less && pipx install "scenedetect[opencv]"
+#
+# =========================================================================================
+# SMART MEDIA CUTTER / SMC.APP  https://smartmediacutter.com/
+# =========================================================================================
+# Factory needs ONE usable SmartCut engine for SmartCut-driven trimming
+# and template creation:
+#
+# Preferred:
+# TOOLBOX/smc.app
+#
+# Temporary emergency fallback:
+# ./smc.app
+#
+# Older fallback:
+# smartcut command available through pipx / PATH
+#
+# PORTABLE APPIMAGE SETUP:
+# 1) Obtain the Smart Media Cutter AppImage.
+# 2) Rename it exactly:
+# smc.app
+# 3) Place it inside TOOLBOX:
+# TOOLBOX/smc.app
+# 4) Make it executable:
+# chmod +x TOOLBOX/smc.app
+#
+# Factory will report a clear missing-engine warning if no usable SMC engine is found.
+#
+# =========================================================================================
+# TOOL DESCRIPTIONS
+# =========================================================================================
+# ffmpeg:
+# Core media engine used throughout Factory for decoding, probing support,
+# REKEY, rescue/normalize paths, joining, fallback trims, frame extraction,
+# and other workflows. Smart Media Cutter is the preferred primary cutter
+# for SmartCut-driven trims and template creation.
+#
+# ffprobe:
+# Installed with ffmpeg. Reads duration, streams, FPS, codecs, and media facts.
+#
+# ffplay:
+# Installed with ffmpeg. Quick playback / sanity-check tool.
+#
+# bc
+# Decimal math helper for timing comparisons and cut calculations.
+#
+# gawk / awk:
+# Text parsing, CSV handling, reports, filename work, and field processing.
+#
+# sed:
+# Text cleanup and controlled substitutions.
+#
+# grep:
+# Pattern matching, filtering, and discovery.
+#
+# coreutils:
+# Supplies common Linux tools including df, sort, head, tail, and more.
+#
+# python3:
+# Runs Factory's local xHash / pHash IntroFind engine.
+#
+# python3-pip:
+# Supports Python package tooling when needed.
+#
+# pipx:
+# Isolated installer / runner for optional Python command-line tools.
+#
+# scenedetect[opencv]:
+# Optional  support for scene-analysis workflows.
+# Factory's normal xHash / pHash IntroFind engine is local and does not require
+# SceneDetect for ordinary template matching.
+#
+# mkvpropedit:  Is part of mkvtoolnix. [mkvtoolnix.download](https://mkvtoolnix.download/)
+# mkvtoolnix:
+# Provides mkvpropedit for fast in-place MKV metadata repair, Barfix Lite,
+# and template title metadata without remuxing.
+#
+# util-linux:
+# Provides tools such as findmnt for friendly mount / drive reporting.
+#
+# less:
+# Optional scrollable viewer for long reports and notes.
+#
+# iconv:
+# Usually already present on Linux systems. Used by some filename cleanup /
+# transliteration paths when available.
+#
+# =========================================================================================
+# FACTORY PORTABLE TOOLBOX LAYOUT
+# =========================================================================================
+# TOOLBOX/
+# factory.sh
+# smc.app
+# factory.conf
+# intro_template/
+# .phash_engine.py
+# .phash_engine.stderr.log
+#
+# NOTES:
+# - TOOLBOX holds Factory infrastructure and reusable tools.
+# - Season/media folders hold the actual show files, maps, reports, and OEM backups.
+# - intro_template/ inside TOOLBOX is the preferred template repository.
+# - Factory may detect a working-folder intro_template/ and ask which repository
+# should be authoritative if both locations contain real template media.
+# - Most Factory workflows prefer MKV whenever practical.
+# =========================================================================================
 # INSTALL COMMAND:
 # sudo apt update && sudo apt install ffmpeg bc gawk sed grep coreutils python3 python3-pip pipx mkvtoolnix util-linux less -y && pipx install "scenedetect[opencv]"
 # -----------------------------------------------------------------------------------------
@@ -60,7 +141,8 @@
 # - less is OPTIONAL; note screens can fall back to plain cat behavior.
 # - iconv is OPTIONAL; some detox/transliteration behavior may be reduced without it.
 # - SmartCut is now a primary Factory dependency.
-# - Most Factory workflows prefer MKV whenever practical.
+# - Most Factory workflows prefer MKV whenever practical and will warn when working with avi and some hevc
+# - although smartcut has eliminated most of that concern https://smartmediacutter.com/
 # -----------------------------------------------------------------------------------------
 
 set -euo pipefail
