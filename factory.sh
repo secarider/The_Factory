@@ -142,18 +142,60 @@ NC=$'\033[0m'            # Reset / No Color
 # ========================================================
 # #MARKER: FACTORY PORTABLE HOME / WORKDIR ROOTS
 # ========================================================
+# SCRIPT_DIR:
+# - Directory containing factory.sh itself.
+# - May be TOOLBOX, or may be a loose working-folder copy.
+#
 # FACTORY_HOME:
-# - Where factory.sh lives.
-# - After TOOLBOX migration, this IS the TOOLBOX directory.
+# - Resolved Factory resource root.
+# - Normally the TOOLBOX directory when one is available.
+# - Holds portable Factory resources such as:
+#     smc.app
+#     factory.conf
+#     intro_template/
 #
 # FACTORY_WORKDIR:
-# - Where the user launched Factory from.
-# - This remains the media / season working folder.
+# - Directory where the user launched Factory.
+# - Remains the media / season working folder.
+# - May contain a temporary smc.app or a working intro_template link.
+#
+# RESOLUTION:
+# - Prefer an explicit FACTORY_HOME override.
+# - Otherwise use TOOLBOX beside factory.sh or beside the working folder.
+# - Otherwise fall back to the directory containing factory.sh.
 # ========================================================
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-FACTORY_HOME="${FACTORY_HOME:-$SCRIPT_DIR}"
 FACTORY_WORKDIR="${FACTORY_WORKDIR:-$PWD}"
+
+resolve_factory_home() {
+	local d
+
+	# 1) User override wins.
+	if [[ -n "${FACTORY_HOME:-}" && -d "${FACTORY_HOME:-}" ]]; then
+		printf '%s\n' "$FACTORY_HOME"
+		return 0
+	fi
+
+	# 2) If factory.sh itself lives inside TOOLBOX, use SCRIPT_DIR.
+	if [[ -f "$SCRIPT_DIR/smc.app" || -d "$SCRIPT_DIR/intro_template" || -f "$SCRIPT_DIR/factory.conf" ]]; then
+		printf '%s\n' "$SCRIPT_DIR"
+		return 0
+	fi
+
+	# 3) If TOOLBOX is beside factory.sh, use it.
+	for d in "$SCRIPT_DIR/TOOLBOX" "$FACTORY_WORKDIR/TOOLBOX" "$PWD/TOOLBOX"; do
+		if [[ -d "$d" ]]; then
+			printf '%s\n' "$d"
+			return 0
+		fi
+	done
+
+	# 4) Last fallback: old behavior.
+	printf '%s\n' "$SCRIPT_DIR"
+}
+
+FACTORY_HOME="$(resolve_factory_home)"
 FACTORY_CONFIG_FILE="${FACTORY_CONFIG_FILE:-$FACTORY_HOME/factory.conf}"
 
 # ========================================================
@@ -679,7 +721,8 @@ SMC_BARFIX_TITLE_SEGMENT="${SMC_BARFIX_TITLE_SEGMENT:-3}"
 REKEY_CRF="${REKEY_CRF:-24}"
 EOF
 
-	echo -e "${GR} = = > SmartCut Session VarZ Saved:${NC} ${YELLOW}$SMARTCUT_SESSION_CONFIG_FILE${NC}"
+	echo -e "${GR} = = > SmartCut Session VarZ Saved:${NC} ${YELLOW}$(factory_display_path "$SMARTCUT_SESSION_CONFIG_FILE")${NC}"
+	echo -e "${GREEN} = = > Support Them Here: ${RE}https://${BW}smartmediacutter${CY}.com/${NC}"
 }
 
 smartcut_load_sticky_session() {
@@ -688,7 +731,8 @@ smartcut_load_sticky_session() {
 	# shellcheck disable=SC1090
 	source "$SMARTCUT_SESSION_CONFIG_FILE" 2>/dev/null || return 0
 
-	echo -e "${CYAN} = = > SmartCut Session VarZ Loaded:${NC} ${YELLOW}$SMARTCUT_SESSION_CONFIG_FILE${NC}"
+	echo -e "${CYAN} = = > SmartCut Session VarZ Loaded:${NC} ${YELLOW}$(factory_display_path "$SMARTCUT_SESSION_CONFIG_FILE")${NC}"
+	echo -e "${GREEN} = = > Support Them Here: ${RE}https://${BW}smartmediacutter${CY}.com/${NC}"
 }
 
 # ------------------ DEFAULTS ------------------
@@ -832,6 +876,204 @@ factory_template_map_path() {
 	esac
 
 	printf '%s\n' "$p"
+}
+
+# ================================================================
+# #MARKER: INTRO TEMPLATE AUTHORITY RESOLVER
+# ================================================================
+# PURPOSE:
+# - Decide which intro_template directory is authoritative.
+# - Prefer TOOLBOX / FACTORY_HOME templates.
+# - Do NOT silently ignore working-folder templates if they contain real media.
+#
+# DESIGN RULE:
+# - TOOLBOX/intro_template is the preferred repo.
+# - Working-folder intro_template is allowed as a bridge/cache only when empty.
+# - If both locations contain intro/outro template media, ask the user.
+#
+# SETS:
+# - INTRO_TEMPLATE_DIR
+# - OUTRO_TEMPLATE
+# - OUTRO_TEMPLATE_GLOB
+# - INTRO_TEMPLATE_AUTHORITY
+# ================================================================
+
+factory_count_template_media() {
+	local dir="${1:-}"
+	local count=0
+	local f
+
+	[[ -d "$dir" ]] || {
+		printf '0\n'
+		return 0
+	}
+
+	shopt -s nullglob nocaseglob
+	for f in "$dir"/intro*.mkv "$dir"/outro*.mkv; do
+		[[ -f "$f" ]] || continue
+		((count+=1)) || :
+	done
+	shopt -u nullglob nocaseglob
+
+	printf '%s\n' "$count"
+}
+
+factory_print_template_location_summary() {
+	local label="$1"
+	local dir="$2"
+	local count="$3"
+
+	echo -e "${CYAN} = = > ${label}:${NC} ${YELLOW}$(factory_display_path "$dir")${NC}"
+	echo -e "${CYAN}       Template Media:${NC} ${GREEN}${count}${NC}"
+}
+
+factory_set_intro_template_authority() {
+	local dir="$1"
+	local authority="$2"
+
+	INTRO_TEMPLATE_DIR="$dir"
+	OUTRO_TEMPLATE="${INTRO_TEMPLATE_DIR}/outro.mkv"
+	OUTRO_TEMPLATE_GLOB="${INTRO_TEMPLATE_DIR}/outro*.mkv"
+	INTRO_TEMPLATE_AUTHORITY="$authority"
+
+	export INTRO_TEMPLATE_DIR OUTRO_TEMPLATE OUTRO_TEMPLATE_GLOB INTRO_TEMPLATE_AUTHORITY
+}
+
+resolve_intro_template_authority() {
+	local toolbox_dir="${FACTORY_HOME}/intro_template"
+	local work_dir="${FACTORY_WORKDIR}/intro_template"
+
+	local toolbox_real=""
+	local work_real=""
+
+	toolbox_real="$(realpath -m "$toolbox_dir" 2>/dev/null || printf '%s\n' "$toolbox_dir")"
+	work_real="$(realpath -m "$work_dir" 2>/dev/null || printf '%s\n' "$work_dir")"
+
+	if [[ "$toolbox_real" == "$work_real" ]]; then
+		mkdir -p "$toolbox_dir"
+		factory_set_intro_template_authority "$toolbox_dir" "TOOLBOX_LINKED"
+		echo -e "${CYAN} = = > Intro Template Authority:${NC} ${YELLOW}TOOLBOX_LINKED${NC} ${GREEN}$(factory_display_path "$INTRO_TEMPLATE_DIR")${NC}"
+		return 0
+	fi
+
+	local toolbox_count=0
+	local work_count=0
+	local choice
+
+	toolbox_count="$(factory_count_template_media "$toolbox_dir")"
+	work_count="$(factory_count_template_media "$work_dir")"
+
+	# ------------------------------------------------------------
+	# If user already forced INTRO_TEMPLATE_DIR, honor it.
+	# ------------------------------------------------------------
+	if [[ -n "${INTRO_TEMPLATE_DIR_USER_OVERRIDE:-}" && -d "${INTRO_TEMPLATE_DIR_USER_OVERRIDE:-}" ]]; then
+	INTRO_TEMPLATE_DIR="$INTRO_TEMPLATE_DIR_USER_OVERRIDE"
+		factory_set_intro_template_authority "$INTRO_TEMPLATE_DIR" "USER_OVERRIDE"
+		echo -e "${CYAN} = = > Intro Template Authority:${NC} ${YELLOW}USER_OVERRIDE${NC} ${GREEN}$(factory_display_path "$INTRO_TEMPLATE_DIR")${NC}"
+		return 0
+	fi
+
+	# ------------------------------------------------------------
+	# Neither location has template media.
+	# Create/use TOOLBOX repo as the empty authority.
+	# ------------------------------------------------------------
+	if (( toolbox_count == 0 && work_count == 0 )); then
+		mkdir -p "$toolbox_dir"
+		factory_set_intro_template_authority "$toolbox_dir" "TOOLBOX_EMPTY"
+		echo -e "${CYAN} = = > Intro Template Authority:${NC} ${YELLOW}TOOLBOX_EMPTY${NC} ${GREEN}$(factory_display_path "$INTRO_TEMPLATE_DIR")${NC}"
+		return 0
+	fi
+
+	# ------------------------------------------------------------
+	# Only TOOLBOX has real templates.
+	# ------------------------------------------------------------
+	if (( toolbox_count > 0 && work_count == 0 )); then
+		factory_set_intro_template_authority "$toolbox_dir" "TOOLBOX"
+		echo -e "${CYAN} = = > Intro Template Authority:${NC} ${YELLOW}TOOLBOX${NC} ${GREEN}$(factory_display_path "$INTRO_TEMPLATE_DIR")${NC}"
+		return 0
+	fi
+
+	# ------------------------------------------------------------
+	# Only working folder has real templates.
+	# Ask before using them because templates are show/season specific.
+	# ------------------------------------------------------------
+	if (( toolbox_count == 0 && work_count > 0 )); then
+		echo
+		echo -e "${YE}================================================${NC}"
+		echo -e "${YE}        WORKING TEMPLATE REPO DETECTED          ${NC}"
+		echo -e "${YE}================================================${NC}"
+		factory_print_template_location_summary "TOOLBOX Template Repo" "$toolbox_dir" "$toolbox_count"
+		factory_print_template_location_summary "Working Template Dir" "$work_dir" "$work_count"
+		echo
+		echo -e "${YELLOW}     1) Use Working-Folder Templates For This Run${NC}"
+		echo -e "${YELLOW}     2) Move Working-Folder Templates Into TOOLBOX, Then Use TOOLBOX${NC}"
+		echo -e "${YELLOW}     0.) Return / Cancel${NC}"
+		echo
+
+		prompt_menu_choice " = = > Choose Template Authority [1-2 | 0.=return]: " choice
+
+		case "$choice" in
+			1)
+				factory_set_intro_template_authority "$work_dir" "WORKDIR"
+				return 0
+				;;
+			2)
+				mkdir -p "$toolbox_dir"
+				shopt -s nullglob nocaseglob
+				mv -n -- "$work_dir"/intro*.mkv "$work_dir"/outro*.mkv "$toolbox_dir"/ 2>/dev/null || true
+				shopt -u nullglob nocaseglob
+
+				factory_set_intro_template_authority "$toolbox_dir" "TOOLBOX_IMPORTED"
+				return 0
+				;;
+			0.|q)
+				return 1
+				;;
+			*)
+				echo -e "${REB} = = > Invalid Template Authority Selection.${NC}"
+				return 1
+				;;
+		esac
+	fi
+
+	# ------------------------------------------------------------
+	# Both locations contain real templates.
+	# This is a conflict and must not be guessed.
+	# ------------------------------------------------------------
+	echo
+	echo -e "${REB}================================================${NC}"
+	echo -e "${REB}        TEMPLATE AUTHORITY CONFLICT DETECTED    ${NC}"
+	echo -e "${REB}================================================${NC}"
+	factory_print_template_location_summary "TOOLBOX Template Repo" "$toolbox_dir" "$toolbox_count"
+	factory_print_template_location_summary "Working Template Dir" "$work_dir" "$work_count"
+	echo
+	echo -e "${YELLOW} = = > Both locations contain intro/outro template media.${NC}"
+	echo -e "${YELLOW} = = > Factory will not silently choose between season/show templates.${NC}"
+	echo
+	echo -e "${YELLOW}     1) Use TOOLBOX Templates${NC}"
+	echo -e "${YELLOW}     2) Use Working-Folder Templates For This Run${NC}"
+	echo -e "${YELLOW}     0.) Return / Cancel${NC}"
+	echo
+
+	prompt_menu_choice " = = > Choose Template Authority [1-2 | 0.=return]: " choice
+
+	case "$choice" in
+		1)
+			factory_set_intro_template_authority "$toolbox_dir" "TOOLBOX_CONFLICT_CHOSEN"
+			;;
+		2)
+			factory_set_intro_template_authority "$work_dir" "WORKDIR_CONFLICT_CHOSEN"
+			;;
+		0.|q)
+			return 1
+			;;
+		*)
+			echo -e "${REB} = = > Invalid Template Authority Selection.${NC}"
+			return 1
+			;;
+	esac
+
+	return 0
 }
 
 # ================================================================
@@ -1078,6 +1320,9 @@ smc_explain_cut_plan() {
 	echo -e "${CYAN}================================================${NC}"
 	echo -e "${CYAN}              SMARTCUT CUT PLAN REVIEW          ${NC}"
 	echo -e "${CYAN}================================================${NC}"
+	echo -e "${YE} = = >     ${CYAN}= = = = = = ${NC}${YELLOW}Review Decimal Points Carefully ${CYAN}= = = = = = ${NC}"
+	echo -e "${YE} = = > Example: ${GREEN}24.5 = 24.5 Seconds, But 2.20 = 2 Minutes 20 Seconds.${NC}"
+	echo -e "${YE} = = > For Fractional Seconds After Minutes Use Colon Format:${GREEN} 2:20.5 = 2 Minutes 20.5 Seconds.${NC}"
 	echo
 	echo -e "${CYAN} = = > Raw Cut Plan:${NC} ${YELLOW}$cut_args${NC}"
 	echo
@@ -1105,9 +1350,6 @@ smc_explain_cut_plan() {
 		echo
 	done
 
-	echo -e "${YE} = = > Review Decimal Points Carefully.${NC}"
-	echo -e "${YE} = = > Example: 24.5 = 24.5 seconds, but 2.20 = 2 minutes 20 seconds.${NC}"
-	echo
 }
 
 # ================================================================
@@ -1141,7 +1383,6 @@ prompt_time_seconds() {
 	return 0
 }
 
-
 # =========================
 # #MARKER: HMS DISPLAY HELPER
 # =========================
@@ -1169,16 +1410,40 @@ format_seconds_hms() {
 # MARKER: GLOBAL ARRAY HEARTBEAT (PARENT-ONLY)
 # ========================================================
 archival_array_heartbeat() {
+	local result_file="${1:-}"
+	local total_files="${2:-0}"
+	local start_ts="${3:-$(date +%s)}"
 
 	local interval=0.2
 	local tick=0
 	local spin='|/-\'
 	local spin_len=${#spin}
 
+	local done_count=0
+	local now_ts elapsed avg_seconds eta_seconds eta_human
+
 	while true; do
 		sleep "$interval"
 
-		printf '\r\033[2K%b' "${YEB} = = = = = = = > ${NC}${YELLOW}${spin:tick%spin_len:1} Archival Array Running${YELLOW} ${spin:tick%spin_len:1}${NC}${YEB} < = = = = = = =${NC}"
+		if [[ -n "$result_file" && -f "$result_file" ]]; then
+			done_count="$(wc -l < "$result_file" 2>/dev/null || echo 0)"
+		else
+			done_count=0
+		fi
+
+		now_ts="$(date +%s)"
+		elapsed=$(( now_ts - start_ts ))
+		(( elapsed < 0 )) && elapsed=0
+
+		eta_human="gathering timing data"
+		if (( done_count >= 2 && total_files > done_count )); then
+			avg_seconds=$(( elapsed / done_count ))
+			eta_seconds=$(( avg_seconds * (total_files - done_count) ))
+			eta_human="$(format_seconds_hms "$eta_seconds")"
+		fi
+
+		printf '\r\033[2K%b' \
+			"${YEB} = = = > ${NC}${YELLOW}${spin:tick%spin_len:1} Factory Array Running ${spin:tick%spin_len:1}${NC} ${CYAN}Done:${NC} ${GREEN}${done_count}/${total_files}${NC} ${CYAN}Elapsed:${NC} ${YELLOW}$(format_seconds_hms "$elapsed")${NC} ${CYAN}ETA:${NC} ${YELLOW}$eta_human${NC}"
 
 		((tick+=1)) || :
 	done
@@ -2937,6 +3202,21 @@ handle_smc_pilot_review() {
 	fi
 
 	clear
+
+	echo
+	echo -e "${CYAN} = = > Pilot Session:${NC} ${GREEN}${PILOT_SESSION_DIR}${NC}"
+
+	if [[ -f "${PILOT_CUTS_TXT:-}" ]]; then
+		echo -e "${CYAN}============================================================${NC}"
+		echo -e "${CYAN}              PILOT CUT PLAN SUMMARY                       ${NC}"
+		echo -e "${GREEN} = = > Support Them Here: ${RE}https://${BW}smartmediacutter${CY}.com/${NC}"
+		echo -e "${CYAN}============================================================${NC}"
+		echo -e "${YELLOW}"
+		cat "$PILOT_CUTS_TXT"
+		echo -e "${NC}"
+		echo -e "${CYAN}==========${ORANGEB} Scroll Up To See What Was The Cut Plan ${NC}${CYAN}==========${NC}"
+	fi
+
 	echo -e "${CYAN}============================================================${NC}"
 	echo -e "${ORANGE}                  SMC PILOT REVIEW ${NC}"
 	echo -e "${YEB}                GO Look At Your Files Right Now ! ${NC}"
@@ -2944,20 +3224,6 @@ handle_smc_pilot_review() {
 	echo -e "${CYAN}              Come Back Here And Make A${NC}${ORANGEB}   Choice DO IT NOW! ${NC}"
 	echo -e "${ORANGE}                  SMC PILOT REVIEW ${NC}"
 	echo -e "${CYAN}============================================================${NC}"
-	echo
-	echo -e "${CYAN} = = > Pilot Session:${NC} ${GREEN}${PILOT_SESSION_DIR}${NC}"
-	echo
-
-	if [[ -f "${PILOT_CUTS_TXT:-}" ]]; then
-		echo -e "${CYAN}============================================================${NC}"
-		echo -e "${CYAN}              PILOT CUT PLAN SUMMARY                       ${NC}"
-		echo -e "${CYAN}============================================================${NC}"
-		echo -e "${YELLOW}"
-		cat "$PILOT_CUTS_TXT"
-		echo -e "${NC}"
-		echo -e "${CYAN}============================================================${NC}"
-		echo
-	fi
 
 	echo -e "${YELLOW}     1) Accept Pilot And Archive Original(s)${NC}"
 	echo -e "${YELLOW}     2) Delete Pilot Output(s), Keep Original(s), Return For Redo${NC}"
@@ -5348,18 +5614,39 @@ collection_detox_titlecase_words() {
 			for (i=1; i<=NF; i++) {
 				if ($i == "") continue
 
-				# Preserve normalized episode codes exactly.
-				if ($i ~ /^S[0-9][0-9]E[0-9][0-9]$/) {
-					word=$i
+				word=$i
+				upper=toupper(word)
+
+				# Preserve Factory workflow prefix tokens.
+				if ((i == 1 || (i == 2 && out == "PILOT")) &&
+					upper ~ /^(SMC|REKEY|BARFIX|SUBTOX|SUBPACKED|ARCHIVE|RESCUE|PILOT|TIPSNIP|TAILTUCK|OEM)$/) {
+					word=upper
+
+				# Preserve / normalize episode tokens.
+				} else if (word ~ /^[Ss][0-9][0-9][Ee][0-9][0-9](-[Ee]?[0-9][0-9])*$/) {
+					gsub(/^s/, "S", word)
+					gsub(/e/, "E", word)
+
+				# Preserve Part tokens.
+				} else if (word ~ /^[Pp][Aa][Rr][Tt](-?[0-9]+|[IVXivx]+)$/) {
+					suffix=toupper(substr(word,5))
+					word="Part" suffix
+
+				} else if (word ~ /^[Ee][0-9][0-9]$/) {
+					gsub(/^e/, "E", word)
+
 				} else {
-					word=tolower($i)
+					word=tolower(word)
 					word=toupper(substr(word,1,1)) substr(word,2)
 				}
 
 				out = (out == "" ? word : out "_" word)
 			}
 			print out
-		}'
+		}' \
+		| sed -E \
+			-e 's/-[Pp][Aa][Rr][Tt]-?([0-9]+)/-Part\1/g' \
+			-e 's/-[Pp][Aa][Rr][Tt]-?(i|ii|iii|iv|I|II|III|IV)(_|$)/-Part\U\1\E\2/g'
 }
 
 # ========================================================
@@ -5391,7 +5678,9 @@ collection_detox_find_files() {
 
 	find "$scan_root" \
 		\( -path "$scan_root/reports/COLLECTION_DETOX" -o \
-		   -path "$scan_root/reports/COLLECTION_DETOX/*" \) -prune -o \
+		   -path "$scan_root/reports/COLLECTION_DETOX/*" -o \
+		   -path "$scan_root/TOOLBOX" -o \
+		   -path "$scan_root/TOOLBOX/*" \) -prune -o \
 		-type f -print0 \
 		| LC_ALL=C sort -z
 }
@@ -5480,6 +5769,89 @@ collection_detox_build_show_prefix() {
 	printf '%s\n' "$prefix"
 }
 
+collection_detox_parse_episode_authority_row() {
+	local line="$1"
+	local __ep_var="$2"
+	local __title_var="$3"
+
+	local raw_ep="" raw_title=""
+	local -a fields=()
+	local old_ifs field clean_field ep_code idx title_start
+
+	line="${line//$'\r'/}"
+	line="$(printf '%s\n' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+
+	[[ -z "${line//[[:space:]]/}" ]] && return 1
+
+	# Header / comment skip
+	case "${line,,}" in
+		episode,*|ep,*|sxxexx,*|code,*|"#"?*)
+			return 1
+			;;
+	esac
+
+	# Dot-separated direct form:
+	# S02E01.In.My.Time.Of.Dying
+	if [[ "$line" =~ ^[Ss][0-9]{1,2}[Ee][0-9]{1,2}\. ]]; then
+		raw_ep="${line%%.*}"
+		raw_title="${line#*.}"
+		raw_title="${raw_title//./ }"
+	else
+		# Prefer comma, then pipe, then tab.
+		if [[ "$line" == *","* ]]; then
+			old_ifs="$IFS"; IFS=','; read -r -a fields <<< "$line"; IFS="$old_ifs"
+		elif [[ "$line" == *"|"* ]]; then
+			old_ifs="$IFS"; IFS='|'; read -r -a fields <<< "$line"; IFS="$old_ifs"
+		elif [[ "$line" == *$'\t'* ]]; then
+			old_ifs="$IFS"; IFS=$'\t'; read -r -a fields <<< "$line"; IFS="$old_ifs"
+		else
+			return 1
+		fi
+
+		# Find first field containing SxxExx.
+		idx=-1
+		for i in "${!fields[@]}"; do
+			clean_field="${fields[$i]//\"/}"
+			clean_field="${clean_field//[[:space:]]/}"
+
+			if collection_detox_extract_epcode "$clean_field" >/dev/null 2>&1; then
+				idx="$i"
+				break
+			fi
+		done
+
+		(( idx >= 0 )) || return 1
+
+		raw_ep="${fields[$idx]}"
+		title_start=$((idx + 1))
+
+		# Title is everything after the episode field, rejoined with comma.
+		raw_title=""
+		for ((i=title_start; i<${#fields[@]}; i++)); do
+			if [[ -z "$raw_title" ]]; then
+				raw_title="${fields[$i]}"
+			else
+				raw_title="${raw_title},${fields[$i]}"
+			fi
+		done
+	fi
+
+	raw_ep="${raw_ep//\"/}"
+	raw_ep="${raw_ep//[[:space:]]/}"
+
+	raw_title="${raw_title%\"}"
+	raw_title="${raw_title#\"}"
+	raw_title="$(printf '%s\n' "$raw_title" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+
+	[[ -n "$raw_title" ]] || return 1
+
+	ep_code="$(collection_detox_extract_epcode "$raw_ep" 2>/dev/null)" || return 1
+
+	printf -v "$__ep_var" '%s' "$ep_code"
+	printf -v "$__title_var" '%s' "$raw_title"
+	return 0
+}
+
 collection_detox_load_episodes_csv() {
 	local csv_file="$1"
 	local -n _title_ref="$2"
@@ -5487,7 +5859,7 @@ collection_detox_load_episodes_csv() {
 	local -n _loaded_ref="$4"
 	local -n _invalid_ref="$5"
 
-	local line raw_ep raw_title ep_code season
+	local line raw_title ep_code season
 	local loaded=0 invalid=0 line_num=0
 
 	[[ -f "$csv_file" ]] || return 1
@@ -5498,30 +5870,7 @@ collection_detox_load_episodes_csv() {
 		line="${line//$'\r'/}"
 		[[ -z "${line//[[:space:]]/}" ]] && continue
 
-		raw_ep="${line%%,*}"
-		raw_title="${line#*,}"
-
-		raw_ep="${raw_ep//\"/}"
-		raw_title="${raw_title%\"}"
-		raw_title="${raw_title#\"}"
-
-		raw_ep="${raw_ep//[[:space:]]/}"
-
-		# Header support.
-		case "${raw_ep,,}" in
-			episode|ep|sxxexx|code)
-				continue
-				;;
-		esac
-
-		if ! ep_code="$(collection_detox_extract_epcode "$raw_ep" 2>/dev/null)"; then
-			((invalid+=1)) || :
-			continue
-		fi
-
-		raw_title="$(printf '%s\n' "$raw_title" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-
-		if [[ -z "$raw_title" ]]; then
+		if ! collection_detox_parse_episode_authority_row "$line" ep_code raw_title; then
 			((invalid+=1)) || :
 			continue
 		fi
@@ -5728,7 +6077,7 @@ collection_detox_scan_build_plan() {
 
 		{
 			echo "PLAYLIST:"
-            echo " $(trim_working_path_display "$new_path" 3)"
+            echo " $(trim_working_path_display "$file" 3)"
 			echo "Possible References:"
 			echo " $plist_hits"
 			echo "------------------------------------------------"
@@ -5829,7 +6178,7 @@ collection_detox_scan_build_plan() {
 
 		if (( ${#unsupported_files[@]} > 0 )); then
 			for file in "${unsupported_files[@]}"; do
-				echo "$file"
+				printf '%s\n' "$(factory_display_path "$file")"
 			done
 		else
 			echo "NONE"
@@ -7636,25 +7985,37 @@ have_cmd() {
     # =========================
 ensure_intro_template_dir() {
 	local repo="${INTRO_TEMPLATE_DIR:-${FACTORY_HOME}/intro_template}"
+	local work_link="${FACTORY_WORKDIR}/intro_template"
+	local work_count=0
 
 	mkdir -p "$repo"
 
-	# Compatibility bridge:
-	# Existing Factory paths still look for intro_template/... in the working dir.
-	# The real template repository now lives in TOOLBOX/intro_template.
-	if [[ -e "intro_template" && ! -L "intro_template" ]]; then
-		echo -e "${YE} = = > Working intro_template/ already exists. Leaving it in place.${NC}"
+	work_count="$(factory_count_template_media "$work_link")"
+
+	if [[ "$repo" == "$work_link" ]]; then
+		mkdir -p "$work_link"
 		return 0
 	fi
 
-	if [[ -L "intro_template" ]]; then
-		rm -f "intro_template"
+	if [[ -e "$work_link" && ! -L "$work_link" ]]; then
+		if (( work_count > 0 )); then
+			echo -e "${YE} = = > Working intro_template/ Contains Real Templates. Leaving It In Place.${NC}"
+			return 0
+		fi
+
+		rmdir "$work_link" 2>/dev/null || {
+			echo -e "${YE} = = > Empty Working intro_template/ Could Not Be Removed. Leaving It In Place.${NC}"
+			return 0
+		}
 	fi
 
-	ln -s "$repo" "intro_template" 2>/dev/null || {
-		echo -e "${YE} = = > Could Not Link intro_template -> TOOLBOX template repo.${NC}"
-		echo -e "${YE} = = > Falling back to working-folder intro_template/.${NC}"
-		mkdir -p intro_template
+	if [[ -L "$work_link" ]]; then
+		rm -f "$work_link"
+	fi
+
+	ln -s "$repo" "$work_link" 2>/dev/null || {
+		echo -e "${YE} = = > Could Not Link intro_template -> Template Authority.${NC}"
+		echo -e "${YE} = = > Template Authority Still Is:${NC} ${YELLOW}$(factory_display_path "$repo")${NC}"
 	}
 }
 
@@ -8043,7 +8404,7 @@ auto_anchor_csv_from_duration() {
 			;;
 	esac
 
-	echo -e "${CYAN} = = > AUTO Anchors:${NC} ${YELLOW}$csv${NC} ${CYAN}count=${NC}${YELLOW}$count${NC} ${CYAN}duration=${NC}${YELLOW}$duration${NC} ${CYAN}from${NC} ${GREEN}$template_file${NC}" >&2
+	echo -e "${CYAN} = = > AUTO Anchors:${NC} ${YELLOW}$csv${NC} ${CYAN}count=${NC}${YELLOW}$count${NC} ${CYAN}duration=${NC}${YELLOW}$duration${NC} ${CYAN}from${NC} ${GREEN}$(factory_display_path "$template_file")${NC}" >&2
 	printf '%s\n' "$csv"
 }
 
@@ -8652,8 +9013,14 @@ detect_optional_tools() {
     # ============================================================
 run_startup_dependency_checks() {
 
+	resolve_intro_template_authority || {
+		echo -e "${REB} = = > Template Authority Was Not Resolved.${NC}"
+		echo -e "${YELLOW} = = > Factory Cannot Safely Continue Template-Based Missions.${NC}"
+		pause
+		return 1
+	}
 
-    ensure_intro_template_dir
+	ensure_intro_template_dir
 	check_required_dependencies_or_die
 	detect_optional_tools
 }
@@ -8864,10 +9231,9 @@ run_main_menu() {
     drive_display="$(get_drive_display "$cwd")"
     cwd_display="$(trim_working_path_display "$cwd" 3)"
     echo -e "${GREEN} = = > Working Drive/Folder:${NC} [${YELLOW}$drive_display${NC}] ${YELLOW}$cwd_display${NC}"
-	echo -e "${CYAN} = = > Factory Home:${NC} ${YELLOW}$(trim_working_path_display "$FACTORY_HOME" 3)${NC}"
 	resolve_smc_bin >/dev/null 2>&1 || true
 	echo -e "${CYAN} = = > SmartCut:${NC} ${YELLOW}$(trim_working_path_display "${SMC_BIN:-not found}" 3)${NC}"
-	echo -e "${CYAN} = = > Template Repo:${NC} ${YELLOW}$(trim_working_path_display "${INTRO_TEMPLATE_DIR:-${FACTORY_HOME}/intro_template}" 3)${NC}"
+	echo -e "${GREEN} = = > Support Them Here: ${RE}https://${BW}smartmediacutter${CY}.com/${NC}"
 	echo -e "${CYAN} = = > Template Link:${NC} ${YELLOW}intro_template -> $(trim_working_path_display "${INTRO_TEMPLATE_DIR:-${FACTORY_HOME}/intro_template}" 3)${NC}"
 
     # Disk space (important due to normalization expansion)
@@ -8890,6 +9256,7 @@ run_main_menu() {
 
     # ------------------ WORKFLOW ------------------
 
+    echo
     echo -e "${YELLOW}"
     echo "     1) Inspect / Explain Folder State"
     echo "     2) Prepare / Backup Sources"
@@ -10455,10 +10822,12 @@ run_subtox_csv_authority_rename() {
 
 		ext="${file##*.}"
 		clean_title="$(detox_title "$ep_title")"
+		clean_title="$(collection_detox_titlecase_words "$clean_title")"
 
 		prefix="${csv_key%%$ep_code*}"
 		prefix="$(strip_workflow_prefixes "$prefix")"
 		prefix="$(detox_title "$prefix")"
+		prefix="$(collection_detox_titlecase_words "$prefix")"
 		prefix="${prefix%_}"
 		prefix="${prefix%-}"
 		prefix="${prefix%.}"
@@ -11028,7 +11397,8 @@ run_subtox_direct_detox() {
 		ext="${file##*.}"
 		stem="${file%.*}"
 
-		new_name="$(detox_title "$stem").${ext}"
+		new_name="$(detox_title "$stem")"
+		new_name="$(collection_detox_titlecase_words "$new_name").${ext}"
 
 		[[ "$file" == "$new_name" ]] && continue
 
@@ -11059,36 +11429,46 @@ run_subtox_direct_detox() {
 		echo
 	done
 
-	echo -e "  ${YELLOW}A)= = > Apply ALL Changes${NC}"
-	echo -e "  ${YELLOW}0)= = > Return${NC}"
+	echo -e "  ${YELLOW}1) Apply ONE Selected Change${NC}"
+	echo -e "  ${YELLOW}2) Apply ALL Changes${NC}"
+	echo -e "  ${YELLOW}0.) Return${NC}"
 	echo
 
-	echo -ne "${YELLOW} = = > File Number, A=All, 0.=Return: ${NC}${GREEN}"
-	read -r choice
-	echo -e "${NC}"
+	prompt_menu_choice " = = > Select Option [1-2 | 0.=return]: " choice
 
 	if is_exit_token "$choice"; then
 		return 0
 	fi
 
-	if [[ "${choice^^}" == "A" ]]; then
+	case "$choice" in
+		1)
+			echo
+			prompt_menu_choice " = = > Enter File Number To Apply [1-${#plan[@]} | 0.=return]: " choice
 
-		selected_plan=("${plan[@]}")
+			if is_exit_token "$choice"; then
+				return 0
+			fi
 
-	else
+			if ! [[ "$choice" =~ ^[0-9]+$ ]] || \
+			   (( choice < 1 || choice > ${#plan[@]} )); then
+				echo -e "${REB} = = > Invalid File Selection.${NC}"
+				pause
+				return 1
+			fi
 
-		choice="${choice//[[:space:]]/}"
+			selected_plan=("${plan[$((choice-1))]}")
+			;;
 
-		if ! [[ "$choice" =~ ^[0-9]+$ ]] || \
-		   (( choice < 1 || choice > ${#plan[@]} )); then
+		2)
+			selected_plan=("${plan[@]}")
+			;;
 
-			echo -e "${REB} = = > Invalid Selection${NC}"
+		*)
+			echo -e "${REB} = = > Invalid Selection.${NC}"
 			pause
 			return 1
-		fi
-
-		selected_plan=("${plan[$((choice-1))]}")
-	fi
+			;;
+	esac
 
 	echo
 	echo -e "${CYAN}================================================${NC}"
@@ -11098,7 +11478,7 @@ run_subtox_direct_detox() {
 
 	for item in "${selected_plan[@]}"; do
 		IFS='|' read -r file new_name <<< "$item"
-		echo -e "  ${GREEN}${file}${NC} ${YELLOW}-->${NC} ${GREEN}${new_name}${NC}"
+		echo -e "  ${YELLOW}${file}${NC} ${CYAN}-->${NC} ${GREEN}${new_name}${NC}"
 	done
 
 	echo
@@ -11329,7 +11709,7 @@ run_subtox_rename_menu() {
 		echo
 		echo -e "${YELLOW}     1) Rename Using Detected Pattern In Filenames${NC}"
 		echo -e "${YELLOW}     2) Recovery / Rebuild File Names${NC}"
-		echo -e "${YELLOW}     3) Detox Existing File Names${NC}"
+		echo -e "${YELLOW}     3) Detox Existing File Names In This Folder${NC}"
 		echo -e "${YELLOW}     4) CSV / Naming Authority Tools${NC}"
 		echo -e "${YELLOW}     5) Repair intro_map.csv / outro_map.csv Filenames Using episodes.csv${NC}"
 		echo -e "${YELLOW}     6) Full Collection Folder Recursive Filename Detox Scan${NC}"
@@ -11699,6 +12079,18 @@ run_build_episodes() {
 }
 # End Of BUILD_EPISODES_CSV (INTERACTIVE TITLE BUILDER) ---
 # -------------------------------------------------------------------------------------------------------
+
+
+archival_percent_change() {
+	local orig_size="${1:-0}"
+	local new_size="${2:-0}"
+
+	awk -v o="$orig_size" -v n="$new_size" 'BEGIN {
+		if (o <= 0) print 0;
+		else printf "%.0f", ((n - o) / o) * 100
+	}'
+}
+
 
 # ============================================================
 # #MARKER: ARRAY METADATA POLICY DEFAULTS
@@ -12109,7 +12501,7 @@ archival_process_one_target_result() {
 	local result_file="$2"
 
 	local out tmp_out
-	local orig_size new_size
+	local orig_size=0 new_size=0 elapsed_seconds=0 start_ts end_ts
 
 	out="$(archival_make_output_name "$prefix" "$((success_count + fail_count + no_gain_count + 1))" "$f")"
 	tmp_out="$ARCHIVE_TMPDIR/$(basename "$out")"
@@ -12124,21 +12516,31 @@ archival_process_one_target_result() {
 		archival_capture_metadata_sidecar "$f" >/dev/null || true
 	fi
 
+	start_ts="$(date +%s)"
+
 	if archival_encode_one_file "$level" "$f" "$tmp_out"; then
+		end_ts="$(date +%s)"
+		elapsed_seconds=$(( end_ts - start_ts ))
+		(( elapsed_seconds < 0 )) && elapsed_seconds=0
+
 		mv -f -- "$tmp_out" "$out"
 
-		orig_size=$(stat -c%s "$f")
-		new_size=$(stat -c%s "$out")
+		orig_size="$(stat -c%s "$f" 2>/dev/null || echo 0)"
+		new_size="$(stat -c%s "$out" 2>/dev/null || echo 0)"
 
 		if (( new_size >= orig_size )); then
 			rm -f -- "$out"
-			echo "NO_GAIN|$f|$out" >> "$result_file"
+			echo "NO_GAIN|$f|$out|$orig_size|$new_size|$elapsed_seconds" >> "$result_file"
 		else
-			echo "SUCCESS|$f|$out" >> "$result_file"
+			echo "SUCCESS|$f|$out|$orig_size|$new_size|$elapsed_seconds" >> "$result_file"
 		fi
 	else
+		end_ts="$(date +%s)"
+		elapsed_seconds=$(( end_ts - start_ts ))
+		(( elapsed_seconds < 0 )) && elapsed_seconds=0
+
 		rm -f -- "$tmp_out"
-		echo "FAIL|$f|" >> "$result_file"
+		echo "FAIL|$f||0|0|$elapsed_seconds" >> "$result_file"
 	fi
 }
 
@@ -12153,6 +12555,13 @@ run_archival_array() {
 	local fail_count=0
 	local no_gain_count=0
 	local delete_success_count=0
+
+	local batch_source_total_bytes=0
+	local batch_kept_total_bytes=0
+	local batch_saved_bytes=0
+	local batch_delta_percent=0
+	local elapsed_total_seconds=0
+	local start_ts
 
 	clear
 	show_space_overview
@@ -12271,7 +12680,8 @@ run_archival_array() {
 	result_file="$(mktemp)"
 	pids=()
 	running=0
-	archival_array_heartbeat &
+	start_ts="$(date +%s)"
+	archival_array_heartbeat "$result_file" "${#targets[@]}" "$start_ts" &
 	heartbeat_pid=$!
 
 	for f in "${targets[@]}"; do
@@ -12295,14 +12705,18 @@ run_archival_array() {
 	printf '\r\033[2K' >&2
 	echo >&2
 
-	while IFS='|' read -r status src out; do
+	while IFS='|' read -r status src out orig_size new_size elapsed_seconds; do
 		case "$status" in
 			SUCCESS)
+				batch_source_total_bytes=$(( batch_source_total_bytes + orig_size ))
+				batch_kept_total_bytes=$(( batch_kept_total_bytes + new_size ))
+				elapsed_total_seconds=$(( elapsed_total_seconds + elapsed_seconds ))
 				outputs+=("$out")
 				source_output_pairs+=("$src|$out")
 				((success_count+=1)) || :
 				;;
 			NO_GAIN)
+				elapsed_total_seconds=$(( elapsed_total_seconds + elapsed_seconds ))
 				((no_gain_count+=1)) || :
 				;;
 			FAIL)
@@ -12313,9 +12727,17 @@ run_archival_array() {
 
 	rm -f "$result_file"
 
+			batch_saved_bytes=$(( batch_source_total_bytes - batch_kept_total_bytes ))
+			batch_delta_percent="$(archival_percent_change "$batch_source_total_bytes" "$batch_kept_total_bytes")"
+
 	echo -e "${CYAN}================================================${NC}"
 	echo -e "${CYAN}              ARCHIVAL ENCODE SUMMARY           ${NC}"
 	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > Source Total:${NC} ${YELLOW}$(format_bytes_human "$batch_source_total_bytes")${NC}"
+	echo -e "${CYAN} = = > Kept Total:${NC} ${YELLOW}$(format_bytes_human "$batch_kept_total_bytes")${NC}"
+	echo -e "${CYAN} = = > Saved Space:${NC} ${YELLOW}$(format_bytes_human "$batch_saved_bytes")${NC}"
+	echo -e "${CYAN} = = > Batch Change:${NC} ${YELLOW}${batch_delta_percent}%${NC}"
+	echo -e "${CYAN} = = > Encode Time:${NC} ${YELLOW}$(format_seconds_hms "$elapsed_total_seconds")${NC}"
 	echo -e "${GREEN} = = > Successful Outputs Kept:${NC} $success_count"
 	echo -e "${YELLOW} = = > No-Gain Outputs Removed:${NC} $no_gain_count"
 	echo -e "${REB} = = > Failed Outputs:${NC} $fail_count"
@@ -12689,6 +13111,109 @@ factory_review_loose_archive_files() {
 	esac
 }
 
+# ================================================================
+# #MARKER: SHOW / SEASON / TEMPLATE TITLE HELPERS
+# ================================================================
+
+factory_safe_slug() {
+	local s="${1:-Unknown}"
+	s="$(printf '%s\n' "$s" | sed -E 's/[^A-Za-z0-9]+/_/g; s/^_+//; s/_+$//; s/_+/_/g')"
+	[[ -z "$s" ]] && s="Unknown"
+	printf '%s\n' "$s"
+}
+
+factory_detect_show_season_slug() {
+	local season=""
+	local show=""
+
+	season="$(find . -maxdepth 1 -type f \( -iname '*.mkv' -o -iname '*.mp4' -o -iname '*.avi' -o -iname '*.mov' \) -printf '%f\n' 2>/dev/null \
+		| sed -nE 's/.*(S[0-9]{2})E[0-9]{2}.*/\1/p' \
+		| head -n 1)"
+
+	show="$(basename "$FACTORY_WORKDIR")"
+
+	# If folder itself is just S07 / Season_07 style, use parent as show.
+	if [[ "$show" =~ ^(S[0-9]{2}|Season[_ -]?[0-9]{1,2}|.*_S[0-9]{2})$ ]]; then
+		show="$(basename "$(dirname "$FACTORY_WORKDIR")")"
+	fi
+
+	show="$(factory_safe_slug "$show")"
+	season="$(factory_safe_slug "${season:-Sxx}")"
+
+	printf '%s_%s\n' "$show" "$season"
+}
+
+factory_source_sxxexx() {
+	local src="${1:-}"
+	local base
+
+	base="$(basename "$src")"
+
+	if [[ "$base" =~ (S[0-9]{2}E[0-9]{2}(-E[0-9]{2})?) ]]; then
+		printf '%s\n' "${BASH_REMATCH[1]}"
+		return 0
+	fi
+
+	printf '%s\n' "SxxExx"
+}
+
+factory_template_title_from_source() {
+	local kind="$1"
+	local src="$2"
+	local show_slug sxxexx
+
+	show_slug="$(factory_safe_slug "$(basename "$(dirname "$FACTORY_WORKDIR")")")"
+	sxxexx="$(factory_source_sxxexx "$src")"
+
+	case "$kind" in
+		intro) printf 'Intro_Template_%s_%s\n' "$show_slug" "$sxxexx" ;;
+		outro) printf 'Outro_Template_%s_%s\n' "$show_slug" "$sxxexx" ;;
+		*)     printf 'Template_%s_%s\n' "$show_slug" "$sxxexx" ;;
+	esac
+}
+
+factory_set_mkv_title_if_possible() {
+	local file="$1"
+	local title="$2"
+
+	[[ -f "$file" ]] || return 0
+
+	if command -v mkvpropedit >/dev/null 2>&1; then
+		mkvpropedit "$file" --edit info --set "title=$title" >/dev/null 2>&1 || {
+			echo -e "${YE} = = > Template Title Write Failed:${NC} ${YELLOW}$(factory_display_path "$file")${NC}"
+			return 0
+		}
+
+		echo -e "${GR} = = > Template MKV Title Set:${NC} ${YELLOW}$title${NC}"
+	else
+		echo -e "${YE} = = > mkvpropedit Not Found. Template Title Not Written.${NC}"
+	fi
+}
+
+factory_archive_and_clear_template_repo() {
+	local repo="${INTRO_TEMPLATE_DIR:-${FACTORY_HOME}/intro_template}"
+	local archive_count=0
+	local f
+
+	[[ -d "$repo" ]] || {
+		echo -e "${YE} = = > No Template Repo Found:${NC} ${YELLOW}$(factory_display_path "$repo")${NC}"
+		return 0
+	}
+
+	build_csv_template_archive || return 1
+
+	shopt -s nullglob nocaseglob
+	for f in "$repo"/intro*.mkv "$repo"/outro*.mkv; do
+		[[ -f "$f" ]] || continue
+		rm -f -- "$f"
+		((archive_count+=1)) || :
+	done
+	shopt -u nullglob nocaseglob
+
+	echo -e "${GR} = = > Template Repo Cleared:${NC} ${YELLOW}$(factory_display_path "$repo")${NC}"
+	echo -e "${CYAN} = = > Template Files Removed:${NC} ${YELLOW}$archive_count${NC}"
+}
+
 run_csv_template_archive() {
 	echo -e "${CYAN} = = > Building CSV + Template Archive...${NC}"
 
@@ -12704,7 +13229,7 @@ run_csv_template_archive() {
 		return 1
 	}
 
-	tarname="$archive_dir/csv_templates.tar.gz"
+	tarname="csv_templates_$(factory_detect_show_season_slug)_$(date +%Y%m%d_%H%M%S).tar.gz"
 	manifest="$archive_dir/manifest.txt"
 
 	shopt -s nullglob nocaseglob
@@ -12815,8 +13340,6 @@ run_csv_template_archive() {
 #   removed in their own dedicated actions with confirmation.
 #
 run_finalize_menu() {
-
-	show_space_overview
 
 	cleanup_print_targets() {
 		local label="$1"
@@ -13799,6 +14322,7 @@ cleanup_finalize_finished_replacements() {
 
 	while true; do
 		clear
+		show_space_overview
 		echo -e "${CYAN}================================================${NC}"
 		echo -e "${CYAN}                    CLEANUP                     ${NC}"
 		echo -e "${CYAN}================================================${NC}"
@@ -15560,8 +16084,9 @@ run_subtitlez_menu() {
         echo -e "${YELLOW}"
         echo "     1) SUBTOX"
         echo "     2) Full Collection Folder Recursive Filename Detox Scan"
-        echo "     3) Pack external.srt"
-        echo "     4) Extract Internal Subtitles"
+		echo "     3) Detox Existing File Names In This Folder"
+        echo "     4) Pack external.srt"
+        echo "     5) Extract Internal Subtitles"
         echo
         echo "     10-key exit > 0. (or q) Enter to quit"
         echo
@@ -15585,9 +16110,18 @@ run_subtitlez_menu() {
                 run_collection_detox_scan_only
                 ;;
             3)
+                local -a direct_detox_vids=()
+
+                shopt -s nullglob nocaseglob
+                direct_detox_vids=(*.{lrv,mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,xvid,wmv})
+                shopt -u nullglob nocaseglob
+
+                run_subtox_direct_detox "${direct_detox_vids[@]}"
+                ;;
+            4)
                 run_subtox_pack
                 ;;
-			4)
+			5)
 				run_subtox_extract
 				;;
             [Qq])
@@ -16051,7 +16585,8 @@ run_subtox_extract() {
 #   filename,start,end,start_hms,end_hms,template_used,diff
 # ================================================================
 run_smartgap_trim_only_batch_mode() {
-	local map_file="intro_map.csv"
+	local intro_map_file="intro_map.csv"
+	local outro_map_file="outro_map.csv"
 	local seg_start_raw seg_end_raw
 	local seg_start seg_end
 	local template_tag="TRIM_ONLY"
@@ -16065,11 +16600,12 @@ run_smartgap_trim_only_batch_mode() {
 	echo -e "${CYAN}        SMARTGAP TRIM-ONLY BATCH MAP BUILDER      ${NC}"
 	echo -e "${CYAN}================================================${NC}"
 	echo
-	echo -e "${YELLOW} = = > This Creates A Neutral intro_map.csv So SMARTGAP Can Batch Trim.${NC}"
-	echo -e "${YELLOW} = = > Use This When Files Need Tip/Tail Trims But No Intro Detection.${NC}"
+	echo -e "${YELLOW} = = > This Creates Neutral Batch Maps So SMARTGAP Can Batch Trim.${NC}"
+	echo -e "${YELLOW} = = > intro_map.csv handles tip / front-side trim rows.${NC}"
+	echo -e "${YELLOW} = = > outro_map.csv handles tail / end-side trim rows.${NC}"
 	echo
 	echo -e "${CYAN} = = > Optional Global Segment Removal:${NC}"
-	echo -e "${YELLOW}       Leave blank for normal tip/tail trim only.${NC}"
+	echo -e "${YELLOW}       Leave blank for normal tip/tail trim map skeletons.${NC}"
 	echo -e "${YELLOW}       Example: remove same ad from 12:30 to 13:15 in every file.${NC}"
 	echo
 
@@ -16134,39 +16670,69 @@ run_smartgap_trim_only_batch_mode() {
 	echo
 	echo -e "${CYAN} = = > Targets Found:${NC} ${YELLOW}${#targets[@]}${NC}"
 	echo -e "${CYAN} = = > Map Mode:${NC} ${YELLOW}$template_tag${NC}"
-	echo -e "${CYAN} = = > Output Map:${NC} ${GREEN}$map_file${NC}"
+	echo -e "${CYAN} = = > Intro Map:${NC} ${GREEN}$intro_map_file${NC}"
+	echo -e "${CYAN} = = > Outro Map:${NC} ${GREEN}$outro_map_file${NC}"
 	echo
 
-	if [[ -f "$map_file" ]]; then
-		echo -e "${YE} = = > Existing intro_map.csv Found.${NC}"
-		if ! ask_yes_no " = = > Replace intro_map.csv? Backup Will Be Created. (y/n or 1/2): "; then
-			echo -e "${YE} = = > Canceled.${NC}"
-			pause
-			return 0
+	for f in "$intro_map_file" "$outro_map_file"; do
+		if [[ -f "$f" ]]; then
+			echo -e "${YE} = = > Existing Map Found:${NC} ${YELLOW}$f${NC}"
+			cp -- "$f" "${f}.bak_$(date '+%Y%m%d_%H%M%S')"
+			echo -e "${CYAN} = = > Backup Created For:${NC} ${GREEN}$f${NC}"
 		fi
+	done
 
-		cp -- "$map_file" "${map_file}.bak_$(date '+%Y%m%d_%H%M%S')"
+	if ! ask_yes_no " = = > Create / Replace intro_map.csv and outro_map.csv? (y/n or 1/2): "; then
+		echo -e "${YE} = = > Canceled.${NC}"
+		pause
+		return 0
 	fi
 
-	printf 'filename,start,end,start_hms,end_hms,template_used,diff\n' > "$map_file"
+	printf 'filename,start,end,start_hms,end_hms,template_used,diff\n' > "$intro_map_file"
+	printf 'filename,start,end,start_hms,end_hms,template_used,diff\n' > "$outro_map_file"
 
 	for f in "${targets[@]}"; do
+		# Intro map: neutral front-side placeholder.
 		printf '%s,%s,%s,%s,%s,%s,%s\n' \
 			"$f" \
-			"$seg_start" \
-			"$seg_end" \
-			"$(format_seconds_hms "$seg_start")" \
-			"$(format_seconds_hms "$seg_end")" \
-			"$template_tag" \
-			"0" >> "$map_file"
+			"0" \
+			"0" \
+			"$(format_seconds_hms 0)" \
+			"$(format_seconds_hms 0)" \
+			"TRIM_ONLY_INTRO" \
+			"0" >> "$intro_map_file"
+
+		# Outro map:
+		# - Normal trim-only skeleton uses start=0,end=end as a clear tail-side placeholder.
+		# - Global segment mode mirrors the selected segment into both maps.
+		if [[ "$template_tag" == "GLOBAL_SEGMENT" ]]; then
+			printf '%s,%s,%s,%s,%s,%s,%s\n' \
+				"$f" \
+				"$seg_start" \
+				"$seg_end" \
+				"$(format_seconds_hms "$seg_start")" \
+				"$(format_seconds_hms "$seg_end")" \
+				"GLOBAL_SEGMENT" \
+				"0" >> "$outro_map_file"
+		else
+			printf '%s,%s,%s,%s,%s,%s,%s\n' \
+				"$f" \
+				"0" \
+				"end" \
+				"$(format_seconds_hms 0)" \
+				"end" \
+				"TRIM_ONLY_OUTRO" \
+				"0" >> "$outro_map_file"
+		fi
 
 		((count+=1)) || :
 	done
 
 	echo
-	echo -e "${GR} = = > Trim-Only Batch Map Created.${NC}"
-	echo -e "${CYAN} = = > Rows Written:${NC} ${YELLOW}$count${NC}"
-	echo -e "${CYAN} = = > Map File:${NC} ${GREEN}$map_file${NC}"
+	echo -e "${GR} = = > Trim-Only Batch Maps Created.${NC}"
+	echo -e "${CYAN} = = > Rows Written Per Map:${NC} ${YELLOW}$count${NC}"
+	echo -e "${CYAN} = = > Intro Map:${NC} ${GREEN}$intro_map_file${NC}"
+	echo -e "${CYAN} = = > Outro Map:${NC} ${GREEN}$outro_map_file${NC}"
 	echo
 
 	pause
@@ -16497,8 +17063,16 @@ create_template_smc() {
 		--keep "$keep_args"
 
 	if [[ $? -eq 0 && -f "$out" ]]; then
+		local template_kind template_title
+
+		template_kind="intro"
+		[[ "$(basename "$out")" =~ ^outro ]] && template_kind="outro"
+
+		template_title="$(factory_template_title_from_source "$template_kind" "$src")"
+		factory_set_mkv_title_if_possible "$out" "$template_title"
+
 		echo
-		echo -e "${GR} = = > TEMPLATE CREATED:${NC} ${GREEN}$out${NC}"
+		echo -e "${GR} = = > TEMPLATE CREATED:${NC} ${GREEN}$(factory_display_path "$out")${NC}"
 	else
 		echo
 		echo -e "${REB} = = > TEMPLATE BUILD FAILED.${NC}"
@@ -16986,10 +17560,11 @@ while IFS=, read -r file start end _; do
 	echo
 	echo -e "${CYAN} = = > ACTIVE SMC ENGINE:${NC} ${YELLOW}$(trim_working_path_display "$SMC_BIN" 3)${NC}"
 	echo -e "${GREEN} = = > Support Them Here: ${RE}https://${BW}smartmediacutter${CY}.com/${NC}"
+	echo
 
-	if [[ -x "${SMC_BIN:-}" ]]; then
-		echo -e "${CYAN} = = > SMC VERSION:${NC} ${YELLOW}$("$SMC_BIN" --version 2>/dev/null | head -n1)${NC}"
-	fi
+	#if [[ -x "${SMC_BIN:-}" ]]; then
+		#echo -e "${CYAN} = = > SMC VERSION:${NC} ${YELLOW}$("$SMC_BIN" --version 2>/dev/null | head -n1)${NC}"
+	#fi
 
 	if run_smartcut_colored "$file" "$out" "$cut_args"; then
 		echo -e "${GR} = = > SMC SURGERY COMPLETE:${NC} ${GREEN}$out${NC}"
@@ -17036,24 +17611,26 @@ rm -f x265_2pass.log
 # ========================================================
 # PURPOSE:
 # - Locate The SmartCut / Smart Media Cutter Engine Used By Factory.
-# - Prefer A Carried Smart Media Cutter AppImage When Available.
-# - Fall Back To The Older pipx / PATH smartcut Command Only If Needed.
+# - Prefer A Carried TOOLBOX smc.app When Available.
+# - Fall Back To Working-Folder smc.app Or pipx / PATH smartcut Only If Needed.
 #
 # ENGINE ORDER:
-#   1) $HOME/TOOLBOX/smc.app
+#   1) FACTORY_HOME/smc.app
 #      - Preferred portable Factory copy.
-#      - Rename current SmartMediaCutter AppImage to smc.app.
+#      - After TOOLBOX resolution, FACTORY_HOME should normally be TOOLBOX.
 #
-#   2) ./smc.app
-#      - Working-folder override / local test copy.
+#   2) TOOLBOX/smc.app Beside factory.sh Or Working Folder
+#      - Allows factory.sh to be loose beside a TOOLBOX directory.
 #
-#   3) smartcut
+#   3) Working Folder smc.app
+#      - Emergency / local test override.
+#
+#   4) smartcut
 #      - Legacy pipx / PATH fallback.
 #
 # NOTES:
-# - smartcut is the original MIT-licensed CLI project.
-# - Smart Media Cutter is the newer commercial/appimage continuation.
-# - The AppImage should remain executable:
+# - Smart Media Cutter AppImage should be renamed to smc.app.
+# - The AppImage must remain executable:
 #       chmod +x smc.app
 #
 # OUTPUT:
@@ -17065,21 +17642,17 @@ rm -f x265_2pass.log
 resolve_smc_bin() {
 	local candidate=""
 
-	# ========================================================
-	# #MARKER: PORTABLE SMARTCUT ENGINE RESOLVER
-	# ========================================================
-	# Search order:
-	#   1) FACTORY_HOME/smc.app        after TOOLBOX migration
-	#   2) FACTORY_WORKDIR/smc.app     temporary / emergency working copy
-	#   3) ./smc.app                  fallback if launched old-style
-	#   4) pipx / PATH smartcut
-	# ========================================================
-
 	local -a smc_candidates=(
 		"${FACTORY_HOME}/smc.app"
 		"${FACTORY_HOME}/SMC.app"
+		"${SCRIPT_DIR}/TOOLBOX/smc.app"
+		"${SCRIPT_DIR}/TOOLBOX/SMC.app"
+		"${FACTORY_WORKDIR}/TOOLBOX/smc.app"
+		"${FACTORY_WORKDIR}/TOOLBOX/SMC.app"
 		"${FACTORY_WORKDIR}/smc.app"
 		"${FACTORY_WORKDIR}/SMC.app"
+		"./TOOLBOX/smc.app"
+		"./TOOLBOX/SMC.app"
 		"./smc.app"
 		"./SMC.app"
 	)
@@ -17122,7 +17695,7 @@ show_factory_environment_report() {
 	resolve_smc_bin >/dev/null 2>&1 || true
 
 	smc_display="${SMC_BIN:-not found}"
-	template_display="${FACTORY_HOME}/intro_template"
+	template_display="${INTRO_TEMPLATE_DIR:-${FACTORY_HOME}/intro_template}"
 
 	echo
 	echo -e "${CYAN}============================================================${NC}"
@@ -17162,6 +17735,10 @@ smartcut_session_varz_menu() {
 		echo -e "${YELLOW}     3) Barfix Lite Vars${NC}"
 		echo
 		echo -e "${YELLOW}     0.) Return${NC}"
+		echo
+		echo -e "${YE} = = >     ${CYAN}= = = = = = ${NC}${YELLOW}Review Decimal Points Carefully ${CYAN}= = = = = = ${NC}"
+		echo -e "${YE} = = > Example: ${GREEN}24.5 = 24.5 Seconds, But 2.20 = 2 Minutes 20 Seconds.${NC}"
+		echo -e "${YE} = = > For Fractional Seconds After Minutes Use Colon Format:${GREEN} 2:20.5 = 2 Minutes 20.5 Seconds.${NC}"
 		echo
 
 		if [[ -z "${choice:-}" ]]; then
@@ -21644,7 +22221,7 @@ ensure_phash_engine() {
 	# During engine development, always rebuild from the current Factory source.
 	rm -f -- "$PHASH_ENGINE"
 
-	echo -e "${YE} = = > Building Local xHash Engine:${NC} ${YELLOW}$(factory_display_path "$PHASH_ENGINE")${NC}"
+	echo -e "${YE} = = > Building Local xHash Engine:${NC} ${GREEN}$(factory_display_path "$PHASH_ENGINE")${NC}"
 
 	# IMPORTANT:
 	# Move/copy the existing full:
@@ -21744,6 +22321,40 @@ if STEP <= 0:
     STEP = DEFAULT_STEP
 
 # ============================================================
+# DISPLAY PATH HELPER
+# ------------------------------------------------------------
+# Keep real paths for processing, but shorten paths in human
+# diagnostic output.
+# ============================================================
+
+def display_path(path):
+    path = os.path.abspath(str(path))
+
+    roots = [
+        (os.environ.get("FACTORY_WORKDIR", os.getcwd()), "."),
+        (os.environ.get("FACTORY_HOME", os.path.join(os.getcwd(), "TOOLBOX")), "TOOLBOX"),
+    ]
+
+    for root, label in roots:
+        if not root:
+            continue
+
+        root = os.path.abspath(root)
+
+        if path == root:
+            return label
+
+        if path.startswith(root + os.sep):
+            rel = os.path.relpath(path, root)
+
+            if rel.startswith("intro_template" + os.sep):
+                return rel
+
+            return label + "/" + rel
+
+    return path
+
+# ============================================================
 # TEMPLATE SORTING
 # ============================================================
 
@@ -21770,7 +22381,7 @@ if not TEMPLATES and TEMPLATE_GLOB == "intro_template/intro_template*.mkv":
 
 TEMPLATES.sort(key=template_sort_key)
 
-print("TEMPLATE_ORDER|" + "|".join(TEMPLATES), file=sys.stderr)
+print("TEMPLATE_ORDER|" + "|".join(display_path(p) for p in TEMPLATES), file=sys.stderr)
 print(f"ENGINE_CFG|HASH_MODE={HASH_MODE}|SCAN_START={SCAN_START}|LIMIT={LIMIT}|HASH_DIFF={HASH_DIFF}|STEP={STEP}|ANCHORS={ANCHOR_OFFSETS}", file=sys.stderr)
 
 # ============================================================
@@ -21862,7 +22473,7 @@ for template in TEMPLATES:
             skipped_anchor_count += 1
 
     if not anchors:
-        print(f"SKIP_TEMPLATE|{template}|reason=no_valid_anchor_hashes", file=sys.stderr)
+        print(f"SKIP_TEMPLATE|{display_path(template)}|reason=no_valid_anchor_hashes", file=sys.stderr)
         continue
 
     template_data.append({
@@ -21873,7 +22484,7 @@ for template in TEMPLATES:
     })
 
     print(
-        f"TEMPLATE_READY|{template}|duration={duration:.3f}|anchors_ok={len(anchors)}|anchors_skipped={skipped_anchor_count}",
+        f"TEMPLATE_READY|{display_path(template)}|duration={duration:.3f}|anchors_ok={len(anchors)}|anchors_skipped={skipped_anchor_count}",
         file=sys.stderr
     )
 
@@ -22023,7 +22634,7 @@ try:
 
     for i, (avg, tstart, tpath) in enumerate(debug_candidates[:5]):
         print(
-            f"  #{i+1}|start={tstart:.3f}|avg_diff={avg:.3f}|template={tpath}",
+            f"  #{i+1}|start={tstart:.3f}|avg_diff={avg:.3f}|template={display_path(tpath)}",
             file=sys.stderr
         )
 
@@ -22048,7 +22659,7 @@ if best_match is not None and best_match["avg_diff"] < HASH_DIFF:
     print(
         "BEST_MATCH"
         f"|start={best_match['start_time']:.3f}"
-        f"|template={best_match['template']}"
+        f"|template={display_path(best_match['template'])}"
         f"|avg_diff={best_match['avg_diff']:.3f}"
         f"|best_anchor_diff={best_match['best_anchor_diff']}"
         f"|best_anchor_sec={best_match['best_anchor_sec']}"
