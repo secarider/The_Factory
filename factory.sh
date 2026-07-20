@@ -93,7 +93,7 @@
 # scenedetect[opencv]:
 # Optional  support for scene-analysis workflows.
 # Factory's normal xHash / pHash IntroFind engine is local and does not require
-# SceneDetect for ordinary template matching.
+# SceneDetect for ordinary template matching.                                       this isnt true anymore
 #
 # mkvpropedit:  Is part of mkvtoolnix. [mkvtoolnix.download](https://mkvtoolnix.download/)
 # mkvtoolnix:
@@ -249,23 +249,18 @@ NC=$'\033[0m'            # Reset / No Color
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 FACTORY_WORKDIR="${FACTORY_WORKDIR:-$PWD}"
+STARTUP_HOME_OVERRIDE="${FACTORY_HOME:-}"
 
 resolve_factory_home() {
 	local d
 
-	# 1) User override wins.
+	# 1) Explicit user override wins.
 	if [[ -n "${FACTORY_HOME:-}" && -d "${FACTORY_HOME:-}" ]]; then
 		printf '%s\n' "$FACTORY_HOME"
 		return 0
 	fi
 
-	# 2) If factory.sh itself lives inside TOOLBOX, use SCRIPT_DIR.
-	if [[ -f "$SCRIPT_DIR/smc.app" || -d "$SCRIPT_DIR/intro_template" || -f "$SCRIPT_DIR/factory.conf" ]]; then
-		printf '%s\n' "$SCRIPT_DIR"
-		return 0
-	fi
-
-	# 3) If TOOLBOX is beside factory.sh, use it.
+	# 2) Prefer a real TOOLBOX beside factory.sh or in the launch folder.
 	for d in "$SCRIPT_DIR/TOOLBOX" "$FACTORY_WORKDIR/TOOLBOX" "$PWD/TOOLBOX"; do
 		if [[ -d "$d" ]]; then
 			printf '%s\n' "$d"
@@ -273,12 +268,47 @@ resolve_factory_home() {
 		fi
 	done
 
-	# 4) Last fallback: old behavior.
+	# 3) Standalone / lightweight fallback.
+	# Factory still runs from the working directory using system tools,
+	# pipx SmartCut, and any local resources that are available.
 	printf '%s\n' "$SCRIPT_DIR"
 }
 
 FACTORY_HOME="$(resolve_factory_home)"
 FACTORY_CONFIG_FILE="${FACTORY_CONFIG_FILE:-$FACTORY_HOME/factory.conf}"
+
+# ========================================================
+# #MARKER: OPERATING MODE DETECTION
+# ========================================================
+HOME_WAS_OVERRIDDEN=0
+[[ -n "${STARTUP_HOME_OVERRIDE:-}" ]] && HOME_WAS_OVERRIDDEN=1
+
+detect_operating_mode() {
+	local script_real home_real work_toolbox_real script_toolbox_real
+
+	script_real="$(realpath -m -- "$SCRIPT_DIR" 2>/dev/null || printf '%s\n' "$SCRIPT_DIR")"
+	home_real="$(realpath -m -- "$FACTORY_HOME" 2>/dev/null || printf '%s\n' "$FACTORY_HOME")"
+	work_toolbox_real="$(realpath -m -- "$FACTORY_WORKDIR/TOOLBOX" 2>/dev/null || printf '%s\n' "$FACTORY_WORKDIR/TOOLBOX")"
+	script_toolbox_real="$(realpath -m -- "$SCRIPT_DIR/TOOLBOX" 2>/dev/null || printf '%s\n' "$SCRIPT_DIR/TOOLBOX")"
+
+	if (( HOME_WAS_OVERRIDDEN == 1 )); then
+		OPERATING_MODE="OVERRIDE"
+	elif [[ "$home_real" == "$script_real" ]]; then
+		if [[ "$(basename "$home_real")" == "TOOLBOX" ]]; then
+			OPERATING_MODE="PORTABLE_TOOLBOX"
+		else
+			OPERATING_MODE="STANDALONE"
+		fi
+	elif [[ "$home_real" == "$work_toolbox_real" || "$home_real" == "$script_toolbox_real" ]]; then
+		OPERATING_MODE="LOCAL_TOOLBOX"
+	else
+		OPERATING_MODE="EXTERNAL_HOME"
+	fi
+
+	export OPERATING_MODE
+}
+
+detect_operating_mode
 
 # ========================================================
 # #MARKER: LEGACY STICKY WRITE FILES / SAFE BRIDGE MODE
@@ -731,6 +761,104 @@ run_twisted_menu() {
 # END OF COLOR SYSTEM / TWISTED THEME ENGINE ===================================
 
 # ========================================================
+# #MARKER: SAFE SHARED FACTORY CONFIG WRITER
+# ========================================================
+# PURPOSE:
+# - Update only the requested variables inside factory.conf.
+# - Preserve unrelated settings, comments, blank lines, and future additions.
+# - Replace duplicate assignments for an updated variable with one canonical line.
+# - Write atomically so an interrupted save does not leave a partial config.
+#
+# USAGE:
+#   factory_conf_set_many KEY value [KEY value ...]
+#
+# STANDALONE RULE:
+# - Merely launching Factory does not create factory.conf.
+# - The parent directory and config file are created only when the user
+#   explicitly saves a persistent setting.
+# ========================================================
+factory_conf_set_many() {
+	local config_file="${FACTORY_CONFIG_FILE:-${FACTORY_HOME}/factory.conf}"
+	local config_dir temp_file updates_file
+	local key value quoted
+
+	if (( $# == 0 || $# % 2 != 0 )); then
+		echo -e "${REB} = = > Internal Config Save Error: Expected KEY / VALUE Pairs.${NC}" >&2
+		return 1
+	fi
+
+	config_dir="$(dirname -- "$config_file")"
+	mkdir -p -- "$config_dir"
+
+	temp_file="$(mktemp "${config_file}.tmp.XXXXXX")" || return 1
+	updates_file="$(mktemp "${config_file}.updates.XXXXXX")" || {
+		rm -f -- "$temp_file"
+		return 1
+	}
+
+	while (( $# >= 2 )); do
+		key="$1"
+		value="$2"
+		shift 2
+
+		if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+			echo -e "${REB} = = > Refusing Invalid Config Variable Name:${NC} ${YELLOW}$key${NC}" >&2
+			rm -f -- "$temp_file" "$updates_file"
+			return 1
+		fi
+
+		printf -v quoted '%q' "$value"
+		printf '%s\t%s\n' "$key" "$quoted" >> "$updates_file"
+	done
+
+	if [[ -f "$config_file" ]]; then
+		awk -v updates_file="$updates_file" '
+			BEGIN {
+				FS = "\t"
+				while ((getline < updates_file) > 0) {
+					update[$1] = $2
+					order[++count] = $1
+				}
+				close(updates_file)
+			}
+
+			{
+				line = $0
+				if (line ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/) {
+					key = line
+					sub(/^[[:space:]]*/, "", key)
+					sub(/[[:space:]]*=.*/, "", key)
+					if (key in update) {
+						if (!(key in written)) {
+							print key "=" update[key]
+							written[key] = 1
+						}
+						next
+					}
+				}
+				print line
+			}
+
+			END {
+				for (i = 1; i <= count; i++) {
+					key = order[i]
+					if (!(key in written)) {
+						print key "=" update[key]
+						written[key] = 1
+					}
+				}
+			}
+		' "$config_file" > "$temp_file"
+	else
+		awk -F '\t' '{ print $1 "=" $2 }' "$updates_file" > "$temp_file"
+	fi
+
+	chmod --reference="$config_file" "$temp_file" 2>/dev/null || chmod 600 "$temp_file" 2>/dev/null || true
+	mv -f -- "$temp_file" "$config_file"
+	rm -f -- "$updates_file"
+}
+
+# ========================================================
 # #MARKER: TWISTED STICKY SETTINGS
 # ========================================================
 TWISTED_CONFIG_FILE="$FACTORY_CONFIG_FILE"
@@ -738,11 +866,11 @@ TWISTED_CONFIG_FILE="$FACTORY_CONFIG_FILE"
 twisted_save_theme() {
 	local theme_name="$1"
 
-	cat > "$TWISTED_CONFIG_FILE" <<EOF
-TWISTED_THEME="$theme_name"
-EOF
+	factory_conf_set_many \
+		TWISTED_THEME "$theme_name"
 
 	echo -e "${GR} = = > Twisted Theme Saved:${NC} ${YELLOW}$theme_name${NC}"
+	echo -e "${CYAN} = = > Shared Config:${NC} ${YELLOW}$(factory_display_path "$TWISTED_CONFIG_FILE")${NC}"
 }
 
 twisted_load_sticky_theme() {
@@ -770,38 +898,33 @@ twisted_load_sticky_theme
 SMARTCUT_SESSION_CONFIG_FILE="$FACTORY_CONFIG_FILE"
 
 smartcut_save_sticky_session() {
-	cat > "$SMARTCUT_SESSION_CONFIG_FILE" <<EOF
-INTRO_SCAN_START="${INTRO_SCAN_START:-${DEFAULT_SCAN_START:-30}}"
-INTRO_MAX_SCAN="${INTRO_MAX_SCAN:-${DEFAULT_MAX_SCAN:-601}}"
-INTRO_HASH_DIFF="${INTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-16}}"
-INTRO_STEP_SIZE="${INTRO_STEP_SIZE:-${STEP_SIZE:-1}}"
-INTRO_ANCHOR_SECONDS="${INTRO_ANCHOR_SECONDS:-${ANCHOR_SECONDS:-3,5,7}}"
-INTRO_HASH_MODE="${INTRO_HASH_MODE:-phash}"
-
-OUTRO_TAIL_SCAN_SECONDS="${OUTRO_TAIL_SCAN_SECONDS:-auto}"
-OUTRO_TAIL_SCAN_PAD_SECONDS="${OUTRO_TAIL_SCAN_PAD_SECONDS:-10}"
-OUTRO_TAIL_SCAN_MIN_SECONDS="${OUTRO_TAIL_SCAN_MIN_SECONDS:-45}"
-OUTRO_TAIL_SCAN_MAX_SECONDS="${OUTRO_TAIL_SCAN_MAX_SECONDS:-160}"
-OUTRO_HASH_DIFF="${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-16}}"
-OUTRO_STEP_SIZE="${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}"
-OUTRO_ANCHOR_SECONDS="${OUTRO_ANCHOR_SECONDS:-8,12,16}"
-OUTRO_HASH_MODE="${OUTRO_HASH_MODE:-dhash}"
-
-TIP_TRIM_SECONDS="${TIP_TRIM_SECONDS:-0}"
-TAIL_TRIM_SECONDS="${TAIL_TRIM_SECONDS:-0}"
-TIP_OFFSET_SECONDS="${TIP_OFFSET_SECONDS:-0}"
-INTRO_PAD_BEFORE_SECONDS="${INTRO_PAD_BEFORE_SECONDS:-0}"
-INTRO_PAD_AFTER_SECONDS="${INTRO_PAD_AFTER_SECONDS:-0}"
-OUTRO_PAD_BEFORE_SECONDS="${OUTRO_PAD_BEFORE_SECONDS:-0}"
-
-SMC_BARFIX_LITE_ENABLED="${SMC_BARFIX_LITE_ENABLED:-1}"
-SMC_BARFIX_AUDIO_LANG="${SMC_BARFIX_AUDIO_LANG:-eng}"
-SMC_BARFIX_SUBS_OFF="${SMC_BARFIX_SUBS_OFF:-1}"
-SMC_BARFIX_TITLE_MODE="${SMC_BARFIX_TITLE_MODE:-after_sxxexx}"
-SMC_BARFIX_TITLE_SEGMENT="${SMC_BARFIX_TITLE_SEGMENT:-3}"
-
-REKEY_CRF="${REKEY_CRF:-24}"
-EOF
+	factory_conf_set_many \
+		INTRO_SCAN_START "${INTRO_SCAN_START:-${DEFAULT_SCAN_START:-30}}" \
+		INTRO_MAX_SCAN "${INTRO_MAX_SCAN:-${DEFAULT_MAX_SCAN:-601}}" \
+		INTRO_HASH_DIFF "${INTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-16}}" \
+		INTRO_STEP_SIZE "${INTRO_STEP_SIZE:-1}" \
+		INTRO_ANCHOR_SECONDS "${INTRO_ANCHOR_SECONDS:-3,5,7}" \
+		INTRO_HASH_MODE "${INTRO_HASH_MODE:-phash}" \
+		OUTRO_TAIL_SCAN_SECONDS "${OUTRO_TAIL_SCAN_SECONDS:-auto}" \
+		OUTRO_TAIL_SCAN_PAD_SECONDS "${OUTRO_TAIL_SCAN_PAD_SECONDS:-10}" \
+		OUTRO_TAIL_SCAN_MIN_SECONDS "${OUTRO_TAIL_SCAN_MIN_SECONDS:-45}" \
+		OUTRO_TAIL_SCAN_MAX_SECONDS "${OUTRO_TAIL_SCAN_MAX_SECONDS:-160}" \
+		OUTRO_HASH_DIFF "${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-16}}" \
+		OUTRO_STEP_SIZE "${OUTRO_STEP_SIZE:-1}" \
+		OUTRO_ANCHOR_SECONDS "${OUTRO_ANCHOR_SECONDS:-8,12,16}" \
+		OUTRO_HASH_MODE "${OUTRO_HASH_MODE:-dhash}" \
+		TIP_TRIM_SECONDS "${TIP_TRIM_SECONDS:-0}" \
+		TAIL_TRIM_SECONDS "${TAIL_TRIM_SECONDS:-0}" \
+		TIP_OFFSET_SECONDS "${TIP_OFFSET_SECONDS:-0}" \
+		INTRO_PAD_BEFORE_SECONDS "${INTRO_PAD_BEFORE_SECONDS:-0}" \
+		INTRO_PAD_AFTER_SECONDS "${INTRO_PAD_AFTER_SECONDS:-0}" \
+		OUTRO_PAD_BEFORE_SECONDS "${OUTRO_PAD_BEFORE_SECONDS:-0}" \
+		SMC_BARFIX_LITE_ENABLED "${SMC_BARFIX_LITE_ENABLED:-1}" \
+		SMC_BARFIX_AUDIO_LANG "${SMC_BARFIX_AUDIO_LANG:-eng}" \
+		SMC_BARFIX_SUBS_OFF "${SMC_BARFIX_SUBS_OFF:-1}" \
+		SMC_BARFIX_TITLE_MODE "${SMC_BARFIX_TITLE_MODE:-after_sxxexx}" \
+		SMC_BARFIX_TITLE_SEGMENT "${SMC_BARFIX_TITLE_SEGMENT:-3}" \
+		REKEY_CRF "${REKEY_CRF:-24}"
 
 	echo -e "${GR} = = > SmartCut Session VarZ Saved:${NC} ${YELLOW}$(factory_display_path "$SMARTCUT_SESSION_CONFIG_FILE")${NC}"
 	echo -e "${GREEN} = = > Support Them Here: ${RE}https://${BW}smartmediacutter${CY}.com/${NC}"
@@ -836,6 +959,7 @@ output="intro_template.mkv"
 INFO_MAP="info.csv"
 
 PHASH_ENGINE="${FACTORY_HOME}/.phash_engine.py"
+PHASH_STDERR_LOG="${PHASH_STDERR_LOG:-${FACTORY_HOME}/.phash_engine.stderr.log}"
 INTRO_TEMPLATE_DIR="${INTRO_TEMPLATE_DIR:-${FACTORY_HOME}/intro_template}"
 OUTRO_TEMPLATE="${OUTRO_TEMPLATE:-${INTRO_TEMPLATE_DIR}/outro.mkv}"
 OUTRO_TEMPLATE_GLOB="${OUTRO_TEMPLATE_GLOB:-${INTRO_TEMPLATE_DIR}/outro*.mkv}"
@@ -2631,6 +2755,325 @@ run_batch_normalizer_throughput() {
 }
 
 # ================================================================
+# #MARKER: GENERIC MEDIA AUDIO HELPERS / AUDIO TRIAGE
+# ================================================================
+# PURPOSE:
+# - Reusable audio-stream inspection and remux helpers.
+# - Keep container surgery separate from waveform/audio-editor work.
+# - Prefer stream copy; do not re-encode video.
+# ================================================================
+
+media_pick_video_file() {
+	local -n _out_ref=$1
+	local label="${2:-SELECT VIDEO FILE}"
+	local -a files=()
+	local choice
+
+	shopt -s nullglob nocaseglob
+	files=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,xvid,wmv,lrv})
+	shopt -u nullglob nocaseglob
+
+	(( ${#files[@]} > 0 )) || {
+		echo -e "${YE} = = > No Video Files Found.${NC}"
+		return 1
+	}
+
+	mapfile -t files < <(printf '%s\n' "${files[@]}" | LC_ALL=C sort -fV)
+
+	echo
+	echo -e "${CYAN} = = > ${label}:${NC}"
+	echo
+	local i
+	for ((i=0; i<${#files[@]}; i++)); do
+		printf '  %3d) %s\n' "$((i+1))" "${files[i]}"
+	done
+	echo
+	prompt_read " = = > Select File [number | 0.=cancel]: " choice
+	choice="${choice//[[:space:]]/}"
+	is_exit_token "$choice" && return 1
+	[[ "$choice" =~ ^[0-9]+$ ]] || return 1
+	(( choice >= 1 && choice <= ${#files[@]} )) || return 1
+	_out_ref="${files[choice-1]}"
+}
+
+media_pick_audio_file() {
+	local -n _out_ref=$1
+	local label="${2:-SELECT AUDIO FILE}"
+	local -a files=()
+	local choice
+
+	shopt -s nullglob nocaseglob
+	files=(*.{wav,flac,mp3,aac,m4a,ac3,eac3,dts,opus,ogg,oga,mka,wma,aiff,aif,alac,thd})
+	shopt -u nullglob nocaseglob
+
+	(( ${#files[@]} > 0 )) || {
+		echo -e "${YE} = = > No Standalone Audio Files Found.${NC}"
+		return 1
+	}
+
+	mapfile -t files < <(printf '%s\n' "${files[@]}" | LC_ALL=C sort -fV)
+
+	echo
+	echo -e "${CYAN} = = > ${label}:${NC}"
+	echo
+	local i
+	for ((i=0; i<${#files[@]}; i++)); do
+		printf '  %3d) %s\n' "$((i+1))" "${files[i]}"
+	done
+	echo
+	prompt_read " = = > Select Audio File [number | 0.=cancel]: " choice
+	choice="${choice//[[:space:]]/}"
+	is_exit_token "$choice" && return 1
+	[[ "$choice" =~ ^[0-9]+$ ]] || return 1
+	(( choice >= 1 && choice <= ${#files[@]} )) || return 1
+	_out_ref="${files[choice-1]}"
+}
+
+media_audio_stream_count() {
+	local file="$1"
+	ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$file" 2>/dev/null | awk 'NF{c++} END{print c+0}'
+}
+
+media_show_audio_streams() {
+	local file="$1"
+	local count
+	count="$(media_audio_stream_count "$file")"
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}               AUDIO STREAM INSPECT             ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > File:${NC} ${GREEN}$file${NC}"
+	echo -e "${CYAN} = = > Audio Tracks:${NC} ${YELLOW}$count${NC}"
+	echo
+
+	if (( count == 0 )); then
+		echo -e "${YE} = = > No Audio Streams Found.${NC}"
+		return 1
+	fi
+
+	ffprobe -v error -select_streams a \
+		-show_entries stream=index,codec_name,channels,channel_layout,bit_rate:stream_tags=language,title:stream_disposition=default \
+		-of compact=p=0:nk=0 "$file" 2>/dev/null | nl -w2 -s') '
+	echo
+}
+
+media_choose_audio_track() {
+	local file="$1"
+	local -n _track_ref=$2
+	local count choice
+	count="$(media_audio_stream_count "$file")"
+	(( count > 0 )) || return 1
+	media_show_audio_streams "$file" || return 1
+	prompt_read " = = > Select Audio Track [1-$count | 0.=cancel]: " choice
+	choice="${choice//[[:space:]]/}"
+	is_exit_token "$choice" && return 1
+	[[ "$choice" =~ ^[0-9]+$ ]] || return 1
+	(( choice >= 1 && choice <= count )) || return 1
+	_track_ref=$((choice-1))
+}
+
+media_audio_extract_extension() {
+	case "${1,,}" in
+		aac) printf 'm4a\n' ;;
+		ac3) printf 'ac3\n' ;;
+		eac3) printf 'eac3\n' ;;
+		dts) printf 'dts\n' ;;
+		flac) printf 'flac\n' ;;
+		mp3) printf 'mp3\n' ;;
+		opus) printf 'opus\n' ;;
+		vorbis) printf 'ogg\n' ;;
+		pcm_*|adpcm_*) printf 'wav\n' ;;
+		alac) printf 'm4a\n' ;;
+		truehd) printf 'thd\n' ;;
+		*) printf 'mka\n' ;;
+	esac
+}
+
+run_media_audio_inspect() {
+	local file
+	media_pick_video_file file "AUDIO STREAM INSPECT" || return 0
+	media_show_audio_streams "$file" || true
+	pause
+}
+
+run_media_audio_extract() {
+	local file mode track count i codec ext stem out
+	media_pick_video_file file "EXTRACT AUDIO FROM VIDEO" || return 0
+	count="$(media_audio_stream_count "$file")"
+	(( count > 0 )) || { echo -e "${YE} = = > No Audio Streams Found.${NC}"; pause; return 0; }
+	media_show_audio_streams "$file" || true
+
+	echo -e "${YELLOW}     1) Extract One Track${NC}"
+	echo -e "${YELLOW}     2) Extract All Tracks${NC}"
+	echo -e "${YELLOW}     0.) Return${NC}"
+	prompt_menu_choice " = = > Choose [1-2 | 0.=return]: " mode
+	is_exit_token "$mode" && return 0
+
+	stem="${file%.*}"
+	case "$mode" in
+		1)
+			media_choose_audio_track "$file" track || return 0
+			codec="$(ffprobe -v error -select_streams "a:$track" -show_entries stream=codec_name -of csv=p=0 "$file" 2>/dev/null | head -n1)"
+			ext="$(media_audio_extract_extension "$codec")"
+			out="${stem}.audio$((track+1)).${ext}"
+			ffmpeg -hide_banner -loglevel error -y -i "$file" -map "0:a:$track" -vn -sn -dn -c:a copy "$out" && \
+				echo -e "${GR} = = > Extracted:${NC} ${GREEN}$out${NC}" || \
+				echo -e "${REB} = = > Audio Extraction Failed.${NC}"
+			;;
+		2)
+			for ((i=0; i<count; i++)); do
+				codec="$(ffprobe -v error -select_streams "a:$i" -show_entries stream=codec_name -of csv=p=0 "$file" 2>/dev/null | head -n1)"
+				ext="$(media_audio_extract_extension "$codec")"
+				out="${stem}.audio$((i+1)).${ext}"
+				if ffmpeg -hide_banner -loglevel error -y -i "$file" -map "0:a:$i" -vn -sn -dn -c:a copy "$out"; then
+					echo -e "${GR} = = > Extracted:${NC} ${GREEN}$out${NC}"
+				else
+					echo -e "${REB} = = > Failed:${NC} ${YELLOW}audio track $((i+1))${NC}"
+				fi
+			done
+			;;
+		*) echo -e "${REB} = = > Invalid Selection.${NC}" ;;
+	esac
+	pause
+}
+
+media_read_optional_offset() {
+	local -n _offset_ref=$1
+	local raw
+	prompt_read " = = > Audio Offset Seconds (blank = 0; negative = earlier; positive = later): " raw
+	raw="${raw//[[:space:]]/}"
+	[[ -z "$raw" ]] && raw="0"
+	if [[ ! "$raw" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+		echo -e "${REB} = = > Invalid Offset.${NC}"
+		return 1
+	fi
+	_offset_ref="$raw"
+}
+
+run_media_audio_replace() {
+	local video audio track offset out stem
+	media_pick_video_file video "VIDEO WHOSE AUDIO WILL BE REPLACED" || return 0
+	media_choose_audio_track "$video" track || return 0
+	media_pick_audio_file audio "REPLACEMENT AUDIO FILE" || return 0
+	media_read_optional_offset offset || { pause; return 0; }
+	stem="${video%.*}"
+	out="MEDIAEDIT_${stem}.mkv"
+
+	echo
+	echo -e "${CYAN} = = > Video:${NC} ${GREEN}$video${NC}"
+	echo -e "${CYAN} = = > Replace Audio Track:${NC} ${YELLOW}$((track+1))${NC}"
+	echo -e "${CYAN} = = > Replacement:${NC} ${GREEN}$audio${NC}"
+	echo -e "${CYAN} = = > Offset:${NC} ${YELLOW}${offset}s${NC}"
+	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+	echo -e "${YE} = = > Video And Unchanged Streams Are Stream-Copied.${NC}"
+	ask_yes_no " = = > Proceed? (y/n or 1/2): " || return 0
+
+	if ffmpeg -hide_banner -loglevel error -y \
+		-i "$video" -itsoffset "$offset" -i "$audio" \
+		-map 0 -map "-0:a:$track" -map 1:a:0 \
+		-map_metadata 0 -map_chapters 0 -c copy "$out"; then
+		echo -e "${GR} = = > Audio Track Replaced:${NC} ${GREEN}$out${NC}"
+	else
+		rm -f -- "$out"
+		echo -e "${REB} = = > Audio Replace Failed.${NC}"
+	fi
+	pause
+}
+
+run_media_audio_add() {
+	local video audio offset lang title default_choice default_flag=0 out stem
+	media_pick_video_file video "VIDEO TO RECEIVE AN AUDIO TRACK" || return 0
+	media_pick_audio_file audio "AUDIO TRACK TO ADD" || return 0
+	media_read_optional_offset offset || { pause; return 0; }
+	prompt_read " = = > Language Code (blank = und): " lang
+	lang="${lang//[[:space:]]/}"; [[ -z "$lang" ]] && lang="und"
+	prompt_read " = = > Track Name / Title (blank = none): " title
+	if ask_yes_no " = = > Make Added Track Default? (y/n or 1/2): "; then default_flag=1; fi
+	stem="${video%.*}"
+	out="MEDIAEDIT_${stem}.mkv"
+
+	if ffmpeg -hide_banner -loglevel error -y \
+		-i "$video" -itsoffset "$offset" -i "$audio" \
+		-map 0 -map 1:a:0 -map_metadata 0 -map_chapters 0 -c copy \
+		-metadata:s:a:"$(media_audio_stream_count "$video")" language="$lang" \
+		-metadata:s:a:"$(media_audio_stream_count "$video")" title="$title" \
+		-disposition:a:"$(media_audio_stream_count "$video")" "$([[ $default_flag == 1 ]] && printf default || printf 0)" \
+		"$out"; then
+		echo -e "${GR} = = > Audio Track Added:${NC} ${GREEN}$out${NC}"
+	else
+		rm -f -- "$out"
+		echo -e "${REB} = = > Add Audio Track Failed.${NC}"
+	fi
+	pause
+}
+
+run_media_audio_remove() {
+	local video raw out stem count token idx
+	local -a maps=()
+	local -A remove=()
+	media_pick_video_file video "VIDEO TO REMOVE AUDIO TRACK(S) FROM" || return 0
+	count="$(media_audio_stream_count "$video")"
+	(( count > 0 )) || { echo -e "${YE} = = > No Audio Streams Found.${NC}"; pause; return 0; }
+	media_show_audio_streams "$video" || true
+	prompt_read " = = > Track Number(s) To Remove (example: 2 or 1,3 | 0.=cancel): " raw
+	is_exit_token "$raw" && return 0
+	local -a requested_tracks=()
+	IFS=',' read -r -a requested_tracks <<< "$raw"
+	for token in "${requested_tracks[@]}"; do
+		token="${token//[[:space:]]/}"
+		[[ "$token" =~ ^[0-9]+$ ]] || { echo -e "${REB} = = > Invalid Track List.${NC}"; pause; return 0; }
+		(( token >= 1 && token <= count )) || { echo -e "${REB} = = > Track Out Of Range:${NC} $token"; pause; return 0; }
+		remove[$((token-1))]=1
+	done
+	(( ${#remove[@]} < count )) || { echo -e "${REB} = = > Refusing To Remove Every Audio Track Here.${NC}"; pause; return 0; }
+
+	stem="${video%.*}"
+	out="MEDIAEDIT_${stem}.mkv"
+	maps=(-map 0)
+	for idx in "${!remove[@]}"; do maps+=(-map "-0:a:$idx"); done
+
+	if ffmpeg -hide_banner -loglevel error -y -i "$video" "${maps[@]}" -map_metadata 0 -map_chapters 0 -c copy "$out"; then
+		echo -e "${GR} = = > Audio Track(s) Removed:${NC} ${GREEN}$out${NC}"
+	else
+		rm -f -- "$out"
+		echo -e "${REB} = = > Remove Audio Track Failed.${NC}"
+	fi
+	pause
+}
+
+run_audio_triage_menu() {
+	local choice
+	while true; do
+		clear
+		echo -e "${CYAN}================================================${NC}"
+		echo -e "${CYAN}                 AUDIO TRIAGE CENTER            ${NC}"
+		echo -e "${CYAN}================================================${NC}"
+		echo
+		echo -e "${YELLOW}     1) Audio Sync / Timing Repair${NC}"
+		echo -e "${YELLOW}     2) Extract Audio Track(s)${NC}"
+		echo -e "${YELLOW}     3) Replace Audio Track${NC}"
+		echo -e "${YELLOW}     4) Add Audio Track${NC}"
+		echo -e "${YELLOW}     5) Remove Audio Track(s)${NC}"
+		echo -e "${YELLOW}     6) Inspect Audio Tracks${NC}"
+		echo
+		echo -e "${YELLOW}     0.) Return${NC}"
+		echo
+		prompt_menu_choice " = = > Select Option [1-6 | 0.=return]: " choice
+		is_exit_token "$choice" && return 0
+		case "$choice" in
+			1) run_audio_sync_rescue ;;
+			2) run_media_audio_extract ;;
+			3) run_media_audio_replace ;;
+			4) run_media_audio_add ;;
+			5) run_media_audio_remove ;;
+			6) run_media_audio_inspect ;;
+			*) echo -e "${REB} = = > Invalid Selection.${NC}"; pause ;;
+		esac
+	done
+}
+
+# ================================================================
 # #MARKER: AUDIO SYNC RESCUE
 # ================================================================
 run_audio_sync_rescue() {
@@ -2811,7 +3254,7 @@ run_audio_sync_rescue() {
 			-i "$file" \
 			-map 1:v \
 			-map 0:a \
-			-map 1:s? \
+			-map "1:s?" \
 			-c copy \
 			"$out_file"
 		then
@@ -8344,6 +8787,998 @@ get_file_duration_seconds() {
 }
 
 # ================================================================
+# #MARKER: INTRO STRUCTURAL FINGERPRINT LOADER
+# ================================================================
+# PURPOSE:
+# - Locate and read an existing intro fingerprint report.
+# - Expose report values for display only.
+#
+# IMPORTANT:
+# - Does NOT alter IntroFind anchors, steps, hash mode, or scan range.
+# - Does NOT make the fingerprint authoritative.
+#
+# SETS:
+# - INTRO_FINGERPRINT_FILE
+# - INTRO_FINGERPRINT_VERSION
+# - INTRO_FINGERPRINT_AUTO_A
+# - INTRO_FINGERPRINT_AUTO_B
+# - INTRO_FINGERPRINT_LOADED
+# ================================================================
+load_intro_template_fingerprint() {
+	local report=""
+	local temporal_usable=""
+	local structural_usable=0
+	local -a reports=()
+
+	INTRO_FINGERPRINT_FILE=""
+	INTRO_FINGERPRINT_VERSION=""
+	INTRO_FINGERPRINT_AUTO_A=""
+	INTRO_FINGERPRINT_AUTO_B=""
+	INTRO_FINGERPRINT_SCOUT_MODE=""
+	INTRO_FINGERPRINT_LOADED=0
+
+	resolve_intro_template_authority >/dev/null 2>&1 || return 1
+
+	shopt -s nullglob nocaseglob
+	reports=(
+		"$INTRO_TEMPLATE_DIR"/intro*.fingerprint.txt
+	)
+	shopt -u nullglob nocaseglob
+
+	if (( ${#reports[@]} == 0 )); then
+		return 1
+	fi
+
+	report="${reports[0]}"
+
+	INTRO_FINGERPRINT_VERSION="$(
+		sed -n 's/^Analysis Version:[[:space:]]*//p' "$report" |
+			head -n 1
+	)"
+
+	INTRO_FINGERPRINT_AUTO_A="$(
+		sed -n 's/^auto-a:[[:space:]]*//p' "$report" |
+			head -n 1
+	)"
+
+	INTRO_FINGERPRINT_AUTO_B="$(
+		sed -n 's/^auto-b:[[:space:]]*//p' "$report" |
+			head -n 1
+	)"
+
+	if grep -E \
+		'^(natural|sensitive|dark-vision|content-vision): .*weak=NO' \
+		"$report" \
+		>/dev/null 2>&1
+	then
+		structural_usable=1
+	fi
+
+	temporal_usable="$(
+		sed -n \
+			'/^TEMPORAL VISUAL QUALITY$/,/^TEMPORAL VISUAL SIGNATURE$/p' \
+			"$report" |
+			sed -n 's/.*usable=\(YES\|NO\).*/\1/p' |
+			head -n 1
+	)"
+
+	if (( structural_usable == 1 )); then
+		INTRO_FINGERPRINT_SCOUT_MODE="structural"
+	elif [[ "$temporal_usable" == "YES" ]]; then
+		INTRO_FINGERPRINT_SCOUT_MODE="temporal"
+	else
+		INTRO_FINGERPRINT_SCOUT_MODE="none"
+	fi
+
+	if [[ -z "$INTRO_FINGERPRINT_VERSION" ||
+	      -z "$INTRO_FINGERPRINT_AUTO_A" ||
+	      -z "$INTRO_FINGERPRINT_AUTO_B" ]]; then
+		return 1
+	fi
+
+	INTRO_FINGERPRINT_FILE="$report"
+	INTRO_FINGERPRINT_LOADED=1
+
+	export \
+		INTRO_FINGERPRINT_FILE \
+		INTRO_FINGERPRINT_VERSION \
+		INTRO_FINGERPRINT_AUTO_A \
+		INTRO_FINGERPRINT_AUTO_B \
+		INTRO_FINGERPRINT_SCOUT_MODE \
+		INTRO_FINGERPRINT_LOADED
+
+	return 0
+}
+
+# ================================================================
+# #MARKER: INTRO TEMPLATE STRUCTURAL FINGERPRINT REPORT
+# ================================================================
+# PURPOSE:
+# - Analyze one intro template without changing IntroFind behavior.
+# - Record scene layout and black/fade layout.
+# - Suggest two different anchor families:
+#     auto-a = broad, well-spaced stable scene anchors
+#     auto-b = alternate anchors from different scene positions
+#
+# IMPORTANT:
+# - This is report-only.
+# - It does not yet control IntroFind.
+# - Hash verification will be added only after reports are tested.
+# ================================================================
+run_intro_template_fingerprint_report() {
+	local template=""
+	local duration=""
+	local template_base=""
+	local report=""
+	local tmpdir=""
+	local scene_csv=""
+	local sensitive_scene_csv=""
+	local dark_scene_csv=""
+	local content_scene_csv=""
+	local dark_vision_file=""
+	local temporal_signature=""
+	local black_log=""
+	local scene_status=0
+	local -a templates=()
+
+	resolve_intro_template_authority || return 1
+
+	shopt -s nullglob nocaseglob
+	templates=(
+		"$INTRO_TEMPLATE_DIR"/intro*.mkv
+	)
+	shopt -u nullglob nocaseglob
+
+	if (( ${#templates[@]} == 0 )); then
+		echo -e "${YE} = = > No Intro Template Found In:${NC} ${YELLOW}$(factory_display_path "$INTRO_TEMPLATE_DIR")${NC}"
+		pause
+		return 0
+	fi
+
+	if (( ${#templates[@]} == 1 )); then
+		template="${templates[0]}"
+	else
+		echo
+		echo -e "${CYAN}============================================================${NC}"
+		echo -e "${CYAN}             INTRO TEMPLATE FINGERPRINT PICKER              ${NC}"
+		echo -e "${CYAN}============================================================${NC}"
+		echo
+
+		local i choice
+
+		for i in "${!templates[@]}"; do
+			printf '%b%5d)%b %b%s%b\n' \
+				"$YELLOW" "$((i + 1))" "$NC" \
+				"$GREEN" "$(factory_display_path "${templates[$i]}")" "$NC"
+		done
+
+		echo
+		prompt_menu_choice \
+			" = = > Select Template [1-${#templates[@]} | 0.=return]: " \
+			choice
+
+		if is_exit_token "$choice"; then
+			return 0
+		fi
+
+		if [[ ! "$choice" =~ ^[0-9]+$ ]] ||
+		   (( choice < 1 || choice > ${#templates[@]} )); then
+			echo -e "${REB} = = > Invalid Template Selection.${NC}"
+			pause
+			return 0
+		fi
+
+		template="${templates[$((choice - 1))]}"
+	fi
+
+	duration="$(get_file_duration_seconds "$template" 2>/dev/null || true)"
+
+	if [[ -z "$duration" || ! "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+		echo -e "${REB} = = > Could Not Read Template Duration.${NC}"
+		pause
+		return 0
+	fi
+
+	template_base="$(basename "${template%.*}")"
+	report="${INTRO_TEMPLATE_DIR}/${template_base}.fingerprint.txt"
+
+	tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/factory_intro_fingerprint.XXXXXX")"
+	scene_csv="$tmpdir/scenes.csv"
+	sensitive_scene_csv="$tmpdir/scenes_sensitive.csv"
+	dark_scene_csv="$tmpdir/scenes_dark.csv"
+	content_scene_csv="$tmpdir/scenes_content.csv"
+	dark_vision_file="$tmpdir/dark_vision.mkv"
+	temporal_signature="$tmpdir/temporal_signature.csv"
+	black_log="$tmpdir/blackdetect.log"
+
+	trap '[[ -n "${tmpdir:-}" ]] && rm -rf -- "$tmpdir"; trap - RETURN' RETURN
+
+	clear
+	echo -e "${CYAN}============================================================${NC}"
+	echo -e "${CYAN}          INTRO TEMPLATE STRUCTURAL FINGERPRINT             ${NC}"
+	echo -e "${CYAN}============================================================${NC}"
+	echo
+	echo -e "${CYAN} = = > Template:${NC} ${GREEN}$(factory_display_path "$template")${NC}"
+	echo -e "${CYAN} = = > Duration:${NC} ${YELLOW}${duration}s${NC}"
+	echo -e "${CYAN} = = > Press ${YEB}-> Q <-${NC}${CYAN} To Get Out Of The Reader:${NC}"
+	echo
+
+	# ------------------------------------------------------------
+	# BLACK / FADE STRUCTURE
+	# ------------------------------------------------------------
+	echo -e "${CYAN} = = > Mapping Black / Near-Black Ranges...${NC}"
+
+	ffmpeg \
+		-hide_banner \
+		-loglevel info \
+		-nostdin \
+		-i "$template" \
+		-vf "blackdetect=d=0.20:pix_th=0.10" \
+		-an \
+		-f null - \
+		2>&1 |
+			sed -nE '
+				s/.*black_start:([0-9.]+)[[:space:]]+black_end:([0-9.]+)[[:space:]]+black_duration:([0-9.]+).*/\1,\2,\3/p
+			' > "$black_log"
+
+	# ------------------------------------------------------------
+	# CASCADING SCENE STRUCTURE
+	# ------------------------------------------------------------
+	if command -v scenedetect >/dev/null 2>&1; then
+		echo -e "${CYAN} = = > Fingerprint Pass 1:${NC} ${YELLOW}Natural Scene Vision...${NC}"
+
+		if scenedetect \
+			-q \
+			-i "$template" \
+			-o "$tmpdir" \
+			detect-adaptive \
+			list-scenes \
+				--skip-cuts \
+				--filename "scenes.csv"
+		then
+			scene_status=0
+		else
+			scene_status=1
+		fi
+
+		echo -e "${CYAN} = = > Fingerprint Pass 2:${NC} ${YELLOW}Sensitive Scene Vision...${NC}"
+
+		scenedetect \
+			-q \
+			-i "$template" \
+			-o "$tmpdir" \
+			detect-adaptive \
+				--threshold 2.0 \
+				--min-content-val 8.0 \
+			list-scenes \
+				--skip-cuts \
+				--filename "scenes_sensitive.csv" \
+			>/dev/null 2>&1 || :
+
+		echo -e "${CYAN} = = > Fingerprint Pass 3:${NC} ${YELLOW}Dark Vision Gamma Expansion...${NC}"
+
+		if ffmpeg \
+			-hide_banner \
+			-loglevel error \
+			-nostdin \
+			-y \
+			-i "$template" \
+			-vf "eq=gamma=1.8" \
+			-an \
+			-c:v ffv1 \
+			"$dark_vision_file"
+		then
+			scenedetect \
+				-q \
+				-i "$dark_vision_file" \
+				-o "$tmpdir" \
+				detect-adaptive \
+					--threshold 2.0 \
+					--min-content-val 8.0 \
+				list-scenes \
+					--skip-cuts \
+					--filename "scenes_dark.csv" \
+				>/dev/null 2>&1 || :
+		fi
+
+		echo -e "${CYAN} = = > Fingerprint Pass 4:${NC} ${YELLOW}Content Change Vision...${NC}"
+
+		scenedetect \
+			-q \
+			-i "$template" \
+			-o "$tmpdir" \
+			detect-content \
+			list-scenes \
+				--skip-cuts \
+				--filename "scenes_content.csv" \
+			>/dev/null 2>&1 || :
+
+	else
+		scene_status=1
+		echo -e "${YE} = = > SceneDetect Not Available. Black Map Only.${NC}"
+	fi
+
+	# ------------------------------------------------------------
+	# TEMPORAL VISUAL SIGNATURE
+	# ------------------------------------------------------------
+	# PURPOSE:
+	# - Build a cheap time-ordered visual-change fingerprint.
+	# - Does not depend on scene boundaries.
+	# - Samples the real template at 3-second intervals.
+	# - Records dHash distance between each sample and the prior sample.
+	#
+	# IMPORTANT:
+	# - This is fingerprint evidence only.
+	# - It does not yet change IntroFind behavior.
+	# ------------------------------------------------------------
+	echo -e "${CYAN} = = > Fingerprint Pass 5:${NC} ${YELLOW}Temporal Visual Signature...${NC}"
+
+	python3 - \
+		"$template" \
+		"$duration" \
+		"$temporal_signature" <<'PY'
+import subprocess
+import sys
+
+import imagehash
+from PIL import Image
+
+template = sys.argv[1]
+duration = float(sys.argv[2])
+output_path = sys.argv[3]
+
+SAMPLE_STEP = 3
+FRAME_WIDTH = 9
+FRAME_HEIGHT = 8
+FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT
+
+ffmpeg_cmd = [
+    "ffmpeg",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-nostdin",
+    "-i",
+    template,
+    "-t",
+    str(duration),
+    "-an",
+    "-sn",
+    "-dn",
+    "-vf",
+    "fps=1,scale=9:8:flags=fast_bilinear,format=gray",
+    "-f",
+    "rawvideo",
+    "-pix_fmt",
+    "gray",
+    "pipe:1",
+]
+
+try:
+    process = subprocess.Popen(
+        ffmpeg_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+except OSError:
+    raise SystemExit(1)
+
+all_hashes = []
+frame_index = 0
+
+while True:
+    frame_data = process.stdout.read(FRAME_BYTES)
+
+    if not frame_data:
+        break
+
+    if len(frame_data) != FRAME_BYTES:
+        break
+
+    image = Image.frombytes(
+        "L",
+        (FRAME_WIDTH, FRAME_HEIGHT),
+        frame_data,
+    )
+
+    all_hashes.append(
+        (
+            float(frame_index),
+            imagehash.dhash(image),
+        )
+    )
+
+    frame_index += 1
+
+stderr_data = process.stderr.read()
+return_code = process.wait()
+
+if return_code != 0:
+    raise SystemExit(1)
+
+samples = [
+    (sample_time, frame_hash)
+    for sample_time, frame_hash in all_hashes
+    if int(sample_time) % SAMPLE_STEP == 0
+]
+
+with open(output_path, "w") as handle:
+    handle.write(
+        "time,dhash,delta_from_previous\n"
+    )
+
+    previous_hash = None
+
+    for sample_time, frame_hash in samples:
+        if previous_hash is None:
+            delta = 0
+        else:
+            delta = frame_hash - previous_hash
+
+        handle.write(
+            f"{sample_time:.3f},"
+            f"{frame_hash},"
+            f"{delta}\n"
+        )
+
+        previous_hash = frame_hash
+PY
+
+	# ------------------------------------------------------------
+	# BUILD HUMAN REPORT + CASCADING STRUCTURAL SELF-GRADE
+	# ------------------------------------------------------------
+	python3 - \
+		"$template" \
+		"$duration" \
+		"$scene_csv" \
+		"$sensitive_scene_csv" \
+		"$dark_scene_csv" \
+		"$content_scene_csv" \
+		"$temporal_signature" \
+		"$black_log" \
+		"$report" <<'PY'
+import csv
+import sys
+from pathlib import Path
+
+template = sys.argv[1]
+duration = float(sys.argv[2])
+scene_csv = Path(sys.argv[3])
+sensitive_scene_csv = Path(sys.argv[4])
+dark_scene_csv = Path(sys.argv[5])
+content_scene_csv = Path(sys.argv[6])
+temporal_signature_path = Path(sys.argv[7])
+black_log = Path(sys.argv[8])
+report_path = Path(sys.argv[9])
+
+
+# ------------------------------------------------------------
+# BLACK / NEAR-BLACK STRUCTURE
+# ------------------------------------------------------------
+black_ranges = []
+
+if black_log.exists():
+    for raw in black_log.read_text(errors="replace").splitlines():
+        parts = raw.strip().split(",")
+
+        if len(parts) != 3:
+            continue
+
+        try:
+            start, end, length = map(float, parts)
+        except ValueError:
+            continue
+
+        black_ranges.append((start, end, length))
+
+
+# ------------------------------------------------------------
+# SCENE MAP LOADER
+# ------------------------------------------------------------
+def load_scenes(path):
+    loaded = []
+
+    if not path.exists():
+        return loaded
+
+    with path.open(newline="", errors="replace") as handle:
+        reader = csv.DictReader(handle)
+
+        for row in reader:
+            try:
+                start = float(row.get("Start Time (seconds)", ""))
+                end = float(row.get("End Time (seconds)", ""))
+            except (TypeError, ValueError):
+                continue
+
+            if end > start:
+                loaded.append((start, end))
+
+    return loaded
+
+
+# ------------------------------------------------------------
+# STRUCTURAL PASS GRADER
+# ------------------------------------------------------------
+def grade_scenes(items):
+    if not items:
+        return {
+            "scene_count": 0,
+            "usable_count": 0,
+            "largest_ratio": 1.0,
+            "tiny_count": 0,
+            "weak": True,
+            "score": -1000.0,
+        }
+
+    lengths = [
+        end - start
+        for start, end in items
+    ]
+
+    scene_count = len(items)
+
+    usable_count = sum(
+        1
+        for length in lengths
+        if length >= 1.25
+    )
+
+    tiny_count = sum(
+        1
+        for length in lengths
+        if length < 0.50
+    )
+
+    largest_ratio = (
+        max(lengths) / duration
+        if duration > 0
+        else 1.0
+    )
+
+    weak = (
+        scene_count <= 1
+        or largest_ratio > 0.85
+        or usable_count < 2
+    )
+
+    score = (
+        usable_count * 4.0
+        + min(scene_count, 40) * 0.50
+        - largest_ratio * 20.0
+        - tiny_count * 0.75
+    )
+
+    return {
+        "scene_count": scene_count,
+        "usable_count": usable_count,
+        "largest_ratio": largest_ratio,
+        "tiny_count": tiny_count,
+        "weak": weak,
+        "score": score,
+    }
+
+
+# ------------------------------------------------------------
+# LOAD + GRADE ALL STRUCTURAL VIEWS
+# ------------------------------------------------------------
+natural_scenes = load_scenes(scene_csv)
+sensitive_scenes = load_scenes(sensitive_scene_csv)
+dark_scenes = load_scenes(dark_scene_csv)
+content_scenes = load_scenes(content_scene_csv)
+
+natural_grade = grade_scenes(natural_scenes)
+sensitive_grade = grade_scenes(sensitive_scenes)
+dark_grade = grade_scenes(dark_scenes)
+content_grade = grade_scenes(content_scenes)
+
+selected_pass = "natural"
+scenes = natural_scenes
+selected_grade = natural_grade
+
+if natural_grade["weak"]:
+    candidate_passes = [
+        ("sensitive", sensitive_scenes, sensitive_grade),
+        ("dark-vision", dark_scenes, dark_grade),
+        ("content-vision", content_scenes, content_grade),
+    ]
+
+    for pass_name, pass_scenes, pass_grade in candidate_passes:
+        if not pass_scenes:
+            continue
+
+        if pass_grade["score"] > selected_grade["score"]:
+            selected_pass = pass_name
+            scenes = pass_scenes
+            selected_grade = pass_grade
+
+# SceneDetect absent or every pass empty.
+if not scenes:
+    scenes = [(0.0, duration)]
+    selected_pass = "broad-fallback"
+    selected_grade = grade_scenes(scenes)
+
+# ------------------------------------------------------------
+# TEMPORAL VISUAL SIGNATURE
+# ------------------------------------------------------------
+temporal_samples = []
+
+if temporal_signature_path.exists():
+    with temporal_signature_path.open(
+        newline="",
+        errors="replace"
+    ) as handle:
+        reader = csv.DictReader(handle)
+
+        for row in reader:
+            try:
+                sample_time = float(row.get("time", ""))
+                dhash_value = row.get("dhash", "").strip()
+                delta = int(
+                    row.get("delta_from_previous", "")
+                )
+            except (TypeError, ValueError):
+                continue
+
+            if not dhash_value:
+                continue
+
+            temporal_samples.append(
+                (
+                    sample_time,
+                    dhash_value,
+                    delta
+                )
+            )
+
+
+temporal_deltas = [
+    sample[2]
+    for sample in temporal_samples[1:]
+]
+
+temporal_peak = (
+    max(temporal_deltas)
+    if temporal_deltas
+    else 0
+)
+
+temporal_average = (
+    sum(temporal_deltas) / len(temporal_deltas)
+    if temporal_deltas
+    else 0.0
+)
+
+temporal_active_count = sum(
+    1
+    for delta in temporal_deltas
+    if delta >= 8
+)
+
+temporal_usable = (
+    len(temporal_samples) >= 5
+    and temporal_peak > 0
+)
+
+# ------------------------------------------------------------
+# SAFE VISUAL WITNESS / ANCHOR SELECTION
+# ------------------------------------------------------------
+EDGE_MARGIN = min(2.0, max(0.5, duration * 0.03))
+CUT_MARGIN = 0.65
+BLACK_MARGIN = 0.50
+MIN_SCENE_LENGTH = 1.25
+
+
+def near_black(t):
+    for start, end, _ in black_ranges:
+        if (start - BLACK_MARGIN) <= t <= (end + BLACK_MARGIN):
+            return True
+
+    return False
+
+
+def safe_time(t):
+    if t < EDGE_MARGIN or t > duration - EDGE_MARGIN:
+        return False
+
+    return not near_black(t)
+
+
+candidates_a = []
+candidates_b = []
+
+for start, end in scenes:
+    scene_len = end - start
+
+    if scene_len < MIN_SCENE_LENGTH:
+        continue
+
+    safe_start = start + CUT_MARGIN
+    safe_end = end - CUT_MARGIN
+
+    if safe_end <= safe_start:
+        continue
+
+    point_a = safe_start + ((safe_end - safe_start) * 0.35)
+    point_b = safe_start + ((safe_end - safe_start) * 0.68)
+
+    if safe_time(point_a):
+        candidates_a.append(
+            (point_a, scene_len, start, end)
+        )
+
+    if safe_time(point_b):
+        candidates_b.append(
+            (point_b, scene_len, start, end)
+        )
+
+
+def spread_pick(candidates, wanted):
+    if not candidates:
+        return []
+
+    ordered = sorted(
+        candidates,
+        key=lambda item: (-item[1], item[0])
+    )
+
+    chosen = []
+
+    min_gap = max(
+        2.0,
+        duration / max(wanted * 1.8, 1.0)
+    )
+
+    for item in ordered:
+        t = item[0]
+
+        if all(
+            abs(t - existing[0]) >= min_gap
+            for existing in chosen
+        ):
+            chosen.append(item)
+
+        if len(chosen) >= wanted:
+            break
+
+    if len(chosen) < wanted:
+        for item in sorted(
+            candidates,
+            key=lambda value: value[0]
+        ):
+            if item not in chosen:
+                chosen.append(item)
+
+            if len(chosen) >= wanted:
+                break
+
+    return sorted(
+        chosen,
+        key=lambda item: item[0]
+    )
+
+
+if duration < 30:
+    wanted = 3
+elif duration < 90:
+    wanted = 5
+else:
+    wanted = 7
+
+
+auto_a = spread_pick(candidates_a, wanted)
+
+used_a_scenes = {
+    (round(item[2], 3), round(item[3], 3))
+    for item in auto_a
+}
+
+alternate_b = [
+    item
+    for item in candidates_b
+    if (
+        round(item[2], 3),
+        round(item[3], 3)
+    ) not in used_a_scenes
+]
+
+if len(alternate_b) < wanted:
+    alternate_b = candidates_b
+
+auto_b = spread_pick(alternate_b, wanted)
+
+
+def times_csv(items):
+    return ",".join(
+        f"{item[0]:.3f}"
+        for item in items
+    ) or "NONE"
+
+
+# ------------------------------------------------------------
+# HUMAN FINGERPRINT REPORT
+# ------------------------------------------------------------
+lines = []
+
+lines.append(
+    "FACTORY INTRO TEMPLATE STRUCTURAL FINGERPRINT"
+)
+lines.append("=" * 60)
+lines.append(f"Template: {template}")
+lines.append(f"Duration: {duration:.3f}")
+lines.append("Analysis Version: structural-temporal-cascade-v4")
+lines.append(f"Selected Scene Pass: {selected_pass}")
+lines.append("")
+
+lines.append("STRUCTURAL PASS QUALITY")
+lines.append("-" * 60)
+
+lines.append(
+    "natural: "
+    f"scenes={natural_grade['scene_count']} "
+    f"usable={natural_grade['usable_count']} "
+    f"largest_ratio={natural_grade['largest_ratio']:.3f} "
+    f"tiny={natural_grade['tiny_count']} "
+    f"weak={'YES' if natural_grade['weak'] else 'NO'} "
+    f"score={natural_grade['score']:.3f}"
+)
+
+lines.append(
+    "sensitive: "
+    f"scenes={sensitive_grade['scene_count']} "
+    f"usable={sensitive_grade['usable_count']} "
+    f"largest_ratio={sensitive_grade['largest_ratio']:.3f} "
+    f"tiny={sensitive_grade['tiny_count']} "
+    f"weak={'YES' if sensitive_grade['weak'] else 'NO'} "
+    f"score={sensitive_grade['score']:.3f}"
+)
+
+lines.append(
+    "dark-vision: "
+    f"scenes={dark_grade['scene_count']} "
+    f"usable={dark_grade['usable_count']} "
+    f"largest_ratio={dark_grade['largest_ratio']:.3f} "
+    f"tiny={dark_grade['tiny_count']} "
+    f"weak={'YES' if dark_grade['weak'] else 'NO'} "
+    f"score={dark_grade['score']:.3f}"
+)
+
+lines.append(
+    "content-vision: "
+    f"scenes={content_grade['scene_count']} "
+    f"usable={content_grade['usable_count']} "
+    f"largest_ratio={content_grade['largest_ratio']:.3f} "
+    f"tiny={content_grade['tiny_count']} "
+    f"weak={'YES' if content_grade['weak'] else 'NO'} "
+    f"score={content_grade['score']:.3f}"
+)
+
+lines.append(f"selected: {selected_pass}")
+lines.append("")
+
+lines.append("TEMPORAL VISUAL QUALITY")
+lines.append("-" * 60)
+lines.append(
+    f"samples={len(temporal_samples)} "
+    f"step=3.000 "
+    f"peak_delta={temporal_peak} "
+    f"average_delta={temporal_average:.3f} "
+    f"active_transitions={temporal_active_count} "
+    f"usable={'YES' if temporal_usable else 'NO'}"
+)
+lines.append("")
+
+lines.append("TEMPORAL VISUAL SIGNATURE")
+lines.append("-" * 60)
+
+if temporal_samples:
+    for sample_time, dhash_value, delta in temporal_samples:
+        lines.append(
+            f"time={sample_time:.3f} "
+            f"dhash={dhash_value} "
+            f"delta={delta}"
+        )
+else:
+    lines.append("NONE")
+
+lines.append("")
+
+lines.append("BLACK / NEAR-BLACK RANGES")
+lines.append("-" * 60)
+
+if black_ranges:
+    for start, end, length in black_ranges:
+        lines.append(
+            f"{start:.3f} -> {end:.3f}  "
+            f"duration={length:.3f}"
+        )
+else:
+    lines.append("NONE DETECTED")
+
+lines.append("")
+
+lines.append("SCENE STRUCTURE")
+lines.append("-" * 60)
+
+for number, (start, end) in enumerate(
+    scenes,
+    start=1
+):
+    lines.append(
+        f"{number:03d}: "
+        f"{start:.3f} -> {end:.3f}  "
+        f"duration={end - start:.3f}"
+    )
+
+lines.append("")
+
+lines.append("SUGGESTED REPORT-ONLY ANCHORS")
+lines.append("-" * 60)
+lines.append(f"auto-a: {times_csv(auto_a)}")
+lines.append(f"auto-b: {times_csv(auto_b)}")
+lines.append("")
+
+lines.append("AUTO-A DETAILS")
+lines.append("-" * 60)
+
+for t, scene_len, start, end in auto_a:
+    lines.append(
+        f"anchor={t:.3f} "
+        f"scene={start:.3f}->{end:.3f} "
+        f"scene_duration={scene_len:.3f}"
+    )
+
+lines.append("")
+
+lines.append("AUTO-B DETAILS")
+lines.append("-" * 60)
+
+for t, scene_len, start, end in auto_b:
+    lines.append(
+        f"anchor={t:.3f} "
+        f"scene={start:.3f}->{end:.3f} "
+        f"scene_duration={scene_len:.3f}"
+    )
+
+lines.append("")
+
+lines.append("STATUS")
+lines.append("-" * 60)
+lines.append(
+    "REPORT ONLY — IntroFind behavior was not changed."
+)
+
+report_path.write_text(
+    "\n".join(lines) + "\n"
+)
+
+print(times_csv(auto_a))
+print(times_csv(auto_b))
+PY
+
+	local py_status=$?
+
+	if (( py_status != 0 )) || [[ ! -s "$report" ]]; then
+		echo -e "${REB} = = > Fingerprint Report Build Failed.${NC}"
+		pause
+		return 0
+	fi
+
+	echo
+	echo -e "${GR} = = > Structural Fingerprint Report Created:${NC}"
+	echo -e "${GREEN}       $(factory_display_path "$report")${NC}"
+	echo
+
+	if command -v less >/dev/null 2>&1; then
+		less -R "$report"
+	else
+		cat "$report"
+	fi
+
+	pause
+}
+
+# ================================================================
 # #MARKER: AUTO HASH ANCHORS FROM TEMPLATE DURATION
 # ================================================================
 # PURPOSE:
@@ -8374,8 +9809,57 @@ auto_anchor_csv_from_duration() {
 	local count=5
 	local csv=""
 
+	# ========================================================
+	# INTRO STRUCTURAL FINGERPRINT ANCHOR PROFILES
+	# ========================================================
+	# Accepted intro aliases:
+	#   auto-a / auto.a
+	#   auto-b / auto.b
+	#
+	# Plain "auto" keeps the existing duration-based math.
+	# Manual CSV anchor lists still pass through unchanged.
+	# Outro behavior remains unchanged.
+	# ========================================================
+
+	requested="${requested,,}"
+	requested="${requested//./-}"
+
+	if [[ "$mode" == "intro" ]]; then
+		case "$requested" in
+			auto-a|auto-b)
+				load_intro_template_fingerprint >/dev/null 2>&1 || :
+
+				if (( ${INTRO_FINGERPRINT_LOADED:-0} == 1 )); then
+					case "$requested" in
+						auto-a)
+							if [[ -n "${INTRO_FINGERPRINT_AUTO_A:-}" &&
+							      "${INTRO_FINGERPRINT_AUTO_A:-}" != "NONE" ]]; then
+								echo -e "${CYAN} = = > Intro Anchor Profile:${NC} ${YELLOW}auto-a${NC} ${CYAN}from structural fingerprint${NC}" >&2
+								printf '%s\n' "$INTRO_FINGERPRINT_AUTO_A"
+								return 0
+							fi
+							;;
+
+						auto-b)
+							if [[ -n "${INTRO_FINGERPRINT_AUTO_B:-}" &&
+							      "${INTRO_FINGERPRINT_AUTO_B:-}" != "NONE" ]]; then
+								echo -e "${CYAN} = = > Intro Anchor Profile:${NC} ${YELLOW}auto-b${NC} ${CYAN}from structural fingerprint${NC}" >&2
+								printf '%s\n' "$INTRO_FINGERPRINT_AUTO_B"
+								return 0
+							fi
+							;;
+					esac
+				fi
+
+				echo -e "${YE} = = > Requested ${requested} Fingerprint Anchors Were Not Available.${NC}" >&2
+				echo -e "${YE} = = > Falling Back To Plain Duration-Based AUTO Anchors.${NC}" >&2
+				requested="auto"
+				;;
+		esac
+	fi
+
 	# Manual CSV passes through unchanged.
-	if [[ "${requested,,}" != "auto" ]]; then
+	if [[ "$requested" != "auto" ]]; then
 		printf '%s\n' "$requested"
 		return 0
 	fi
@@ -9086,6 +10570,130 @@ detect_optional_tools() {
 		#resolve_smc_bin
 }
 
+# ========================================================
+# #MARKER: STARTUP DIAGNOSTICS / OPERATING MODE REPORT
+# ========================================================
+path_state() {
+	local path="$1"
+
+	if [[ -L "$path" ]]; then
+		local target
+		target="$(readlink "$path" 2>/dev/null || printf '?')"
+		printf 'LINK -> %s\n' "$(trim_working_path_display "$target" 3)"
+	elif [[ -d "$path" ]]; then
+		printf 'DIRECTORY\n'
+	elif [[ -f "$path" ]]; then
+		printf 'FILE\n'
+	else
+		printf 'NOT PRESENT\n'
+	fi
+}
+
+find_active_phash_engine() {
+	local candidate
+	for candidate in \
+		"${FACTORY_WORKDIR}/.phash_engine.py" \
+		"${FACTORY_HOME}/.phash_engine.py" \
+		"${SCRIPT_DIR}/.phash_engine.py"
+	do
+		[[ -f "$candidate" ]] || continue
+		printf '%s\n' "$candidate"
+		return 0
+	done
+	return 1
+}
+
+find_active_phash_log() {
+	local candidate
+	for candidate in \
+		"${FACTORY_WORKDIR}/.phash_engine.stderr.log" \
+		"${FACTORY_HOME}/.phash_engine.stderr.log" \
+		"${SCRIPT_DIR}/.phash_engine.stderr.log"
+	do
+		[[ -f "$candidate" ]] || continue
+		printf '%s\n' "$candidate"
+		return 0
+	done
+	return 1
+}
+
+show_startup_diagnostics() {
+	local smc_display template_repo template_state working_template working_state
+	local phash_active phash_log_active phash_status config_state authority_display
+	local target_real active_real
+
+	detect_operating_mode
+	resolve_smc_bin >/dev/null 2>&1 || true
+	smc_display="${SMC_BIN:-NOT FOUND}"
+	template_repo="${INTRO_TEMPLATE_DIR:-${FACTORY_HOME}/intro_template}"
+	working_template="${FACTORY_WORKDIR}/intro_template"
+	template_state="$(path_state "$template_repo")"
+	working_state="$(path_state "$working_template")"
+	authority_display="${INTRO_TEMPLATE_AUTHORITY:-UNRESOLVED}"
+	if [[ "${OPERATING_MODE:-}" == "STANDALONE" && "$authority_display" == TOOLBOX* ]]; then
+		authority_display="STANDALONE_LOCAL"
+	fi
+
+	if [[ -f "$FACTORY_CONFIG_FILE" ]]; then
+		config_state="PRESENT"
+	else
+		config_state="NOT PRESENT YET"
+	fi
+
+	phash_active="$(find_active_phash_engine 2>/dev/null || true)"
+	phash_log_active="$(find_active_phash_log 2>/dev/null || true)"
+
+	if [[ -n "$phash_active" ]]; then
+		target_real="$(realpath -m -- "$PHASH_ENGINE" 2>/dev/null || printf '%s\n' "$PHASH_ENGINE")"
+		active_real="$(realpath -m -- "$phash_active" 2>/dev/null || printf '%s\n' "$phash_active")"
+		if [[ "$active_real" == "$target_real" ]]; then
+			phash_status="ACTIVE AT TARGET"
+		else
+			phash_status="ACTIVE PATH MISMATCH"
+		fi
+	else
+		phash_status="NOT ACTIVE"
+	fi
+
+	clear
+	echo -e "${CYAN}============================================================${NC}"
+	echo -e "${CYAN}                  STARTUP DIAGNOSTICS                       ${NC}"
+	echo -e "${CYAN}============================================================${NC}"
+	echo -e "${CYAN} = = > Operating Mode :${NC} ${YELLOW}${OPERATING_MODE}${NC}"
+	echo -e "${CYAN} = = > Script Location:${NC} ${YELLOW}$(trim_working_path_display "$SCRIPT_DIR" 3)${NC}"
+	echo -e "${CYAN} = = > Factory Home   :${NC} ${YELLOW}$(trim_working_path_display "$FACTORY_HOME" 3)${NC}"
+	echo -e "${CYAN} = = > Working Folder :${NC} ${YELLOW}$(trim_working_path_display "$FACTORY_WORKDIR" 3)${NC}"
+	echo
+	echo -e "${CYAN} = = > Shared Config  :${NC} ${YELLOW}$(trim_working_path_display "$FACTORY_CONFIG_FILE" 3)${NC}"
+	echo -e "${CYAN}       Config State  :${NC} ${GREEN}${config_state}${NC}"
+	echo -e "${CYAN} = = > SmartCut       :${NC} ${YELLOW}$(trim_working_path_display "$smc_display" 3)${NC}"
+	echo
+	echo -e "${CYAN} = = > Template Repo  :${NC} ${YELLOW}$(trim_working_path_display "$template_repo" 3)${NC}"
+	echo -e "${CYAN}       Repo State    :${NC} ${GREEN}${template_state}${NC}"
+	echo -e "${CYAN} = = > Working Link   :${NC} ${YELLOW}$(trim_working_path_display "$working_template" 3)${NC}"
+	echo -e "${CYAN}       Link State    :${NC} ${GREEN}${working_state}${NC}"
+	echo -e "${CYAN}       Authority     :${NC} ${YELLOW}${authority_display}${NC}"
+	echo
+	echo -e "${CYAN} = = > pHash Target   :${NC} ${YELLOW}$(trim_working_path_display "$PHASH_ENGINE" 3)${NC}"
+	if [[ -n "$phash_active" ]]; then
+		echo -e "${CYAN} = = > pHash Active   :${NC} ${YELLOW}$(trim_working_path_display "$phash_active" 3)${NC}"
+	else
+		echo -e "${CYAN} = = > pHash Active   :${NC} ${YELLOW}Not Built / Not Active${NC}"
+	fi
+	if [[ "$phash_status" == "ACTIVE PATH MISMATCH" ]]; then
+		echo -e "${REB} = = > pHash Status   : ${phash_status}${NC}"
+	else
+		echo -e "${CYAN} = = > pHash Status   :${NC} ${GREEN}${phash_status}${NC}"
+	fi
+	if [[ -n "$phash_log_active" ]]; then
+		echo -e "${CYAN} = = > pHash Log      :${NC} ${YELLOW}$(trim_working_path_display "$phash_log_active" 3)${NC}"
+	else
+		echo -e "${CYAN} = = > pHash Log      :${NC} ${YELLOW}Not Present${NC}"
+	fi
+	echo -e "${CYAN}============================================================${NC}"
+	echo
+}
+
     # ============================================================
     # #MARKER: STARTUP DEP CHECK ENTRY POINT
     # ============================================================
@@ -9105,6 +10713,8 @@ run_startup_dependency_checks() {
 	ensure_intro_template_dir
 	check_required_dependencies_or_die
 	detect_optional_tools
+	show_startup_diagnostics
+	pause
 }
 
     # ============================================================
@@ -16887,7 +18497,7 @@ run_batch_normalize_to_mkv_tool() {
 		return 0
 	fi
 
-	rescued_run_dir="OEM/AUDIO_SYNC/$(date '+%Y-%m')"
+		rescued_run_dir="OEM/NORMALIZED/$(date '+%Y-%m')"
 
 	echo
 	echo -e "${CYAN}================================================${NC}"
@@ -16991,6 +18601,125 @@ pick_one_template_source() {
 }
 
 # ================================================================
+# #MARKER: FINGERPRINT TEMPLATE OPTIMIZER
+# ================================================================
+# PURPOSE:
+# - Build the visible intro template from the ORIGINAL episode source.
+# - Avoid carrying SmartCut boundary-reference artifacts into the template.
+# - Apply only conservative cleanup: mild temporal/spatial denoise and a
+#   high-quality x264 encode. No AI detail invention and no forced upscale.
+# - Keep the SmartCut result as a hidden raw reference beside the template.
+#
+# INPUT:
+#   $1 = original source file
+#   $2 = exact intro start in seconds
+#   $3 = exact intro end in seconds
+#   $4 = optimized visible output path
+#
+# OUTPUT:
+# - Exact-duration MKV suitable for the structural/temporal fingerprint maker.
+# - Returns nonzero without replacing an existing output if optimization fails.
+# ================================================================
+optimize_intro_template_for_fingerprint() {
+	local src="$1"
+	local start="$2"
+	local end="$3"
+	local out="$4"
+	local duration=""
+	local tmp_out="${out}.optimizer_tmp.mkv"
+	local actual_duration=""
+	local duration_error=""
+
+	duration="$(awk -v s="$start" -v e="$end" 'BEGIN {
+		d=e-s
+		if (d > 0) printf "%.3f", d
+	}')"
+
+	if [[ -z "$duration" ]] || ! awk -v d="$duration" 'BEGIN { exit !(d > 0) }'; then
+		echo -e "${REB} = = > Fingerprint Optimizer Received An Invalid Time Range.${NC}"
+		return 1
+	fi
+
+	rm -f -- "$tmp_out"
+
+	echo
+	echo -e "${CYAN}============================================================${NC}"
+	echo -e "${CYAN} = = > FINGERPRINT TEMPLATE OPTIMIZER${NC}"
+	echo -e "${CYAN}============================================================${NC}"
+	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$src${NC}"
+	echo -e "${CYAN} = = > Exact Range:${NC} ${YELLOW}${start}s -> ${end}s${NC}"
+	echo -e "${CYAN} = = > Target Duration:${NC} ${YELLOW}${duration}s${NC}"
+	echo -e "${CYAN} = = > Cleanup:${NC} ${YELLOW}Mild hqdn3d; no upscale; no sharpening${NC}"
+	echo -e "${CYAN} = = > Encode:${NC} ${YELLOW}x264 CRF 16 / slow / yuv420p${NC}"
+	echo
+
+	# Put -ss after -i so FFmpeg decodes through the requested boundary instead
+	# of beginning from a nearby packet/keyframe. This costs time only once when
+	# the template is made and avoids inheriting a damaged cut-boundary GOP.
+	if ! ffmpeg \
+		-hide_banner \
+		-loglevel warning \
+		-stats \
+		-nostdin \
+		-y \
+		-i "$src" \
+		-ss "$start" \
+		-t "$duration" \
+		-map 0:v:0 \
+		-map "0:a?" \
+		-map_metadata 0 \
+		-vf "hqdn3d=1.2:1.2:4.0:4.0,format=yuv420p" \
+		-c:v libx264 \
+		-preset slow \
+		-crf 16 \
+		-c:a aac \
+		-b:a 192k \
+		-sn \
+		-avoid_negative_ts make_zero \
+		-max_interleave_delta 0 \
+		"$tmp_out"; then
+		rm -f -- "$tmp_out"
+		echo -e "${REB} = = > Fingerprint Template Optimization Failed.${NC}"
+		return 1
+	fi
+
+	if [[ ! -s "$tmp_out" ]]; then
+		rm -f -- "$tmp_out"
+		echo -e "${REB} = = > Fingerprint Optimizer Produced No Usable Output.${NC}"
+		return 1
+	fi
+
+	actual_duration="$(get_file_duration_seconds "$tmp_out" 2>/dev/null || true)"
+	if [[ -z "$actual_duration" ]]; then
+		rm -f -- "$tmp_out"
+		echo -e "${REB} = = > Could Not Verify Optimized Template Duration.${NC}"
+		return 1
+	fi
+
+	duration_error="$(awk -v a="$actual_duration" -v t="$duration" 'BEGIN {
+		d=a-t
+		if (d < 0) d=-d
+		printf "%.3f", d
+	}')"
+
+	if ! awk -v d="$duration_error" 'BEGIN { exit !(d <= 0.150) }'; then
+		rm -f -- "$tmp_out"
+		echo -e "${REB} = = > Optimized Template Duration Drifted Too Far.${NC}"
+		echo -e "${CYAN}       Expected:${NC} ${YELLOW}${duration}s${NC}"
+		echo -e "${CYAN}       Actual:${NC}   ${YELLOW}${actual_duration}s${NC}"
+		echo -e "${CYAN}       Error:${NC}    ${YELLOW}${duration_error}s${NC}"
+		return 1
+	fi
+
+	mv -f -- "$tmp_out" "$out"
+
+	echo
+	echo -e "${GR} = = > Fingerprint Template Optimized:${NC} ${GREEN}$(factory_display_path "$out")${NC}"
+	echo -e "${CYAN} = = > Verified Duration:${NC} ${YELLOW}${actual_duration}s${NC}"
+	return 0
+}
+
+# ================================================================
 # #MARKER: SMC TEMPLATE BUILDER
 # ================================================================
 create_template_smc() {
@@ -17003,7 +18732,8 @@ create_template_smc() {
 	}
 
 	local -a targets=()
-	local src start end keep_args out choice
+	local src start end keep_args out choice outro_len
+	local template_kind template_title smc_out raw_name
 
 	# ------------------------------------------------------------
 	# Collect eligible files
@@ -17041,22 +18771,22 @@ create_template_smc() {
 	# Template type menu
 	# ------------------------------------------------------------
 	clear
-    echo -e "${CYAN}     =============================================================${NC}"
-    echo -e "${YELLOW}     ========> Open File Selected From Which To Extract <=======${NC}"
-    echo -e "${GREEN}     ===========> intro_template.mkv <==========================${NC}"
-    echo -e "${YELLOW}     ====> Get Exact Times From That File For Accuracy <========${NC}"
-    echo -e "${GREEN}     =============> Watch It With Your Eyes To Get The <========${NC}"
-    echo -e "${YELLOW}     =================> Start And End Times To The Second <=====${NC}"
-    echo -e "${GREEN}     ==> Verify Start And End Timings for intro_template.mkv <==${NC}"
+	echo -e "${CYAN}     =============================================================${NC}"
+	echo -e "${YELLOW}     ========> Open File Selected From Which To Extract <=======${NC}"
+	echo -e "${GREEN}     ===========> intro_template.mkv <==========================${NC}"
+	echo -e "${YELLOW}     ====> Get Exact Times From That File For Accuracy <========${NC}"
+	echo -e "${GREEN}     =============> Watch It With Your Eyes To Get The <========${NC}"
+	echo -e "${YELLOW}     =================> Start And End Times To The Second <=====${NC}"
+	echo -e "${GREEN}     ==> Verify Start And End Timings for intro_template.mkv <==${NC}"
 	echo
-    echo -e "${YELLOW}     ======>   Verify  Start  Timings  for  ${NC}${GREEN}outro.mkv${NC}${YELLOW} <=========${NC}"
-    echo -e "${YELLOW}     ======>  ${NC}${GREEN}outro.mkv${NC}${YELLOW}<======= Input Seconds To Keep <=========${NC}"
-    echo -e "${YELLOW}     ==> Leave Blank=Outro Cuts Will Go To End of File <========${NC}"
-    echo -e "${CYAN}     ===========================================================${NC}"
+	echo -e "${YELLOW}     ======>   Verify  Start  Timings  for  ${NC}${GREEN}outro.mkv${NC}${YELLOW} <=========${NC}"
+	echo -e "${YELLOW}     ======>  ${NC}${GREEN}outro.mkv${NC}${YELLOW}<======= Input Seconds To Keep <=========${NC}"
+	echo -e "${YELLOW}     ==> Leave Blank=Outro Cuts Will Go To End of File <========${NC}"
+	echo -e "${CYAN}     ===========================================================${NC}"
 	echo -e "${GREEN}       = = > CHOOSE TEMPLATE TYPE${NC}"
 	echo -e "${CYAN}     =============================================================${NC}"
 	echo
-	echo -e "${CYAN}     1) Intro Template (Start + End)${NC}"
+	echo -e "${CYAN}     1) Intro Template + Fingerprint Optimizer${NC}"
 	echo -e "${CYAN}     2) Outro Template (Start + End)${NC}"
 	echo
 	echo -e "${CYAN}     0.) Return${NC}"
@@ -17074,6 +18804,7 @@ create_template_smc() {
 
 			keep_args="$start,$end"
 			out="$(next_template_output_path "intro_template/intro_template.mkv")"
+			template_kind="intro"
 			;;
 		2)
 			prompt_read " = = > Enter Outro Start Time: " start
@@ -17096,6 +18827,7 @@ create_template_smc() {
 
 			keep_args="$start,$end"
 			out="$(next_template_output_path "intro_template/outro.mkv")"
+			template_kind="outro"
 			;;
 		0.)
 			return 0
@@ -17107,14 +18839,17 @@ create_template_smc() {
 			;;
 	esac
 
-	# ------------------------------------------------------------
-	# Ensure template directory
-	# ------------------------------------------------------------
 	mkdir -p intro_template
 
-	# ------------------------------------------------------------
-	# Preview
-	# ------------------------------------------------------------
+	# Intro keeps SMC's exact cut as a hidden diagnostic/reference file while
+	# the visible template is rebuilt from the original source by FFmpeg.
+	if [[ "$template_kind" == "intro" ]]; then
+		raw_name=".$(basename "${out%.*}").smc_raw.mkv"
+		smc_out="$(dirname "$out")/$raw_name"
+	else
+		smc_out="$out"
+	fi
+
 	echo
 	echo -e "${CYAN}============================================================${NC}"
 	echo -e "${CYAN} = = > TEMPLATE BUILD PREVIEW${NC}"
@@ -17123,6 +18858,10 @@ create_template_smc() {
 	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$src${NC}"
 	echo -e "${CYAN} = = > Keep:${NC} ${YELLOW}$keep_args${NC}"
 	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+	if [[ "$template_kind" == "intro" ]]; then
+		echo -e "${CYAN} = = > SMC Raw Reference:${NC} ${YELLOW}$(factory_display_path "$smc_out")${NC}"
+		echo -e "${CYAN} = = > Optimizer:${NC} ${YELLOW}Original-source accurate decode + mild cleanup${NC}"
+	fi
 	echo
 
 	if ! ask_yes_no " = = > Proceed? (y/n or 1/2): "; then
@@ -17130,38 +18869,50 @@ create_template_smc() {
 		return 0
 	fi
 
-	# ------------------------------------------------------------
-	# Build template
-	# ------------------------------------------------------------
-	# rm -f -- "$out"
+	rm -f -- "$smc_out"
 
 	echo
-	echo -e "${CYAN} = = > Building Template...${NC}"
+	echo -e "${CYAN} = = > Building SmartCut Template Reference...${NC}"
 	echo
 
-	"$SMC_BIN" \
-		"$src" \
-		"$out" \
-		--keep "$keep_args"
-
-	if [[ $? -eq 0 && -f "$out" ]]; then
-		local template_kind template_title
-
-		template_kind="intro"
-		[[ "$(basename "$out")" =~ ^outro ]] && template_kind="outro"
-
-		template_title="$(factory_template_title_from_source "$template_kind" "$src")"
-		factory_set_mkv_title_if_possible "$out" "$template_title"
-
-		echo
-		echo -e "${GR} = = > TEMPLATE CREATED:${NC} ${GREEN}$(factory_display_path "$out")${NC}"
-	else
+	if ! "$SMC_BIN" "$src" "$smc_out" --keep "$keep_args"; then
+		rm -f -- "$smc_out"
 		echo
 		echo -e "${REB} = = > TEMPLATE BUILD FAILED.${NC}"
+		echo
+		pause
+		return 1
+	fi
+
+	if [[ ! -s "$smc_out" ]]; then
+		echo -e "${REB} = = > SmartCut Produced No Usable Template Reference.${NC}"
+		pause
+		return 1
+	fi
+
+	if [[ "$template_kind" == "intro" ]]; then
+		if ! optimize_intro_template_for_fingerprint "$src" "$start" "$end" "$out"; then
+			echo
+			echo -e "${YE} = = > Optimizer Failed; Preserving The SMC Raw Reference.${NC}"
+			echo -e "${YE} = = > No Visible intro_template Was Installed.${NC}"
+			pause
+			return 1
+		fi
+	fi
+
+	template_title="$(factory_template_title_from_source "$template_kind" "$src")"
+	factory_set_mkv_title_if_possible "$out" "$template_title"
+
+	echo
+	echo -e "${GR} = = > TEMPLATE CREATED:${NC} ${GREEN}$(factory_display_path "$out")${NC}"
+	if [[ "$template_kind" == "intro" ]]; then
+		echo -e "${CYAN} = = > Hidden SMC Reference:${NC} ${YELLOW}$(factory_display_path "$smc_out")${NC}"
+		echo -e "${CYAN} = = > Next Step:${NC} ${YELLOW}Intro Template Structural Fingerprint Maker Will Run Now${NC}"
 	fi
 
 	echo
 	pause
+	run_intro_template_fingerprint_report
 }
 
 # ================================================================
@@ -17255,7 +19006,7 @@ run_smartcut_colored() {
 				echo -e "${CYAN}${line}${NC}"
 				;;
 			*)
-				echo -e "${WHITE}${line}${NC}"
+				echo -e "${ORANGE}${line}${NC}"
 				;;
 		esac
 	done
@@ -17305,14 +19056,14 @@ echo
 	# input with "enter = keep last"
 	local input
 
-	prompt_read " = = > Tip Snip Seconds (enter = keep ${TIP_TRIM_SECONDS}): " input
+	prompt_read " = = > Tip Snip Seconds (Current Setting ${TIP_TRIM_SECONDS}): " input
 	if is_exit_token "$input"; then
 		echo -e "${YELLOW} = = > Batch Cancelled.${NC}"
 		return 0
 	fi
 	[[ -n "$input" ]] && TIP_TRIM_SECONDS="$input"
 
-	prompt_read " = = > Tail Tuck Seconds (enter = keep ${TAIL_TRIM_SECONDS}): " input
+	prompt_read " = = > Tail Tuck Seconds (Current Setting ${TAIL_TRIM_SECONDS}): " input
 	if is_exit_token "$input"; then
 		echo -e "${YELLOW} = = > Batch Cancelled.${NC}"
 		return 0
@@ -17849,10 +19600,10 @@ smartcut_session_varz_menu() {
 				prompt_read " = = > Intro Hash Diff Threshold (current ${INTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}}): " input
 				[[ -n "$input" ]] && INTRO_HASH_DIFF="$input"
 
-				prompt_read " = = > Intro Step Size Seconds (current ${INTRO_STEP_SIZE:-${STEP_SIZE:-1}}): " input
+				prompt_read " = = > Intro Step Size Seconds (current ${INTRO_STEP_SIZE:-1}): " input
 				[[ -n "$input" ]] && INTRO_STEP_SIZE="$input"
 
-				prompt_read " = = > Intro Anchor Seconds CSV (CSV or auto) (current ${INTRO_ANCHOR_SECONDS:-${ANCHOR_SECONDS:-3,5,7}}): " input
+				prompt_read " = = > Intro Anchor Seconds CSV (CSV or auto) (current ${INTRO_ANCHOR_SECONDS:-3,5,7}): " input
 				[[ -n "$input" ]] && INTRO_ANCHOR_SECONDS="$input"
 
 				echo
@@ -17889,10 +19640,10 @@ smartcut_session_varz_menu() {
 				prompt_read " = = > Outro Tail Scan Seconds (current ${OUTRO_TAIL_SCAN_SECONDS:-200}): " input
 				[[ -n "$input" ]] && OUTRO_TAIL_SCAN_SECONDS="$input"
 
-				prompt_read " = = > Outro Hash Diff Threshold (current ${OUTRO_HASH_DIFF:-${INTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}}}): " input
+				prompt_read " = = > Outro Hash Diff Threshold (current ${OUTRO_HASH_DIFF:-16}): " input
 				[[ -n "$input" ]] && OUTRO_HASH_DIFF="$input"
 
-				prompt_read " = = > Outro Step Size Seconds (current ${OUTRO_STEP_SIZE:-${INTRO_STEP_SIZE:-${STEP_SIZE:-1}}}): " input
+				prompt_read " = = > Outro Step Size Seconds (current ${OUTRO_STEP_SIZE:-1}): " input
 				[[ -n "$input" ]] && OUTRO_STEP_SIZE="$input"
 
 				prompt_read " = = > Outro Anchor Seconds CSV (CSV or auto) (current ${OUTRO_ANCHOR_SECONDS:-8,12,16}): " input
@@ -18936,21 +20687,42 @@ run_one_file_normalize_to_mkv_tool() {
 # - Exact edge accuracy may vary on hostile raw sources
 # =========================
 run_tip_snip() {
-	local src
 	local trim_amount
 	local duration
+	local src
 	local out
+	local ok_count=0
+	local fail_count=0
+	local -a targets=()
+	local -a vids=()
+	local f
+	local cut_args
 
-	if ! src="$(triage_choose_single_working_file)"; then
+	shopt -s nullglob nocaseglob
+	vids=(*.{lrv,mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,xvid,wmv})
+	shopt -u nullglob nocaseglob
+
+	for f in "${vids[@]}"; do
+		# Triage surgery intentionally allows prior TIP / TAIL products.
+		# These are single-file corrective tools, not protected batch stages.
+		[[ "$f" =~ ^(OEM_|SUBPACKED_) ]] && continue
+		targets+=("$f")
+	done
+
+	if (( ${#targets[@]} == 0 )); then
+		echo -e "${YE} = = > No Eligible Working Video Files Found.${NC}"
+		pause
 		return 0
 	fi
 
-	duration="$(ffprobe -v error -show_entries format=duration \
-		-of default=noprint_wrappers=1:nokey=1 "$src" 2>/dev/null || true)"
+	# ----- SURGERY PICKER NATURAL FILENAME SORT ----------------------------
+	# Sort by the complete filename, case-insensitive and number-aware.
+	# Mixed extensions stay together instead of grouping by file type.
+	# A temporary prefix such as a01_ will intentionally push a file near the top.
+	mapfile -t targets < <(printf '%s\n' "${targets[@]}" | LC_ALL=C sort -fV)
 
-	if [[ -z "${duration:-}" ]]; then
-		echo
-		echo -e "${REB} = = > Could Not Read Source Duration.${NC}"
+	if ! limit_targets_interactive targets; then
+		echo -e "${YE} = = > Tip Snip Cancelled.${NC}"
 		pause
 		return 0
 	fi
@@ -18960,8 +20732,7 @@ run_tip_snip() {
 	echo -e "${CYAN}                  TIP SNIP TOOL                 ${NC}"
 	echo -e "${CYAN}================================================${NC}"
 	echo
-	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$src${NC}"
-	echo -e "${CYAN} = = > Duration:${NC} ${YELLOW}$(format_seconds_hms "$duration")${NC}"
+	echo -e "${CYAN} = = > Selected Files:${NC} ${YELLOW}${#targets[@]}${NC}"
 	echo -e "${YE} = = > Fast Copy Trim.${NC}"
 	echo -e "${YE} = = > Best On REKEY / Keyframe-Friendly Sources.${NC}"
 	echo
@@ -18979,39 +20750,67 @@ run_tip_snip() {
 		return 0
 	fi
 
-	if ! awk -v t="$trim_amount" -v d="$duration" 'BEGIN { exit (t < d ? 0 : 1) }'; then
-		echo
-		echo -e "${REB} = = > Tip Snip Amount Is Too Large For This File.${NC}"
-		pause
-		return 0
-	fi
-
-	out="TIPSNIP_$(basename "${src%.*}").mkv"
-
 	echo
 	echo -e "${CYAN} = = > Trim Amount:${NC} ${YELLOW}${trim_amount}s${NC}"
-	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+	echo -e "${CYAN} = = > Files To Process:${NC} ${YELLOW}${#targets[@]}${NC}"
 	echo
 
-	if ! ask_yes_no " = = > Proceed With Tip Snip? (y/n or 1/2): "; then
+	if ! ask_yes_no " = = > Proceed With Tip Snip Batch? (y/n or 1/2): "; then
 		echo
 		echo -e "${YE} = = > Tip Snip Cancelled.${NC}"
 		pause
 		return 0
 	fi
 
-	if run_with_progress "Tip Snip: $(basename "$src")" \
-		ffmpeg -hide_banner -loglevel error -nostdin -y \
-			-ss "$trim_amount" -i "$src" -c copy "$out"; then
-		echo
-		echo -e "${GR} = = > Tip Snip Completed.${NC}"
-		echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
-	else
-		rm -f -- "$out"
-		echo
-		echo -e "${REB} = = > Tip Snip Failed.${NC}"
-	fi
+	for src in "${targets[@]}"; do
+		duration="$(ffprobe -v error -show_entries format=duration \
+			-of default=noprint_wrappers=1:nokey=1 "$src" 2>/dev/null || true)"
 
+		if [[ -z "${duration:-}" ]]; then
+			echo -e "${REB} = = > Could Not Read Duration:${NC} ${YELLOW}$src${NC}"
+			((fail_count+=1)) || :
+			continue
+		fi
+
+		if ! awk -v t="$trim_amount" -v d="$duration" 'BEGIN { exit (t < d ? 0 : 1) }'; then
+			echo -e "${REB} = = > Tip Snip Amount Too Large:${NC} ${YELLOW}$src${NC}"
+			((fail_count+=1)) || :
+			continue
+		fi
+
+		out="TIPSNIP_$(basename "${src%.*}").mkv"
+
+		if [[ -e "$out" ]]; then
+			echo -e "${YE} = = > Output Exists, Skipping:${NC} ${YELLOW}$out${NC}"
+			((fail_count+=1)) || :
+			continue
+		fi
+
+		if ! resolve_smc_bin; then
+			echo -e "${REB} = = > SmartCut Engine Missing. Tip Snip Cannot Continue.${NC}"
+			((fail_count+=1)) || :
+			continue
+		fi
+
+		cut_args="0,$trim_amount"
+
+		echo -e "${CYAN} = = > Tip Snip Cut Plan:${NC} ${YELLOW}$cut_args${NC}"
+		smc_explain_cut_plan "$cut_args"
+
+		if run_smartcut_colored "$src" "$out" "$cut_args"; then
+			echo -e "${GR} = = > Tip Snip Completed:${NC} ${GREEN}$out${NC}"
+			((ok_count+=1)) || :
+		else
+			rm -f -- "$out"
+			echo -e "${REB} = = > Tip Snip Failed:${NC} ${YELLOW}$src${NC}"
+			((fail_count+=1)) || :
+		fi
+	done
+
+	echo
+	echo -e "${CYAN} = = > Tip Snip Batch Complete.${NC}"
+	echo -e "${CYAN} = = > OK:${NC} ${GREEN}$ok_count${NC}"
+	echo -e "${CYAN} = = > Failed/Skipped:${NC} ${YELLOW}$fail_count${NC}"
 	pause
 }
 
@@ -19019,22 +20818,43 @@ run_tip_snip() {
 # #MARKER: TRIAGE TAIL TUCK
 # =========================
 run_tail_tuck() {
-	local src
 	local trim_amount
 	local duration
 	local end_time
+	local src
 	local out
+	local ok_count=0
+	local fail_count=0
+	local -a targets=()
+	local -a vids=()
+	local f
+	local cut_args
 
-	if ! src="$(triage_choose_single_working_file)"; then
-	return 0
+	shopt -s nullglob nocaseglob
+	vids=(*.{lrv,mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,xvid,wmv})
+	shopt -u nullglob nocaseglob
+
+	for f in "${vids[@]}"; do
+		# Triage surgery intentionally allows prior TIP / TAIL products.
+		# These are single-file corrective tools, not protected batch stages.
+		[[ "$f" =~ ^(OEM_|SUBPACKED_) ]] && continue
+		targets+=("$f")
+	done
+
+	if (( ${#targets[@]} == 0 )); then
+		echo -e "${YE} = = > No Eligible Working Video Files Found.${NC}"
+		pause
+		return 0
 	fi
 
-	duration="$(ffprobe -v error -show_entries format=duration \
-		-of default=noprint_wrappers=1:nokey=1 "$src" 2>/dev/null || true)"
+	# ----- SURGERY PICKER NATURAL FILENAME SORT ----------------------------
+	# Sort by the complete filename, case-insensitive and number-aware.
+	# Mixed extensions stay together instead of grouping by file type.
+	# A temporary prefix such as a01_ will intentionally push a file near the top.
+	mapfile -t targets < <(printf '%s\n' "${targets[@]}" | LC_ALL=C sort -fV)
 
-	if [[ -z "${duration:-}" ]]; then
-		echo
-		echo -e "${REB} = = > Could Not Read Source Duration.${NC}"
+	if ! limit_targets_interactive targets; then
+		echo -e "${YE} = = > Tail Tuck Cancelled.${NC}"
 		pause
 		return 0
 	fi
@@ -19044,8 +20864,7 @@ run_tail_tuck() {
 	echo -e "${CYAN}                  TAIL TUCK TOOL                ${NC}"
 	echo -e "${CYAN}================================================${NC}"
 	echo
-	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$src${NC}"
-	echo -e "${CYAN} = = > Duration:${NC} ${YELLOW}$(format_seconds_hms "$duration")${NC}"
+	echo -e "${CYAN} = = > Selected Files:${NC} ${YELLOW}${#targets[@]}${NC}"
 	echo -e "${YE} = = > Fast Copy Trim.${NC}"
 	echo -e "${YE} = = > Best On REKEY / Keyframe-Friendly Sources.${NC}"
 	echo
@@ -19063,43 +20882,217 @@ run_tail_tuck() {
 		return 0
 	fi
 
-	end_time="$(fsub "$duration" "$trim_amount")"
-
-	# Validate result
-	if [[ -z "${end_time:-}" ]] || ! awk -v e="$end_time" 'BEGIN { exit (e > 0 ? 0 : 1) }'; then
-		echo
-		echo -e "${REB} = = > Tail Tuck Amount Is Too Large For This File.${NC}"
-		pause
-		return 0
-	fi
-
-	out="TAILTUCK_$(basename "${src%.*}").mkv"
-
 	echo
 	echo -e "${CYAN} = = > Trim Amount:${NC} ${YELLOW}${trim_amount}s${NC}"
-	echo -e "${CYAN} = = > New End Time:${NC} ${YELLOW}${end_time}s${NC}"
-	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+	echo -e "${CYAN} = = > Files To Process:${NC} ${YELLOW}${#targets[@]}${NC}"
 	echo
 
-	if ! ask_yes_no " = = > Proceed With Tail Tuck? (y/n or 1/2): "; then
+	if ! ask_yes_no " = = > Proceed With Tail Tuck Batch? (y/n or 1/2): "; then
 		echo
 		echo -e "${YE} = = > Tail Tuck Cancelled.${NC}"
 		pause
 		return 0
 	fi
 
-	if run_with_progress "Tail Tuck: $(basename "$src")" \
-		ffmpeg -hide_banner -loglevel error -nostdin -y \
-			-i "$src" -to "$end_time" -c copy "$out"; then
-		echo
-		echo -e "${GR} = = > Tail Tuck Completed.${NC}"
-		echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
-	else
-		rm -f -- "$out"
-		echo
-		echo -e "${REB} = = > Tail Tuck Failed.${NC}"
+	for src in "${targets[@]}"; do
+		duration="$(ffprobe -v error -show_entries format=duration \
+			-of default=noprint_wrappers=1:nokey=1 "$src" 2>/dev/null || true)"
+
+		if [[ -z "${duration:-}" ]]; then
+			echo -e "${REB} = = > Could Not Read Duration:${NC} ${YELLOW}$src${NC}"
+			((fail_count+=1)) || :
+			continue
+		fi
+
+		end_time="$(fsub "$duration" "$trim_amount")"
+
+		if [[ -z "${end_time:-}" ]] || ! awk -v e="$end_time" 'BEGIN { exit (e > 0 ? 0 : 1) }'; then
+			echo -e "${REB} = = > Tail Tuck Amount Too Large:${NC} ${YELLOW}$src${NC}"
+			((fail_count+=1)) || :
+			continue
+		fi
+
+		out="TAILTUCK_$(basename "${src%.*}").mkv"
+
+		if [[ -e "$out" ]]; then
+			echo -e "${YE} = = > Output Exists, Skipping:${NC} ${YELLOW}$out${NC}"
+			((fail_count+=1)) || :
+			continue
+		fi
+
+		if ! resolve_smc_bin; then
+			echo -e "${REB} = = > SmartCut Engine Missing. Tail Tuck Cannot Continue.${NC}"
+			((fail_count+=1)) || :
+			continue
+		fi
+
+		cut_args="$end_time,end"
+
+		echo -e "${CYAN} = = > Tail Tuck Cut Plan:${NC} ${YELLOW}$cut_args${NC}"
+		smc_explain_cut_plan "$cut_args"
+
+		if run_smartcut_colored "$src" "$out" "$cut_args"; then
+			echo -e "${GR} = = > Tail Tuck Completed:${NC} ${GREEN}$out${NC}"
+			((ok_count+=1)) || :
+		else
+			rm -f -- "$out"
+			echo -e "${REB} = = > Tail Tuck Failed:${NC} ${YELLOW}$src${NC}"
+			((fail_count+=1)) || :
+		fi
+	done
+
+	echo
+	echo -e "${CYAN} = = > Tail Tuck Batch Complete.${NC}"
+	echo -e "${CYAN} = = > OK:${NC} ${GREEN}$ok_count${NC}"
+	echo -e "${CYAN} = = > Failed/Skipped:${NC} ${YELLOW}$fail_count${NC}"
+	pause
+}
+
+# =========================
+# #MARKER: TRIAGE TIP + TAIL
+# =========================
+run_tip_and_tail() {
+	local tip_amount
+	local tail_amount
+	local duration
+	local src
+	local out
+	local ok_count=0
+	local fail_count=0
+	local -a targets=()
+	local -a vids=()
+	local f
+	local cut_args
+
+	shopt -s nullglob nocaseglob
+	vids=(*.{lrv,mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,xvid,wmv})
+	shopt -u nullglob nocaseglob
+
+	for f in "${vids[@]}"; do
+		# Triage surgery intentionally allows prior TIP / TAIL products.
+		[[ "$f" =~ ^(OEM_|SUBPACKED_) ]] && continue
+		targets+=("$f")
+	done
+
+	if (( ${#targets[@]} == 0 )); then
+		echo -e "${YE} = = > No Eligible Working Video Files Found.${NC}"
+		pause
+		return 0
 	fi
 
+	# ----- SURGERY PICKER NATURAL FILENAME SORT ----------------------------
+	# Sort by the complete filename, case-insensitive and number-aware.
+	# Mixed extensions stay together instead of grouping by file type.
+	# A temporary prefix such as a01_ will intentionally push a file near the top.
+	mapfile -t targets < <(printf '%s\n' "${targets[@]}" | LC_ALL=C sort -fV)
+
+	if ! limit_targets_interactive targets; then
+		echo -e "${YE} = = > Tip + Tail Cancelled.${NC}"
+		pause
+		return 0
+	fi
+
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}               TIP + TAIL SURGERY               ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${CYAN} = = > Selected Files:${NC} ${YELLOW}${#targets[@]}${NC}"
+	echo -e "${YE} = = > Both Ends Will Be Trimmed In One SmartCut Operation.${NC}"
+	echo
+
+	prompt_read " = = > Tip Amount To Remove From Beginning (seconds or HH:MM:SS | 0.=cancel): " tip_amount
+
+	if is_exit_token "$tip_amount"; then
+		return 0
+	fi
+
+	tip_amount="$(to_seconds "$tip_amount" 2>/dev/null || true)"
+
+	if [[ -z "${tip_amount:-}" ]]; then
+		echo -e "${REB} = = > Invalid Tip Time Entry.${NC}"
+		pause
+		return 0
+	fi
+
+	prompt_read " = = > Tail Amount To Remove From Ending (seconds or HH:MM:SS | 0.=cancel): " tail_amount
+
+	if is_exit_token "$tail_amount"; then
+		return 0
+	fi
+
+	tail_amount="$(to_seconds "$tail_amount" 2>/dev/null || true)"
+
+	if [[ -z "${tail_amount:-}" ]]; then
+		echo -e "${REB} = = > Invalid Tail Time Entry.${NC}"
+		pause
+		return 0
+	fi
+
+	echo
+	echo -e "${CYAN} = = > Tip Remove:${NC}  ${YELLOW}${tip_amount}s${NC}"
+	echo -e "${CYAN} = = > Tail Remove:${NC} ${YELLOW}${tail_amount}s${NC}"
+	echo -e "${CYAN} = = > Files:${NC}       ${YELLOW}${#targets[@]}${NC}"
+	echo
+
+	if ! ask_yes_no " = = > Proceed With Combined Tip + Tail Surgery? (y/n or 1/2): "; then
+		echo -e "${YE} = = > Tip + Tail Cancelled.${NC}"
+		pause
+		return 0
+	fi
+
+	if ! resolve_smc_bin; then
+		echo -e "${REB} = = > SmartCut Engine Missing. Tip + Tail Cannot Continue.${NC}"
+		pause
+		return 0
+	fi
+
+	for src in "${targets[@]}"; do
+		duration="$(ffprobe -v error -show_entries format=duration \
+			-of default=noprint_wrappers=1:nokey=1 "$src" 2>/dev/null || true)"
+
+		if [[ -z "${duration:-}" ]]; then
+			echo -e "${REB} = = > Could Not Read Duration:${NC} ${YELLOW}$src${NC}"
+			((fail_count+=1)) || :
+			continue
+		fi
+
+		if ! awk -v tip="$tip_amount" -v tail="$tail_amount" -v d="$duration" \
+			'BEGIN { exit ((tip + tail) < d ? 0 : 1) }'; then
+			echo -e "${REB} = = > Combined Tip + Tail Amounts Consume Entire File:${NC} ${YELLOW}$src${NC}"
+			((fail_count+=1)) || :
+			continue
+		fi
+
+		out="TIPSNIP_TAILTUCK_$(basename "${src%.*}").mkv"
+
+		if [[ -e "$out" ]]; then
+			echo -e "${YE} = = > Output Exists, Skipping:${NC} ${YELLOW}$out${NC}"
+			((fail_count+=1)) || :
+			continue
+		fi
+
+		cut_args="0,$tip_amount,-$tail_amount,end"
+
+		echo
+		echo -e "${CYAN} = = > Source:${NC} ${GREEN}$src${NC}"
+		echo -e "${CYAN} = = > Tip + Tail Cut Plan:${NC} ${YELLOW}$cut_args${NC}"
+		smc_explain_cut_plan "$cut_args"
+
+		if run_smartcut_colored "$src" "$out" "$cut_args"; then
+			echo -e "${GR} = = > Tip + Tail Completed:${NC} ${GREEN}$out${NC}"
+			((ok_count+=1)) || :
+		else
+			rm -f -- "$out"
+			echo -e "${REB} = = > Tip + Tail Failed:${NC} ${YELLOW}$src${NC}"
+			((fail_count+=1)) || :
+		fi
+	done
+
+	echo
+	echo -e "${CYAN} = = > Tip + Tail Surgery Complete.${NC}"
+	echo -e "${CYAN} = = > OK:${NC} ${GREEN}$ok_count${NC}"
+	echo -e "${CYAN} = = > Failed/Skipped:${NC} ${YELLOW}$fail_count${NC}"
 	pause
 }
 
@@ -19124,6 +21117,47 @@ compare_two_files() {
 	pause
 }
 
+run_tip_tail_surgery_menu() {
+	local surgery_choice
+
+	while true; do
+		clear
+		echo -e "${CYAN}================================================${NC}"
+		echo -e "${CYAN}               TIP / TAIL SURGERY               ${NC}"
+		echo -e "${CYAN}================================================${NC}"
+		echo
+		echo -e "${YELLOW}     1) Tip Snip       (Trim Beginning)${NC}"
+		echo -e "${YELLOW}     2) Tail Tuck      (Trim Ending)${NC}"
+		echo -e "${YELLOW}     3) Tip + Tail     (Trim Both In One Pass)${NC}"
+		echo
+		echo -e "${YELLOW}     0.) Return${NC}"
+		echo
+
+		prompt_menu_choice "     Choice: " surgery_choice
+
+		if is_exit_token "$surgery_choice"; then
+			return 0
+		fi
+
+		case "$surgery_choice" in
+			1)
+				run_tip_snip
+				;;
+			2)
+				run_tail_tuck
+				;;
+			3)
+				run_tip_and_tail
+				;;
+			*)
+				echo -e "${REB} = = > Invalid.${NC}"
+				pause
+				;;
+		esac
+	done
+}
+
+
 run_clip_join_triage_menu() {
 	local triage_choice
 
@@ -19135,8 +21169,8 @@ run_clip_join_triage_menu() {
 		echo
 		echo -e "${YELLOW}     1) Clip_Grab BitZ From VidZ${NC}"
 		echo -e "${YELLOW}     2) Join Two Clips Into One${NC}"
-		echo -e "${YELLOW}     3) Tip Snip        (Trim Beginning)${NC}"
-		echo -e "${YELLOW}     4) Tail Tuck       (Trim Ending)${NC}"
+		echo -e "${YELLOW}     3) Tip / Tail Surgery${NC}"
+		echo -e "${YELLOW}     4) Reserved / Future Triage Tool${NC}"
 		echo -e "${YELLOW}     5) One-File Normalize To MKV / Playback Defaults${NC}"
 		echo -e "${YELLOW}     6) Rekey This File First${NC}"
 		echo -e "${YELLOW}     7) BARFIX Title + Playback Tools${NC}"
@@ -19163,10 +21197,12 @@ run_clip_join_triage_menu() {
 				run_join_two_clips
 				;;
 			3)
-				run_tip_snip
+				run_tip_tail_surgery_menu
 				;;
 			4)
-				run_tail_tuck
+				echo
+				echo -e "${YE} = = > Option 4 Is Reserved For A Future Triage Tool.${NC}"
+				pause
 				;;
 			5)
 				run_one_file_normalize_to_mkv_tool
@@ -19198,12 +21234,13 @@ run_probes_menu() {
 		echo -e "${YELLOW}     2) Keyframe Probe${NC}"
 		echo -e "${YELLOW}     3) Media Truth Probe${NC}"
 		echo -e "${YELLOW}     4) Dependency Status${NC}"
-		echo -e "${YELLOW}     5) Reykey One File${NC}"
+		echo -e "${YELLOW}     5) Startup Diagnostics / Operating Mode${NC}"
+		echo -e "${YELLOW}     6) Reykey One File${NC}"
 		echo
 		echo -e "${YELLOW}     0.) Return${NC}"
 		echo
 
-		prompt_menu_choice " = = > Select Option [1-5 | 0.=return]: " probes_choice
+		prompt_menu_choice " = = > Select Option [1-6 | 0.=return]: " probes_choice
 
 		if is_exit_token "$probes_choice"; then
 			return 0
@@ -19223,6 +21260,10 @@ run_probes_menu() {
 				inspect_dependencies
 				;;
 			5)
+				show_startup_diagnostics
+				pause
+				;;
+			6)
 				run_one_file_rekey_tool
 				;;
 			*)
@@ -19266,7 +21307,7 @@ while true; do
 		echo -e "${CYAN}              UTILITY / ADVANCED TOOLS          ${NC}"
 		echo -e "${CYAN}================================================${NC}"
 		echo
-		echo -e "${YELLOW}     1) Audio Sync Rescue${NC}"
+		echo -e "${YELLOW}     1) Audio Triage Center${NC}"
 		echo -e "${YELLOW}     2) Video Rescue Dirty / AVI${NC}"
 		echo -e "${YELLOW}     3) Probes / Diagnostics${NC}"
 		echo -e "${YELLOW}     4) REKEY Preference / Normalize-First Controls${NC}"
@@ -19285,8 +21326,7 @@ while true; do
 
 		case "$util_choice" in
 			1)
-				run_audio_sync_rescue
-				pause
+				run_audio_triage_menu
 				;;
 			2)
 				run_avi_rescue_menu
@@ -20194,7 +22234,7 @@ create_template() {
     if run_with_progress "Cutting template segment: $(basename "$src")" \
       ffmpeg -hide_banner -loglevel error -nostdin -y \
       -i "$src" \
-      -map 0:v:0 -map 0:a? \
+      -map 0:v:0 -map "0:a?" \
       -vf "trim=start=${start}:duration=${cut_dur},setpts=PTS-STARTPTS" \
       -af "atrim=start=${start}:duration=${cut_dur},asetpts=PTS-STARTPTS" \
       -c:v libx264 -crf 18 -preset veryfast \
@@ -20276,6 +22316,7 @@ create_template() {
 
     echo -e "${GREEN} = = > Template Created: $candidate${NC}"
     pause
+    run_intro_template_fingerprint_report
 }
 
 # End Of TEMPLATE BUILDER intro_template.mkv
@@ -20961,7 +23002,7 @@ run_custom_cut() {
     if run_with_progress "Cutting custom clip: $(basename "$src")" \
       ffmpeg -hide_banner -loglevel error -nostdin -y \
       -i "$src" \
-      -map 0:v:0 -map 0:a? \
+      -map 0:v:0 -map "0:a?" \
       -vf "trim=start=${start}:duration=${cut_dur},setpts=PTS-STARTPTS" \
       -af "atrim=start=${start}:duration=${cut_dur},asetpts=PTS-STARTPTS" \
       -c:v libx264 -crf 18 -preset veryfast \
@@ -22344,6 +24385,20 @@ LIMIT      = float(sys.argv[2])
 HASH_DIFF  = int(sys.argv[3])
 FILE       = sys.argv[4]
 
+# Optional separate ceiling for candidate INTRO START positions.
+# LIMIT remains the media / anchor-sampling ceiling.
+CANDIDATE_END = LIMIT
+
+if len(sys.argv) >= 10:
+    try:
+        CANDIDATE_END = float(sys.argv[9])
+    except Exception:
+        print(
+            f"WARN|bad candidate-end arg '{sys.argv[9]}', using LIMIT {LIMIT}",
+            file=sys.stderr
+        )
+        CANDIDATE_END = LIMIT
+
 # ============================================================
 # OPTIONAL TUNING INPUTS
 # ------------------------------------------------------------
@@ -22464,7 +24519,16 @@ if not TEMPLATES and TEMPLATE_GLOB == "intro_template/intro_template*.mkv":
 TEMPLATES.sort(key=template_sort_key)
 
 print("TEMPLATE_ORDER|" + "|".join(display_path(p) for p in TEMPLATES), file=sys.stderr)
-print(f"ENGINE_CFG|HASH_MODE={HASH_MODE}|SCAN_START={SCAN_START}|LIMIT={LIMIT}|HASH_DIFF={HASH_DIFF}|STEP={STEP}|ANCHORS={ANCHOR_OFFSETS}", file=sys.stderr)
+print(
+    f"ENGINE_CFG|HASH_MODE={HASH_MODE}"
+    f"|SCAN_START={SCAN_START}"
+    f"|CANDIDATE_END={CANDIDATE_END}"
+    f"|LIMIT={LIMIT}"
+    f"|HASH_DIFF={HASH_DIFF}"
+    f"|STEP={STEP}"
+    f"|ANCHORS={ANCHOR_OFFSETS}",
+    file=sys.stderr
+)
 
 # ============================================================
 # HASH CACHE
@@ -22606,9 +24670,10 @@ best_match = None
 second_best_score = None
 candidate_count = 0
 
-for candidate_start in frange(SCAN_START, LIMIT, STEP):
+for candidate_start in frange(SCAN_START, CANDIDATE_END, STEP):
     for t in template_data:
         diffs = []
+        anchor_results = []
         best_anchor_diff = None
         best_anchor_sec = None
 
@@ -22625,6 +24690,7 @@ for candidate_start in frange(SCAN_START, LIMIT, STEP):
 
             diff = template_hash - episode_hash
             diffs.append(diff)
+            anchor_results.append((anchor_sec, diff))
 
             if best_anchor_diff is None or diff < best_anchor_diff:
                 best_anchor_diff = diff
@@ -22644,6 +24710,7 @@ for candidate_start in frange(SCAN_START, LIMIT, STEP):
             "best_anchor_diff": best_anchor_diff,
             "best_anchor_sec": best_anchor_sec,
             "anchor_count": len(diffs),
+			"anchor_results": anchor_results,
         }
 
         if best_match is None or avg_diff < best_match["avg_diff"]:
@@ -22687,7 +24754,7 @@ try:
     debug_candidates = []
 
     # Re-scan lightly (cheap because of hash cache)
-    for candidate_start in frange(SCAN_START, LIMIT, STEP):
+    for candidate_start in frange(SCAN_START, CANDIDATE_END, STEP):
         for t in template_data:
             diffs = []
 
@@ -22720,6 +24787,16 @@ try:
             file=sys.stderr
         )
 
+    if debug_candidates:
+        best_avg, best_start, best_path = debug_candidates[0]
+
+        print(
+            "BEST_CANDIDATE"
+            f"|start={best_start:.3f}"
+            f"|avg_diff={best_avg:.3f}"
+            f"|template={best_path}"
+        )
+
 except Exception as e:
     print(f"DEBUG_WINDOW_FAILED|{e}", file=sys.stderr)
 
@@ -22747,6 +24824,16 @@ if best_match is not None and best_match["avg_diff"] < HASH_DIFF:
         f"|best_anchor_sec={best_match['best_anchor_sec']}"
         f"|anchors_used={best_match['anchor_count']}"
         f"|delta_to_next={delta_to_next}",
+        file=sys.stderr
+    )
+
+    anchor_result_text = "|".join(
+        f"{anchor_sec:.3f}s={diff}"
+        for anchor_sec, diff in best_match["anchor_results"]
+    )
+
+    print(
+        f"ANCHOR_DIFFS|{anchor_result_text}",
         file=sys.stderr
     )
 
@@ -22826,7 +24913,7 @@ run_outrofind_selected_files() {
 		echo -e "${CYAN}============================================================${NC}"
 		echo -e "${CYAN} = = > File:${NC} ${GREEN}$file${NC}"
 		echo -e "${CYAN} = = > Window:${NC} ${YELLOW}${outro_scan_start}s → ${outro_limit}s${NC}"
-		echo -e "${CYAN} = = > Settings:${NC} ${YELLOW}Diff=${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}} Step=${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}} Anchors=$resolved_outro_anchors"
+		echo -e "${CYAN} = = > Settings:${NC} ${YELLOW}Diff=${OUTRO_HASH_DIFF:-16} Step=${OUTRO_STEP_SIZE:-1} Anchors=$resolved_outro_anchors"
 		echo
 
 		echo
@@ -22836,7 +24923,7 @@ run_outrofind_selected_files() {
 		# ------------------------------------------------------------------
 		# Outro-only can be entered without the earlier full IntroFind setup path,
 		# so make sure the stderr log target exists before process substitution.
-		PHASH_STDERR_LOG="${PHASH_STDERR_LOG:-phash_stderr.log}"
+		PHASH_STDERR_LOG="${PHASH_STDERR_LOG:-${FACTORY_HOME}/.phash_engine.stderr.log}"
 		: > "$PHASH_STDERR_LOG"
 
 		outro_find_t0="$(date +%s)"
@@ -22845,9 +24932,9 @@ run_outrofind_selected_files() {
 			python3 "$PHASH_ENGINE" \
 				"$outro_scan_start" \
 				"$outro_limit" \
-				"${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}}" \
+				"${OUTRO_HASH_DIFF:-16}" \
 				"$file" \
-				"${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}" \
+				"${OUTRO_STEP_SIZE:-1}" \
 				"$resolved_outro_anchors" \
 				"${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}" \
 				"${OUTRO_HASH_MODE:-dhash}" \
@@ -22965,9 +25052,9 @@ run_outro_hash_compare_test() {
 					python3 "$PHASH_ENGINE" \
 						"$outro_scan_start" \
 						"$outro_limit" \
-						"${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}}" \
+						"${OUTRO_HASH_DIFF:-16}" \
 						"$file" \
-						"${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}" \
+						"${OUTRO_STEP_SIZE:-1}" \
 						"$anchors" \
 						"${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}" \
 						"$hash_mode" \
@@ -23038,8 +25125,9 @@ run_intro_detection_menu() {
         echo -e "${CYAN}=====================================================${NC}"
         echo
         echo -e "${YELLOW}"
-        echo "     0) Create Introfind Keys outro And intro Template"
-        echo "     2) Multi Key xHash Detect Use intro_template.mkv Find It (xHash detection)"
+        echo "     0) Create Introfind Template/Keys outro And intro "
+		echo "     1) Analyze Intro Template / Build Fingerprint Report (Begin Cascading Introfind)"
+        echo "     2) xHash Detection Use outro/intro_template.mkv To Find It (Multi Key Capable)"
         echo "     3) Hybrid detection Same As Above With Black Detect FallBack (xHash + Blackdetect)"
         echo "     7) Blackdetect Only"
         echo
@@ -23063,50 +25151,62 @@ run_intro_detection_menu() {
                 create_template_smc
                 ;;
 
+			1)
+				run_intro_template_fingerprint_report
+				;;
+
             2)
                 MODE="2"
 
                 DEFAULT_SCAN_START="${INTRO_SCAN_START:-${DEFAULT_SCAN_START:-30}}"
                 DEFAULT_MAX_SCAN="${INTRO_MAX_SCAN:-${DEFAULT_MAX_SCAN:-601}}"
                 DEFAULT_HASH_DIFF="${INTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}}"
-                STEP_SIZE="${INTRO_STEP_SIZE:-${STEP_SIZE:-1}}"
-                ANCHOR_SECONDS="${INTRO_ANCHOR_SECONDS:-${ANCHOR_SECONDS:-3,5,7}}"
+                STEP_SIZE="${INTRO_STEP_SIZE:-1}"
+                ANCHOR_SECONDS="${INTRO_ANCHOR_SECONDS:-3,5,7}"
 
-                echo
-                echo -e "${CYAN} = = > CURRENT INTROFIND SETTINGS${NC}"
-                echo -e "${CYAN} = = > Scan Start:${NC} ${YELLOW}${DEFAULT_SCAN_START}s${NC} ${CYAN}| Max Depth:${NC} ${YELLOW}${DEFAULT_MAX_SCAN}s${NC}"
-                echo -e "${CYAN} = = > Diff:${NC} ${YELLOW}${DEFAULT_HASH_DIFF}${NC} ${CYAN}| Step Size:${NC} ${YELLOW}${STEP_SIZE}s${NC} ${CYAN}| Anchors:${NC} ${YELLOW}${ANCHOR_SECONDS}${NC}"
-                echo
+				SCAN_START="${INTRO_SCAN_START:-30}"
+				MAX_SCAN="${INTRO_MAX_SCAN:-601}"
+				HASH_DIFF="${INTRO_HASH_DIFF:-16}"
+				STEP_SIZE="${INTRO_STEP_SIZE:-1}"
+				ANCHOR_SECONDS="${INTRO_ANCHOR_SECONDS:-3,5,7}"
 
-                echo -ne "${YELLOW} = = > Seconds To Skip Before Starting Scan? (Default ${DEFAULT_SCAN_START}): ${NC}${GREEN}"
-                read -r SCAN_START
-                echo -e "${NC}"
-                SCAN_START=${SCAN_START:-$DEFAULT_SCAN_START}
-                INTRO_SCAN_START="$SCAN_START"
+				load_intro_template_fingerprint || :
 
-                echo -ne "${YELLOW} = = > Max Scan Depth From Start In Seconds? (Default ${DEFAULT_MAX_SCAN}): ${NC}${GREEN}"
-                read -r MAX_SCAN
-                echo -e "${NC}"
-                MAX_SCAN=${MAX_SCAN:-$DEFAULT_MAX_SCAN}
-                INTRO_MAX_SCAN="$MAX_SCAN"
+				clear
+				echo -e "${CYAN}============================================================${NC}"
+				echo -e "${CYAN}              INTRO / OUTRO VAR REVIEW                      ${NC}"
+				echo -e "${CYAN}============================================================${NC}"
+				echo
+				printf '%b%-28s%b %b%-28s%b\n' "$CYAN" "INTROFIND" "$NC" "$CYAN" "OUTROFIND" "$NC"
+				printf '%-28s %-28s\n' "----------------------------" "----------------------------"
+				printf '%b%-12s%b %b%-14s%b %b%-12s%b %b%-14s%b\n' "$CYAN" "Scan Start:" "$NC" "$YELLOW" "${SCAN_START}s" "$NC" "$CYAN" "Tail Mode:" "$NC" "$YELLOW" "${OUTRO_TAIL_SCAN_SECONDS:-auto}" "$NC"
+				printf '%b%-12s%b %b%-14s%b %b%-12s%b %b%-14s%b\n' "$CYAN" "Max Depth:" "$NC" "$YELLOW" "${MAX_SCAN}s" "$NC" "$CYAN" "Tail Pad:" "$NC" "$YELLOW" "${OUTRO_TAIL_SCAN_PAD_SECONDS:-10}s" "$NC"
+				printf '%b%-12s%b %b%-14s%b %b%-12s%b %b%-14s%b\n' "$CYAN" "Hash Diff:" "$NC" "$YELLOW" "$HASH_DIFF" "$NC" "$CYAN" "Hash Diff:" "$NC" "$YELLOW" "${OUTRO_HASH_DIFF:-16}" "$NC"
+				printf '%b%-12s%b %b%-14s%b %b%-12s%b %b%-14s%b\n' "$CYAN" "Step Size:" "$NC" "$YELLOW" "${STEP_SIZE}s" "$NC" "$CYAN" "Step Size:" "$NC" "$YELLOW" "${OUTRO_STEP_SIZE:-1}s" "$NC"
+				printf '%b%-12s%b %b%-14s%b %b%-12s%b %b%-14s%b\n' "$CYAN" "Anchors:" "$NC" "$YELLOW" "$ANCHOR_SECONDS" "$NC" "$CYAN" "Anchors:" "$NC" "$YELLOW" "${OUTRO_ANCHOR_SECONDS:-8,12,16}" "$NC"
+				printf '%b%-12s%b %b%-14s%b %b%-12s%b %b%-14s%b\n' "$CYAN" "Hash Mode:" "$NC" "$YELLOW" "${INTRO_HASH_MODE:-phash}" "$NC" "$CYAN" "Hash Mode:" "$NC" "$YELLOW" "${OUTRO_HASH_MODE:-dhash}" "$NC"
+				echo
 
-                echo -ne "${YELLOW} = = > Hash Diff Threshold Higher Number Easier Match? (Default ${DEFAULT_HASH_DIFF}): ${NC}${GREEN}"
-                read -r HASH_DIFF
-                echo -e "${NC}"
-                HASH_DIFF=${HASH_DIFF:-$DEFAULT_HASH_DIFF}
-                INTRO_HASH_DIFF="$HASH_DIFF"
+				if (( ${INTRO_FINGERPRINT_LOADED:-0} == 1 )); then
+					echo -e "${GR} = = > Structural Fingerprint Loaded${NC}"
+					echo -e "${CYAN}       File:${NC} ${GREEN}$(factory_display_path "$INTRO_FINGERPRINT_FILE")${NC}"
+					echo -e "${CYAN}       Version:${NC} ${YELLOW}$INTRO_FINGERPRINT_VERSION${NC}"
+					echo -e "${CYAN}       Suggested Auto-A:${NC} ${YELLOW}$INTRO_FINGERPRINT_AUTO_A${NC}"
+					echo -e "${CYAN}       Suggested Auto-B:${NC} ${YELLOW}$INTRO_FINGERPRINT_AUTO_B${NC}"
+					echo -e "${YE}       Display Only — Current IntroFind Settings Remain Unchanged.${NC}"
+				else
+					echo -e "${YE} = = > Structural Fingerprint:${NC} ${YELLOW}Not Loaded / Not Available${NC}"
+				fi
+				echo
+				echo -e "${YELLOW} = = > Change these from:${NC} ${CYAN}SmartCut Session VarZ > Intro/Outro Find Vars${NC}"
+				echo
+				prompt_menu_choice " = = > Press Enter To Begin IntroFind, Or 0.=Return: " confirm_introfind
 
-                echo -ne "${YELLOW} = = > Scan Step Size In Seconds? (Default ${STEP_SIZE}): ${NC}${GREEN}"
-                read -r STEP_SIZE_INPUT
-                echo -e "${NC}"
-                STEP_SIZE=${STEP_SIZE_INPUT:-$STEP_SIZE}
-                INTRO_STEP_SIZE="$STEP_SIZE"
-
-                echo -ne "${YELLOW} = = > Anchor Seconds Comma List? (Default ${ANCHOR_SECONDS}): ${NC}${GREEN}"
-                read -r ANCHOR_SECONDS_INPUT
-                echo -e "${NC}"
-                ANCHOR_SECONDS=${ANCHOR_SECONDS_INPUT:-$ANCHOR_SECONDS}
-                INTRO_ANCHOR_SECONDS="$ANCHOR_SECONDS"
+				if is_exit_token "$confirm_introfind"; then
+					echo -e "${YE} = = > IntroFind Cancelled.${NC}"
+					pause
+					continue
+				fi
 
                 echo
                 return 10
@@ -23458,6 +25558,1057 @@ if [[ "${MODE:-}" == "2" || "${MODE:-}" == "4" ]]; then
 
 2|4)
 
+# ================================================================
+# #MARKER: INTRO EPISODE TEMPORAL VISUAL SCOUT
+# ================================================================
+# PURPOSE:
+# - Scout episodes when the template has no useful scene skeleton.
+# - Load the saved 3-second dHash temporal signature.
+# - Choose a spread of high-information temporal witnesses.
+# - Score candidate intro starts at a coarse 1-second step.
+# - Rank likely starts for the existing local pHash verifier.
+#
+# IMPORTANT:
+# - dHash scouts.
+# - pHash still confirms.
+# - Does not produce the final IntroFind match itself.
+# ================================================================
+run_intro_episode_temporal_report() {
+	local target_file="$1"
+	local scan_start="$2"
+	local candidate_limit="$3"
+
+	load_intro_template_fingerprint >/dev/null 2>&1 || {
+		echo -e "${YE} = = > Temporal Episode Scout Skipped: No Fingerprint Loaded.${NC}" >&2
+		return 1
+	}
+
+	python3 - \
+		"$INTRO_FINGERPRINT_FILE" \
+		"$target_file" \
+		"$scan_start" \
+		"$candidate_limit" <<'PY'
+import re
+import subprocess
+import sys
+
+import imagehash
+from PIL import Image
+
+fingerprint_path = sys.argv[1]
+episode_path = sys.argv[2]
+scan_start = float(sys.argv[3])
+candidate_limit = float(sys.argv[4])
+
+text = open(
+    fingerprint_path,
+    "r",
+    errors="replace"
+).read()
+
+duration_match = re.search(
+    r"^Duration:\s*([0-9.]+)",
+    text,
+    re.MULTILINE
+)
+
+if not duration_match:
+    print("TEMPORAL_ERROR|template_duration_missing")
+    raise SystemExit(1)
+
+template_duration = float(duration_match.group(1))
+
+# ------------------------------------------------------------
+# LOAD TEMPLATE TEMPORAL SIGNATURE
+# ------------------------------------------------------------
+template_samples = []
+in_temporal_section = False
+
+for raw in text.splitlines():
+    line = raw.strip()
+
+    if line == "TEMPORAL VISUAL SIGNATURE":
+        in_temporal_section = True
+        continue
+
+    if (
+        in_temporal_section
+        and line == "BLACK / NEAR-BLACK RANGES"
+    ):
+        break
+
+    if not in_temporal_section:
+        continue
+
+    match = re.match(
+        r"^time=([0-9.]+)\s+"
+        r"dhash=([0-9a-fA-F]+)\s+"
+        r"delta=([0-9]+)$",
+        line
+    )
+
+    if not match:
+        continue
+
+    template_samples.append(
+        (
+            float(match.group(1)),
+            imagehash.hex_to_hash(match.group(2)),
+            int(match.group(3)),
+        )
+    )
+
+if len(template_samples) < 5:
+    print("TEMPORAL_ERROR|insufficient_template_samples")
+    raise SystemExit(1)
+
+# ------------------------------------------------------------
+# SELECT FULL 7-WITNESS TEMPORAL FINGERPRINT
+# ------------------------------------------------------------
+eligible = template_samples[1:]
+
+ordered = sorted(
+    eligible,
+    key=lambda item: (-item[2], item[0])
+)
+
+wanted = min(7, len(ordered))
+
+min_gap = max(
+    3.0,
+    template_duration / max(wanted * 1.6, 1.0)
+)
+
+witnesses = []
+
+for item in ordered:
+    sample_time = item[0]
+
+    if all(
+        abs(sample_time - existing[0]) >= min_gap
+        for existing in witnesses
+    ):
+        witnesses.append(item)
+
+    if len(witnesses) >= wanted:
+        break
+
+if len(witnesses) < wanted:
+    for item in ordered:
+        if item not in witnesses:
+            witnesses.append(item)
+
+        if len(witnesses) >= wanted:
+            break
+
+witnesses.sort(
+    key=lambda item: item[0]
+)
+
+# ------------------------------------------------------------
+# SELECT MULTIPLE 3-WITNESS COARSE PATROL VIEWS
+# ------------------------------------------------------------
+# PURPOSE:
+# - Avoid allowing one three-witness combination to blind the scout.
+# - Every view reuses the same FFmpeg hash cache.
+# - No additional media decode is required.
+#
+# VIEW A:
+# - Three highest-information witnesses.
+#
+# VIEW B / C:
+# - Different early / middle / late slices of the full fingerprint.
+# ------------------------------------------------------------
+coarse_view_a = sorted(
+    sorted(
+        witnesses,
+        key=lambda item: (-item[2], item[0])
+    )[:3],
+    key=lambda item: item[0]
+)
+
+coarse_view_b = [
+    witnesses[index]
+    for index in (0, 2, 5)
+    if index < len(witnesses)
+]
+
+coarse_view_c = [
+    witnesses[index]
+    for index in (1, 4, 6)
+    if index < len(witnesses)
+]
+
+coarse_views = [
+    ("A", coarse_view_a),
+    ("B", coarse_view_b),
+    ("C", coarse_view_c),
+]
+
+# ------------------------------------------------------------
+# BUILD ONE FFMPEG TEMPORAL ANALYSIS STREAM
+# ------------------------------------------------------------
+# FFmpeg does the compressed-video decode.
+#
+# Analysis output:
+# - 1 frame per second
+# - grayscale
+# - 9x8 pixels, exactly what dHash needs
+#
+# The stream covers the candidate depth plus the latest witness.
+# All later coarse and fine scoring is memory-only.
+# ------------------------------------------------------------
+max_witness_offset = max(
+    item[0]
+    for item in witnesses
+)
+
+analysis_start = max(
+    0,
+    int(scan_start)
+)
+
+analysis_end = int(
+    candidate_limit + max_witness_offset
+) + 1
+
+analysis_duration = max(
+    1,
+    analysis_end - analysis_start + 1
+)
+
+frame_width = 9
+frame_height = 8
+frame_bytes = frame_width * frame_height
+
+ffmpeg_cmd = [
+    "ffmpeg",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-nostdin",
+    "-ss",
+    str(analysis_start),
+    "-i",
+    episode_path,
+    "-t",
+    str(analysis_duration),
+    "-an",
+    "-sn",
+    "-dn",
+    "-vf",
+    "fps=1,scale=9:8:flags=fast_bilinear,format=gray",
+    "-f",
+    "rawvideo",
+    "-pix_fmt",
+    "gray",
+    "pipe:1",
+]
+
+try:
+    process = subprocess.Popen(
+        ffmpeg_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+except OSError:
+    print("TEMPORAL_ERROR|ffmpeg_start_failed")
+    raise SystemExit(1)
+
+episode_hash_cache = {}
+frame_index = 0
+
+while True:
+    frame_data = process.stdout.read(frame_bytes)
+
+    if not frame_data:
+        break
+
+    if len(frame_data) != frame_bytes:
+        break
+
+    sample_second = float(
+        analysis_start + frame_index
+    )
+
+    image = Image.frombytes(
+        "L",
+        (frame_width, frame_height),
+        frame_data,
+    )
+
+    episode_hash_cache[sample_second] = imagehash.dhash(
+        image
+    )
+
+    frame_index += 1
+
+stderr_data = process.stderr.read()
+return_code = process.wait()
+
+if return_code != 0:
+    stderr_text = stderr_data.decode(
+        "utf-8",
+        errors="replace"
+    ).strip()
+
+    print(
+        "TEMPORAL_ERROR"
+        "|ffmpeg_analysis_failed"
+        f"|return_code={return_code}"
+    )
+
+    if stderr_text:
+        print(
+            "TEMPORAL_FFMPEG_ERROR|"
+            + stderr_text.replace(
+                "\n",
+                " "
+            )[:500]
+        )
+
+    raise SystemExit(1)
+
+print(
+    "TEMPORAL_FFMPEG_CACHE"
+    f"|start={analysis_start}"
+    f"|end={analysis_end}"
+    f"|fps=1.000"
+    f"|size={frame_width}x{frame_height}"
+    f"|hashes={len(episode_hash_cache)}"
+)
+
+
+def cached_hash_at(seconds):
+    cache_second = float(
+        int(round(seconds))
+    )
+
+    return episode_hash_cache.get(
+        cache_second
+    )
+
+
+# ------------------------------------------------------------
+# SHARED TEMPORAL SCORE
+# ------------------------------------------------------------
+# Keep the proven scoring model untouched:
+#   80% visual identity
+#   20% temporal rhythm
+# ------------------------------------------------------------
+def score_candidate(
+    candidate_start,
+    active_witnesses,
+):
+    episode_witnesses = []
+
+    for (
+        offset,
+        template_hash,
+        template_delta,
+    ) in active_witnesses:
+        episode_hash = cached_hash_at(
+            candidate_start + offset
+        )
+
+        if episode_hash is None:
+            return None
+
+        episode_witnesses.append(
+            (
+                offset,
+                template_hash,
+                template_delta,
+                episode_hash,
+            )
+        )
+
+    identity_diffs = [
+        template_hash - episode_hash
+        for (
+            offset,
+            template_hash,
+            template_delta,
+            episode_hash,
+        ) in episode_witnesses
+    ]
+
+    identity_score = (
+        sum(identity_diffs)
+        / len(identity_diffs)
+    )
+
+    rhythm_errors = []
+    previous_episode_hash = None
+
+    for (
+        offset,
+        template_hash,
+        template_delta,
+        episode_hash,
+    ) in episode_witnesses:
+        if previous_episode_hash is not None:
+            episode_delta = (
+                episode_hash - previous_episode_hash
+            )
+
+            rhythm_errors.append(
+                abs(
+                    template_delta
+                    - episode_delta
+                )
+            )
+
+        previous_episode_hash = episode_hash
+
+    rhythm_score = (
+        sum(rhythm_errors)
+        / len(rhythm_errors)
+        if rhythm_errors
+        else 0.0
+    )
+
+    total_score = (
+        identity_score * 0.80
+        + rhythm_score * 0.20
+    )
+
+    return (
+        total_score,
+        candidate_start,
+        identity_score,
+        rhythm_score,
+    )
+
+
+# ------------------------------------------------------------
+# TEMPORAL PASS A — MULTI-VIEW COARSE PATROL
+# ------------------------------------------------------------
+# - 2-second candidate grid.
+# - Three independent 3-witness views.
+# - Retain top 10 nominations from each view.
+# - Merge duplicate candidate starts before fine refinement.
+# ------------------------------------------------------------
+coarse_view_results = {}
+merged_coarse_nominations = {}
+
+for view_name, view_witnesses in coarse_views:
+    view_scored = []
+    coarse_candidate = scan_start
+
+    while coarse_candidate <= candidate_limit:
+        result = score_candidate(
+            coarse_candidate,
+            view_witnesses,
+        )
+
+        if result is not None:
+            view_scored.append(result)
+
+        coarse_candidate += 2.0
+
+    view_scored.sort(
+        key=lambda item: item[0]
+    )
+
+    coarse_view_results[view_name] = view_scored
+
+    print(
+        "TEMPORAL_COARSE_VIEW"
+        f"|view={view_name}"
+        f"|step=2.000"
+        f"|witnesses={len(view_witnesses)}"
+        f"|candidates_scored={len(view_scored)}"
+    )
+
+    print(
+        "TEMPORAL_COARSE_WITNESSES"
+        f"|view={view_name}|"
+        + ",".join(
+            f"{item[0]:.3f}"
+            for item in view_witnesses
+        )
+    )
+
+    for rank, item in enumerate(
+        view_scored[:10],
+        start=1
+    ):
+        (
+            total_score,
+            candidate_start,
+            identity_score,
+            rhythm_score,
+        ) = item
+
+        print(
+            "TEMPORAL_COARSE_CANDIDATE"
+            f"|view={view_name}"
+            f"|rank={rank}"
+            f"|start={candidate_start:.3f}"
+            f"|score={total_score:.3f}"
+            f"|identity_score={identity_score:.3f}"
+            f"|rhythm_score={rhythm_score:.3f}"
+        )
+
+        candidate_key = float(
+            int(round(candidate_start))
+        )
+
+        existing = merged_coarse_nominations.get(
+            candidate_key
+        )
+
+        if (
+            existing is None
+            or total_score < existing[0]
+        ):
+            merged_coarse_nominations[
+                candidate_key
+            ] = item
+
+if not merged_coarse_nominations:
+    print("TEMPORAL_ERROR|no_coarse_candidates")
+    raise SystemExit(1)
+
+merged_coarse_scored = sorted(
+    merged_coarse_nominations.values(),
+    key=lambda item: item[0]
+)
+
+print(
+    "TEMPORAL_COARSE_MERGED"
+    f"|views={len(coarse_views)}"
+    f"|unique_nominations={len(merged_coarse_scored)}"
+)
+
+# ------------------------------------------------------------
+# BUILD MERGED COARSE NEIGHBORHOODS
+# ------------------------------------------------------------
+# Each view contributes its top 10 nominations.
+# Duplicate starts are removed before windows are built.
+# Nearby windows are merged.
+# ------------------------------------------------------------
+raw_windows = []
+
+for item in merged_coarse_scored:
+    center = item[1]
+
+    raw_windows.append(
+        (
+            max(scan_start, center - 4.0),
+            min(candidate_limit, center + 4.0),
+        )
+    )
+
+raw_windows.sort(
+    key=lambda item: item[0]
+)
+
+fine_windows = []
+
+for start, end in raw_windows:
+    if (
+        not fine_windows
+        or start > fine_windows[-1][1] + 1.0
+    ):
+        fine_windows.append(
+            [start, end]
+        )
+    else:
+        fine_windows[-1][1] = max(
+            fine_windows[-1][1],
+            end
+        )
+
+# ------------------------------------------------------------
+# TEMPORAL PASS B — FINE LOCAL REFINE
+# ------------------------------------------------------------
+# Full 7 witnesses.
+# 1-second candidate grid.
+# Uses the same FFmpeg-built in-memory dHash cache.
+# ------------------------------------------------------------
+fine_scored = []
+seen_fine_candidates = set()
+
+for window_start, window_end in fine_windows:
+    candidate_start = float(
+        int(round(window_start))
+    )
+
+    while candidate_start <= window_end:
+        candidate_key = float(
+            int(round(candidate_start))
+        )
+
+        if candidate_key not in seen_fine_candidates:
+            seen_fine_candidates.add(candidate_key)
+
+            result = score_candidate(
+                candidate_key,
+                witnesses,
+            )
+
+            if result is not None:
+                fine_scored.append(result)
+
+        candidate_start += 1.0
+
+fine_scored.sort(
+    key=lambda item: item[0]
+)
+
+print(
+    "TEMPORAL_FINE"
+    f"|windows={len(fine_windows)}"
+    f"|witnesses={len(witnesses)}"
+    f"|candidates_scored={len(fine_scored)}"
+    f"|cache_hashes={len(episode_hash_cache)}"
+)
+
+print(
+    "TEMPORAL_FINE_WINDOWS|"
+    + ",".join(
+        f"{start:.3f}-{end:.3f}"
+        for start, end in fine_windows
+    )
+)
+
+print(
+    "TEMPORAL_WITNESSES|"
+    + ",".join(
+        f"{item[0]:.3f}"
+        for item in witnesses
+    )
+)
+
+# ------------------------------------------------------------
+# FINAL TEMPORAL REPORT
+# ------------------------------------------------------------
+# Keep TEMPORAL_SCAN and TEMPORAL_CANDIDATE output names.
+# Existing Bash handoff parses TEMPORAL_CANDIDATE.
+# ------------------------------------------------------------
+print(
+    "TEMPORAL_SCAN"
+    f"|template_duration={template_duration:.3f}"
+    f"|witnesses={len(witnesses)}"
+    f"|candidates_scored={len(fine_scored)}"
+)
+
+for rank, item in enumerate(
+    fine_scored[:10],
+    start=1
+):
+    (
+        total_score,
+        candidate_start,
+        identity_score,
+        rhythm_score,
+    ) = item
+
+    print(
+        "TEMPORAL_CANDIDATE"
+        f"|rank={rank}"
+        f"|start={candidate_start:.3f}"
+        f"|score={total_score:.3f}"
+        f"|identity_score={identity_score:.3f}"
+        f"|rhythm_score={rhythm_score:.3f}"
+    )
+PY
+}
+
+# ================================================================
+# #MARKER: INTRO EPISODE STRUCTURAL MATCH REPORT
+# ================================================================
+# PURPOSE:
+# - Analyze an episode with the same structural tools used on the
+#   intro template.
+# - Compare episode scene / black timing against the saved template
+#   fingerprint.
+# - Report likely intro-start candidates.
+#
+# IMPORTANT:
+# - REPORT ONLY.
+# - Does not change IntroFind search range or hash behavior.
+# - Current dHash / pHash cascade remains untouched.
+# ================================================================
+run_intro_episode_structural_report() {
+	local target_file="$1"
+	local scan_start="$2"
+	local scan_limit="$3"
+	local tmpdir=""
+	local scene_csv=""
+	local black_log=""
+	local structure_output=""
+
+	load_intro_template_fingerprint >/dev/null 2>&1 || {
+		echo -e "${YE} = = > Structural Episode Scout Skipped: No Fingerprint Loaded.${NC}" >&2
+		return 1
+	}
+
+	tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/factory_episode_structure.XXXXXX")"
+	scene_csv="$tmpdir/episode_scenes.csv"
+	black_log="$tmpdir/episode_blackdetect.log"
+
+	echo -e "${CYAN} = = > Structural Scout:${NC} ${YELLOW}Mapping Episode Scene / Black Pattern...${NC}" >&2
+
+	# ------------------------------------------------------------
+	# BLACK / NEAR-BLACK MAP
+	# ------------------------------------------------------------
+	ffmpeg \
+		-hide_banner \
+		-loglevel info \
+		-nostdin \
+		-ss "$scan_start" \
+		-to "$scan_limit" \
+		-i "$target_file" \
+		-vf "blackdetect=d=0.20:pix_th=0.10" \
+		-an \
+		-f null - \
+		2>&1 |
+		sed -nE '
+			s/.*black_start:([0-9.]+)[[:space:]]+black_end:([0-9.]+)[[:space:]]+black_duration:([0-9.]+).*/\1,\2,\3/p
+		' > "$black_log"
+
+	# ------------------------------------------------------------
+	# EPISODE SCENE MAP
+	# ------------------------------------------------------------
+	if command -v scenedetect >/dev/null 2>&1; then
+		scenedetect \
+			-q \
+			-i "$target_file" \
+			-o "$tmpdir" \
+			time \
+				--start "${scan_start}s" \
+				--end "${scan_limit}s" \
+			detect-adaptive \
+			list-scenes \
+				--skip-cuts \
+				--filename "episode_scenes.csv" \
+			>/dev/null 2>&1 || :
+	fi
+
+	if [[ ! -s "$scene_csv" ]]; then
+		echo -e "${YE} = = > Structural Scout Could Not Build Episode Scene Map.${NC}" >&2
+		rm -rf -- "$tmpdir"
+		return 1
+	fi
+
+	structure_output="$(
+		python3 - \
+			"$INTRO_FINGERPRINT_FILE" \
+			"$scene_csv" \
+			"$black_log" \
+			"$scan_start" \
+			"$scan_limit" <<'PY'
+import csv
+import re
+import sys
+from pathlib import Path
+
+fingerprint_path = Path(sys.argv[1])
+scene_csv = Path(sys.argv[2])
+black_log = Path(sys.argv[3])
+scan_start = float(sys.argv[4])
+scan_limit = float(sys.argv[5])
+
+# ------------------------------------------------------------
+# LOAD TEMPLATE STRUCTURE
+# ------------------------------------------------------------
+text = fingerprint_path.read_text(errors="replace")
+
+duration_match = re.search(
+    r"^Duration:\s*([0-9.]+)",
+    text,
+    re.MULTILINE
+)
+
+if not duration_match:
+    print("STRUCTURAL_ERROR|template_duration_missing")
+    raise SystemExit(1)
+
+template_duration = float(duration_match.group(1))
+
+template_scenes = []
+in_scene_section = False
+
+for raw in text.splitlines():
+    line = raw.strip()
+
+    if line == "SCENE STRUCTURE":
+        in_scene_section = True
+        continue
+
+    if in_scene_section and line.startswith("SUGGESTED REPORT-ONLY ANCHORS"):
+        break
+
+    if not in_scene_section:
+        continue
+
+    match = re.match(
+        r"^\d+:\s*([0-9.]+)\s*->\s*([0-9.]+)",
+        line
+    )
+
+    if match:
+        start = float(match.group(1))
+        end = float(match.group(2))
+        template_scenes.append((start, end))
+
+template_black = []
+in_black_section = False
+
+for raw in text.splitlines():
+    line = raw.strip()
+
+    if line == "BLACK / NEAR-BLACK RANGES":
+        in_black_section = True
+        continue
+
+    if in_black_section and line == "SCENE STRUCTURE":
+        break
+
+    if not in_black_section:
+        continue
+
+    match = re.match(
+        r"^([0-9.]+)\s*->\s*([0-9.]+)",
+        line
+    )
+
+    if match:
+        template_black.append(
+            (float(match.group(1)), float(match.group(2)))
+        )
+
+# ------------------------------------------------------------
+# LOAD EPISODE SCENES
+# ------------------------------------------------------------
+episode_scenes = []
+
+with scene_csv.open(
+    newline="",
+    errors="replace"
+) as handle:
+    reader = csv.DictReader(handle)
+
+    for row in reader:
+        try:
+            start = float(row.get("Start Time (seconds)", ""))
+            end = float(row.get("End Time (seconds)", ""))
+        except (TypeError, ValueError):
+            continue
+
+        if end <= scan_start:
+            continue
+
+        if start >= scan_limit:
+            continue
+
+        episode_scenes.append((start, end))
+
+episode_black = []
+
+if black_log.exists():
+    for raw in black_log.read_text(errors="replace").splitlines():
+        parts = raw.strip().split(",")
+
+        if len(parts) != 3:
+            continue
+
+        try:
+            start = float(parts[0]) + scan_start
+            end = float(parts[1]) + scan_start
+        except ValueError:
+            continue
+
+        episode_black.append((start, end))
+
+if len(template_scenes) < 2 or len(episode_scenes) < 2:
+    print("STRUCTURAL_ERROR|insufficient_scene_data")
+    raise SystemExit(1)
+
+# Template internal scene-boundary offsets.
+template_boundaries = [
+    scene[0]
+    for scene in template_scenes[1:]
+    if 0.0 < scene[0] < template_duration
+]
+
+episode_boundaries = [
+    scene[0]
+    for scene in episode_scenes
+    if scan_start <= scene[0] <= scan_limit
+]
+
+# ------------------------------------------------------------
+# CANDIDATE GENERATION
+#
+# Align every episode scene boundary against every template
+# scene boundary. Each alignment suggests a possible intro start.
+# ------------------------------------------------------------
+raw_candidates = []
+
+for episode_boundary in episode_boundaries:
+    for template_boundary in template_boundaries:
+        candidate_start = episode_boundary - template_boundary
+
+        if candidate_start < scan_start:
+            continue
+
+        if candidate_start + template_duration > scan_limit:
+            continue
+
+        raw_candidates.append(candidate_start)
+
+# De-duplicate nearby candidate starts.
+raw_candidates.sort()
+
+candidates = []
+
+for value in raw_candidates:
+    if not candidates or abs(value - candidates[-1]) >= 0.75:
+        candidates.append(value)
+
+# ------------------------------------------------------------
+# STRUCTURAL SCORING
+#
+# Lower score is better.
+# Compare:
+# - expected scene-boundary offsets
+# - black-range positions
+# ------------------------------------------------------------
+def nearest_distance(value, values):
+    if not values:
+        return 999.0
+
+    return min(abs(value - item) for item in values)
+
+scored = []
+
+for candidate_start in candidates:
+    expected_scene_times = [
+        candidate_start + offset
+        for offset in template_boundaries
+    ]
+
+    scene_errors = [
+        nearest_distance(expected, episode_boundaries)
+        for expected in expected_scene_times
+    ]
+
+    scene_score = (
+        sum(scene_errors) / len(scene_errors)
+        if scene_errors
+        else 999.0
+    )
+
+    black_errors = []
+
+    for black_start, black_end in template_black:
+        expected_start = candidate_start + black_start
+        expected_end = candidate_start + black_end
+
+        if episode_black:
+            best = min(
+                (
+                    abs(expected_start - ep_start)
+                    + abs(expected_end - ep_end)
+                ) / 2.0
+                for ep_start, ep_end in episode_black
+            )
+
+            black_errors.append(best)
+
+    black_score = (
+        sum(black_errors) / len(black_errors)
+        if black_errors
+        else 0.0
+    )
+
+    # Scene structure carries most of the first-pass weight.
+    total_score = (
+        scene_score * 0.75
+        + black_score * 0.25
+    )
+
+    scored.append(
+        (
+            total_score,
+            scene_score,
+            black_score,
+            candidate_start
+        )
+    )
+
+scored.sort(key=lambda item: item[0])
+
+print(
+    "STRUCTURAL_SCAN"
+    f"|template_duration={template_duration:.3f}"
+    f"|episode_scenes={len(episode_scenes)}"
+    f"|episode_black_ranges={len(episode_black)}"
+    f"|candidates_scored={len(scored)}"
+)
+
+for index, (
+    total_score,
+    scene_score,
+    black_score,
+    candidate_start
+) in enumerate(scored[:10], start=1):
+    print(
+        "STRUCTURAL_CANDIDATE"
+        f"|rank={index}"
+        f"|start={candidate_start:.3f}"
+        f"|score={total_score:.3f}"
+        f"|scene_score={scene_score:.3f}"
+        f"|black_score={black_score:.3f}"
+    )
+PY
+	)"
+
+	rm -rf -- "$tmpdir"
+
+	if [[ -z "$structure_output" ]]; then
+		return 1
+	fi
+
+	printf '%s\n' "$structure_output"
+}
+
+# ================================================================
+# #MARKER: INTRO HASH ENGINE RUNNER
+# ================================================================
+# PURPOSE:
+# - Provide one reusable Bash entry point to the local xHash engine.
+# - Used by normal IntroFind now.
+# - Future cascade scout / refine passes can reuse the same engine.
+# ================================================================
+run_intro_hash_engine() {
+	local scan_start="$1"
+	local scan_limit="$2"
+	local hash_diff="$3"
+	local target_file="$4"
+	local step_size="$5"
+	local anchors="$6"
+	local template_glob="$7"
+	local hash_mode="$8"
+	local candidate_end="${9:-$scan_limit}"
+
+	python3 "$PHASH_ENGINE" \
+		"$scan_start" \
+		"$scan_limit" \
+		"$hash_diff" \
+		"$target_file" \
+		"$step_size" \
+		"$anchors" \
+		"$template_glob" \
+		"$hash_mode" \
+		"$candidate_end" \
+		2> >(tee "$PHASH_STDERR_LOG" | run_phash_engine_colored >&2)
+}
+
 # =========================
 # #MARKER: PHASH DEP CHECK
 # =========================
@@ -23473,9 +26624,14 @@ then
   continue
 fi
 
-  echo -e "${CYAN} = = > Running xHash Detection...${NC}"
+  echo -e "${CYAN} = = > Running Scene Detect/xHash Cascading IntroFind...${NC}"
 
-resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_template*.mkv" "intro" "${INTRO_ANCHOR_SECONDS:-${ANCHOR_SECONDS:-3,5,7}}")"
+resolved_intro_anchors="$(
+	auto_anchor_csv_from_duration \
+		"${INTRO_TEMPLATE_DIR}/intro*.mkv" \
+		"intro" \
+		"${INTRO_ANCHOR_SECONDS:-3,5,7}"
+)"
 
     # --- Generate temporary Python engine ---
 # =========================
@@ -23513,27 +26669,759 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
     # - stderr is mirrored to screen AND saved to a sidecar log
     # - then we extract only the final authoritative MATCH|... or NO_MATCH line
     #
-    PHASH_STDERR_LOG=".phash_engine.stderr.log"
+	PHASH_STDERR_LOG="${PHASH_STDERR_LOG:-${FACTORY_HOME}/.phash_engine.stderr.log}"
 
-    intro_find_t0="$(date +%s)"
+	intro_find_t0="$(date +%s)"
 
-    phash_output="$(
-        python3 "$PHASH_ENGINE" \
-            "$SCAN_START" \
-            "$limit" \
-            "$HASH_DIFF" \
-            "$file" \
-            "${STEP_SIZE:-1}" \
-            "$resolved_intro_anchors" \
-			"intro_template/intro_template*.mkv" \
-			"${INTRO_HASH_MODE:-phash}" \
-            2> >(tee "$PHASH_STDERR_LOG" | run_phash_engine_colored >&2)
-    )"
-    phash_status=$?
+	echo
+	echo -e "${CYAN}============================================================${NC}"
+	echo -e "${CYAN}          STRUCTURAL INTRO SCENE DETECT SCOUT               ${NC}"
+	echo -e "${CYAN}============================================================${NC}"
 
-    intro_find_t1="$(date +%s)"
-    intro_find_elapsed="$((intro_find_t1 - intro_find_t0))"
-    intro_find_elapsed_hms="$(format_seconds_hms "$intro_find_elapsed")"
+	# ========================================================
+	# #MARKER: DURATION-AWARE STRUCTURAL INTRO SCOUT DEPTH
+	# ========================================================
+	# DEFAULT RULE:
+	# - Search at least the first 12 minutes for an intro start.
+	# - Otherwise search the first 25% of the episode.
+	# - Cap automatic scout depth at 25 minutes.
+	#
+	# IMPORTANT:
+	# - scout_candidate_limit = latest intro START we want to consider.
+	# - scout_analysis_limit = additional template runway so a late intro
+	#   can still be structurally analyzed in full.
+	# ========================================================
+
+	scout_candidate_limit="$(
+		awk \
+			-v duration="$duration_raw" \
+			'BEGIN {
+				v = duration * 0.25
+
+				if (v < 720)
+					v = 720
+
+				if (v > 1500)
+					v = 1500
+
+				if (v > duration)
+					v = duration
+
+				printf "%.3f", v
+			}'
+	)"
+
+	intro_template_runtime="$(
+		get_file_duration_seconds \
+			"${INTRO_TEMPLATE_DIR}/intro_template.mkv" \
+			2>/dev/null || true
+	)"
+
+	if [[ -z "$intro_template_runtime" ||
+	      ! "$intro_template_runtime" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+		intro_template_runtime="120"
+	fi
+
+	scout_analysis_limit="$(
+		awk \
+			-v candidate_limit="$scout_candidate_limit" \
+			-v template_duration="$intro_template_runtime" \
+			-v file_duration="$duration_raw" \
+			'BEGIN {
+				v = candidate_limit + template_duration
+
+				if (v > file_duration)
+					v = file_duration
+
+				printf "%.3f", v
+			}'
+	)"
+
+	echo
+	echo -e "${CYAN} = = > Structural Scout Depth:${NC}"
+	echo -e "${CYAN}       Episode Duration:${NC} ${YELLOW}${duration_raw}s${NC}"
+	echo -e "${CYAN}       Candidate Start Depth:${NC} ${YELLOW}${scout_candidate_limit}s${NC}"
+	echo -e "${CYAN}       Analysis Runway:${NC} ${YELLOW}${scout_analysis_limit}s${NC}"
+
+	load_intro_template_fingerprint >/dev/null 2>&1 || :
+
+	scout_output=""
+	scout_label="Structural"
+	scout_candidate_prefix="STRUCTURAL_CANDIDATE"
+
+	case "${INTRO_FINGERPRINT_SCOUT_MODE:-structural}" in
+		temporal)
+			scout_label="Temporal"
+			scout_candidate_prefix="TEMPORAL_CANDIDATE"
+
+			echo -e "${CYAN} = = > Fingerprint Scout Mode:${NC} ${YELLOW}TEMPORAL VISUAL${NC}"
+
+			scout_output="$(
+				run_intro_episode_temporal_report \
+					"$file" \
+					"$SCAN_START" \
+					"$scout_candidate_limit" \
+					2>&1
+			)" || scout_output=""
+			;;
+
+		structural|*)
+			scout_label="Structural"
+			scout_candidate_prefix="STRUCTURAL_CANDIDATE"
+
+			echo -e "${CYAN} = = > Fingerprint Scout Mode:${NC} ${YELLOW}STRUCTURAL${NC}"
+
+			scout_output="$(
+				run_intro_episode_structural_report \
+					"$file" \
+					"$SCAN_START" \
+					"$scout_analysis_limit" \
+					2>&1
+			)" || scout_output=""
+			;;
+	esac
+
+	if [[ -n "$scout_output" ]]; then
+		printf '%s\n' "$scout_output"
+	else
+		echo -e "${YE} = = > ${scout_label} Scout Produced No Report.${NC}"
+	fi
+
+	echo
+
+	# ========================================================
+	# #MARKER: CASCADING INTROFIND - SCOUT / VERIFY / RESCUE
+	# ========================================================
+	# PASS 1:
+	# - Fingerprint selects Structural or Temporal Visual scout.
+	# - Selected scout produces ranked likely intro starts.
+	#
+	# PASS 2:
+	# - Existing local pHash verifies top ranked candidates.
+	#
+	# PASS 3:
+	# - If real scout candidates exist but none confirm,
+	#   run bounded cluster rescue.
+	# ========================================================
+
+	intro_refine_radius="${INTRO_REFINE_RADIUS_SECONDS:-9}"
+	intro_structural_candidate_limit="${INTRO_STRUCTURAL_CANDIDATE_LIMIT:-3}"
+
+	intro_template_duration="$(
+		printf '%s\n' "$scout_output" |
+			awk -F'|' '
+				/^(STRUCTURAL_SCAN|TEMPORAL_SCAN)\|/ {
+					for (i=1; i<=NF; i++) {
+						if ($i ~ /^template_duration=/) {
+							value=$i
+							sub(/^template_duration=/, "", value)
+							print value
+							exit
+						}
+					}
+				}
+			'
+	)"
+
+	if [[ -z "$intro_template_duration" ]]; then
+		intro_template_duration="0"
+	fi
+
+	phash_output=""
+	phash_status=0
+	structural_match_found=0
+
+	mapfile -t structural_candidates < <(
+		printf '%s\n' "$scout_output" |
+			awk \
+				-F'|' \
+				-v candidate_prefix="$scout_candidate_prefix" '
+				$1 == candidate_prefix {
+					rank=""
+					start=""
+
+					for (i=1; i<=NF; i++) {
+						if ($i ~ /^rank=/) {
+							rank=$i
+							sub(/^rank=/, "", rank)
+						}
+
+						if ($i ~ /^start=/) {
+							start=$i
+							sub(/^start=/, "", start)
+						}
+					}
+
+					if (rank != "" && start != "") {
+						print rank "|" start
+					}
+				}
+			' |
+			head -n "$intro_structural_candidate_limit"
+	)
+
+	if (( ${#structural_candidates[@]} > 0 )); then
+		echo
+		echo -e "${CYAN} = = > Cascade Pass 1:${NC} ${YELLOW}${scout_label} Candidate Scout${NC}"
+		echo -e "${CYAN}       Candidates:${NC} ${YELLOW}${#structural_candidates[@]}${NC}"
+
+		for structural_candidate in "${structural_candidates[@]}"; do
+			IFS='|' read -r structural_rank structural_start <<< "$structural_candidate"
+
+			refine_start="$(
+				awk \
+					-v candidate="$structural_start" \
+					-v radius="$intro_refine_radius" \
+					-v floor="$SCAN_START" \
+					'BEGIN {
+						v = candidate - radius
+						if (v < floor) v = floor
+						printf "%.3f", v
+					}'
+			)"
+
+			refine_candidate_end="$(
+				awk \
+					-v candidate="$structural_start" \
+					-v radius="$intro_refine_radius" \
+					-v ceiling="$duration_raw" \
+					'BEGIN {
+						v = candidate + radius
+						if (v > ceiling) v = ceiling
+						printf "%.3f", v
+					}'
+			)"
+
+			refine_limit="$(
+				awk \
+					-v candidate_end="$refine_candidate_end" \
+					-v template_duration="$intro_template_duration" \
+					-v ceiling="$duration_raw" \
+					'BEGIN {
+						v = candidate_end + template_duration
+						if (v > ceiling) v = ceiling
+						printf "%.3f", v
+					}'
+			)"
+
+			echo
+			echo -e "${CYAN} = = > Cascade Pass 2:${NC} ${YELLOW}Local pHash Verification${NC}"
+			echo -e "${CYAN}       ${scout_label} Rank:${NC} ${YELLOW}#$structural_rank${NC}"
+			echo -e "${CYAN}       Candidate Start:${NC} ${YELLOW}${structural_start}s${NC}"
+			echo -e "${CYAN}       Candidate Window:${NC} ${YELLOW}${refine_start}s -> ${refine_candidate_end}s${NC}"
+			echo -e "${CYAN}       Engine Ceiling:${NC} ${YELLOW}${refine_limit}s${NC}"
+			echo -e "${CYAN}       Step:${NC} ${YELLOW}${INTRO_STEP_SIZE:-1}s${NC}"
+
+			phash_output="$(
+				run_intro_hash_engine \
+					"$refine_start" \
+					"$refine_limit" \
+					"$HASH_DIFF" \
+					"$file" \
+					"${INTRO_STEP_SIZE:-1}" \
+					"$resolved_intro_anchors" \
+					"intro_template/intro_template*.mkv" \
+					"${INTRO_HASH_MODE:-phash}" \
+					"$refine_candidate_end"
+			)"
+			phash_status=$?
+
+			refine_result="$(printf '%s\n' "$phash_output" | awk '
+				/^(MATCH\|.*|NO_MATCH)$/ { line=$0 }
+				END { print line }
+			')"
+
+			if [[ $phash_status -eq 0 && "$refine_result" == MATCH* ]]; then
+				echo -e "${GR} = = > ${scout_label} Candidate Confirmed By Local pHash.${NC}"
+				structural_match_found=1
+				break
+			fi
+
+			echo -e "${YEB} = = >${NC}${YE} ${scout_label} Candidate #${structural_rank} Was Not Confirmed.${NC}"
+		done
+	fi
+
+	if (( structural_match_found == 0 && ${#structural_candidates[@]} > 0 )); then
+		echo
+		echo -e "${YE} = = > Primary ${scout_label} Candidates Did Not Produce A Confirmed Match.${NC}"
+		echo -e "${CYAN} = = > Cascade Pass 3:${NC} ${YELLOW}Bounded ${scout_label} Island Rescue${NC}"
+
+		# --------------------------------------------------------
+		# BUILD SEPARATE CANDIDATE ISLANDS
+		# --------------------------------------------------------
+		# Each final scout candidate receives ±15 seconds.
+		# Overlapping windows merge.
+		# Distant candidates remain separate and are never bridged
+		# into one giant pHash scan.
+		# --------------------------------------------------------
+		mapfile -t rescue_islands < <(
+			printf '%s\n' "${structural_candidates[@]}" |
+				awk \
+					-F'|' \
+					-v floor="$SCAN_START" \
+					-v ceiling="$duration_raw" '
+					{
+						center = $2 + 0
+						start = center - 15
+						end = center + 15
+
+						if (start < floor)
+							start = floor
+
+						if (end > ceiling)
+							end = ceiling
+
+						printf "%.3f|%.3f\n", start, end
+					}
+				' |
+				sort -t'|' -k1,1n |
+				awk -F'|' '
+					NR == 1 {
+						start = $1
+						end = $2
+						next
+					}
+
+					{
+						if ($1 <= end + 1) {
+							if ($2 > end)
+								end = $2
+						} else {
+							printf "%.3f|%.3f\n", start, end
+							start = $1
+							end = $2
+						}
+					}
+
+					END {
+						if (NR > 0)
+							printf "%.3f|%.3f\n", start, end
+					}
+				'
+		)
+
+		phash_output="NO_MATCH"
+		phash_status=0
+		cluster_result="NO_MATCH"
+		rescue_island_number=0
+
+		for rescue_island in "${rescue_islands[@]}"; do
+			IFS='|' read -r cluster_start cluster_end <<< "$rescue_island"
+			((rescue_island_number+=1)) || :
+
+			echo
+			echo -e "${CYAN} = = > Rescue Island #${rescue_island_number}:${NC}"
+			echo -e "${CYAN}       Window:${NC} ${YELLOW}${cluster_start}s -> ${cluster_end}s${NC}"
+			echo -e "${CYAN}       Rescue Step:${NC} ${YELLOW}0.5s${NC}"
+			echo -e "${CYAN}       Anchors:${NC} ${YELLOW}${resolved_intro_anchors}${NC}"
+
+			cluster_engine_limit="$(
+				awk \
+					-v candidate_end="$cluster_end" \
+					-v template_duration="$intro_template_duration" \
+					-v file_duration="$duration_raw" \
+					'BEGIN {
+						v = candidate_end + template_duration
+
+						if (v > file_duration)
+							v = file_duration
+
+						printf "%.3f", v
+					}'
+			)"
+
+			phash_output="$(
+				run_intro_hash_engine \
+					"$cluster_start" \
+					"$cluster_engine_limit" \
+					"$HASH_DIFF" \
+					"$file" \
+					"0.5" \
+					"$resolved_intro_anchors" \
+					"intro_template/intro_template*.mkv" \
+					"${INTRO_HASH_MODE:-phash}" \
+					"$cluster_end"
+			)"
+			phash_status=$?
+
+			cluster_result="$(printf '%s\n' "$phash_output" | awk '
+				/^(MATCH\|.*|NO_MATCH)$/ { line=$0 }
+				END { print line }
+			')"
+
+			if [[ $phash_status -eq 0 && "$cluster_result" == MATCH* ]]; then
+				echo -e "${GR} = = > ${scout_label} Rescue Island Confirmed By Fine pHash.${NC}"
+				structural_match_found=1
+				break
+			fi
+
+			echo -e "${YE} = = > Rescue Island #${rescue_island_number} Did Not Confirm A Match.${NC}"
+		done
+
+		if (( structural_match_found == 0 )); then
+			echo
+			echo -e "${YE} = = > All Bounded ${scout_label} Rescue Islands Failed.${NC}"
+			echo -e "${YE} = = > Full-Range pHash Suppressed To Avoid A Long Scan During Testing.${NC}"
+			phash_output="NO_MATCH"
+			phash_status=0
+		fi
+	fi
+
+	if (( structural_match_found == 0 && ${#structural_candidates[@]} == 0 )); then
+		echo
+		echo -e "${YE} = = > ${scout_label} Scout Produced No Rescue Candidates.${NC}"
+		echo -e "${YE} = = > Bounded Cluster Rescue Skipped.${NC}"
+		echo -e "${YE} = = > Full-Range pHash Suppressed To Avoid A Long Brute-Force Scan.${NC}"
+
+		phash_output="NO_MATCH"
+		phash_status=0
+	fi
+
+	# ========================================================
+	# #MARKER: SECONDARY TEMPORAL SCOUT AFTER STRUCTURAL FAILURE
+	# ========================================================
+	# PURPOSE:
+	# - A structurally usable fingerprint normally tries Structural first.
+	# - If Structural candidates and bounded island rescue all fail,
+	#   give the already-built Temporal fingerprint a full chance.
+	# - Keep pHash as the final confirmation authority.
+	#
+	# IMPORTANT:
+	# - Temporal-primary fingerprints do not run this block again.
+	# - No full-range pHash fallback is introduced.
+	# - Existing Structural behavior remains unchanged when it succeeds.
+	# ========================================================
+	if (( structural_match_found == 0 )) &&
+	   [[ "${INTRO_FINGERPRINT_SCOUT_MODE:-structural}" == "structural" ]]; then
+
+		echo
+		echo -e "${YE} = = > Structural Cascade Did Not Confirm A Match.${NC}"
+		echo -e "${CYAN} = = > Cascade Pass 4:${NC} ${YELLOW}Secondary Temporal Visual Scout${NC}"
+
+		# --------------------------------------------------------
+		# SECONDARY TEMPORAL PHASH TOLERANCE
+		# --------------------------------------------------------
+		# PURPOSE:
+		# - Keep the normal IntroFind threshold unchanged.
+		# - Allow a small confirmation margin only after the
+		#   structural cascade has failed and Temporal takes over.
+		#
+		# NOTE:
+		# - The engine accepts avg_diff strictly BELOW HASH_DIFF.
+		# - Therefore an observed avg_diff of 18.000 requires 19.
+		# --------------------------------------------------------
+		secondary_temporal_hash_diff="$(
+			awk \
+				-v base="$HASH_DIFF" \
+				'BEGIN {
+					v = base + 3
+
+					if (v > 19)
+						v = 19
+
+					printf "%d", v
+				}'
+		)"
+
+		echo -e "${CYAN} = = > Secondary Temporal pHash Diff:${NC} ${YELLOW}${secondary_temporal_hash_diff}${NC} ${CYAN}(Primary Remains ${HASH_DIFF})${NC}"
+
+		secondary_scout_output="$(
+			run_intro_episode_temporal_report \
+				"$file" \
+				"$SCAN_START" \
+				"$scout_candidate_limit" \
+				2>&1
+		)" || secondary_scout_output=""
+
+		if [[ -n "$secondary_scout_output" ]]; then
+			printf '%s\n' "$secondary_scout_output"
+		else
+			echo -e "${YE} = = > Secondary Temporal Scout Produced No Report.${NC}"
+		fi
+
+		secondary_template_duration="$(
+			printf '%s\n' "$secondary_scout_output" |
+				awk -F'|' '
+					/^TEMPORAL_SCAN\|/ {
+						for (i=1; i<=NF; i++) {
+							if ($i ~ /^template_duration=/) {
+								value=$i
+								sub(/^template_duration=/, "", value)
+								print value
+								exit
+							}
+						}
+					}
+				'
+		)"
+
+		if [[ -z "$secondary_template_duration" ]]; then
+			secondary_template_duration="$intro_template_duration"
+		fi
+
+		mapfile -t secondary_temporal_candidates < <(
+			printf '%s\n' "$secondary_scout_output" |
+				awk -F'|' '
+					/^TEMPORAL_CANDIDATE\|/ {
+						rank=""
+						start=""
+
+						for (i=1; i<=NF; i++) {
+							if ($i ~ /^rank=/) {
+								rank=$i
+								sub(/^rank=/, "", rank)
+							}
+
+							if ($i ~ /^start=/) {
+								start=$i
+								sub(/^start=/, "", start)
+							}
+						}
+
+						if (rank != "" && start != "") {
+							print rank "|" start
+						}
+					}
+				' |
+				head -n "$intro_structural_candidate_limit"
+		)
+
+		if (( ${#secondary_temporal_candidates[@]} > 0 )); then
+			echo
+			echo -e "${CYAN} = = > Secondary Temporal Candidates:${NC} ${YELLOW}${#secondary_temporal_candidates[@]}${NC}"
+
+			for secondary_candidate in "${secondary_temporal_candidates[@]}"; do
+				IFS='|' read -r secondary_rank secondary_start <<< "$secondary_candidate"
+
+				secondary_refine_start="$(
+					awk \
+						-v candidate="$secondary_start" \
+						-v radius="$intro_refine_radius" \
+						-v floor="$SCAN_START" \
+						'BEGIN {
+							v = candidate - radius
+
+							if (v < floor)
+								v = floor
+
+							printf "%.3f", v
+						}'
+				)"
+
+				secondary_refine_end="$(
+					awk \
+						-v candidate="$secondary_start" \
+						-v radius="$intro_refine_radius" \
+						-v ceiling="$duration_raw" \
+						'BEGIN {
+							v = candidate + radius
+
+							if (v > ceiling)
+								v = ceiling
+
+							printf "%.3f", v
+						}'
+				)"
+
+				secondary_engine_limit="$(
+					awk \
+						-v candidate_end="$secondary_refine_end" \
+						-v template_duration="$secondary_template_duration" \
+						-v ceiling="$duration_raw" \
+						'BEGIN {
+							v = candidate_end + template_duration
+
+							if (v > ceiling)
+								v = ceiling
+
+							printf "%.3f", v
+						}'
+				)"
+
+				echo
+				echo -e "${CYAN} = = > Cascade Pass 5:${NC} ${YELLOW}Secondary Temporal pHash Verification${NC}"
+				echo -e "${CYAN}       Temporal Rank:${NC} ${YELLOW}#${secondary_rank}${NC}"
+				echo -e "${CYAN}       Candidate Start:${NC} ${YELLOW}${secondary_start}s${NC}"
+				echo -e "${CYAN}       Candidate Window:${NC} ${YELLOW}${secondary_refine_start}s -> ${secondary_refine_end}s${NC}"
+				echo -e "${CYAN}       Engine Ceiling:${NC} ${YELLOW}${secondary_engine_limit}s${NC}"
+				echo -e "${CYAN}       Step:${NC} ${YELLOW}${INTRO_STEP_SIZE:-1}s${NC}"
+				echo -e "${CYAN}       Anchors:${NC} ${YELLOW}${resolved_intro_anchors}${NC}"
+
+				phash_output="$(
+					run_intro_hash_engine \
+						"$secondary_refine_start" \
+						"$secondary_engine_limit" \
+						"$secondary_temporal_hash_diff" \
+						"$file" \
+						"${INTRO_STEP_SIZE:-1}" \
+						"$resolved_intro_anchors" \
+						"intro_template/intro_template*.mkv" \
+						"${INTRO_HASH_MODE:-phash}" \
+						"$secondary_refine_end"
+				)"
+				phash_status=$?
+
+				secondary_refine_result="$(
+					printf '%s\n' "$phash_output" |
+						awk '
+							/^(MATCH\|.*|NO_MATCH)$/ {
+								line=$0
+							}
+
+							END {
+								print line
+							}
+						'
+				)"
+
+				if [[ $phash_status -eq 0 &&
+				      "$secondary_refine_result" == MATCH* ]]; then
+					echo -e "${GR} = = > Secondary Temporal Candidate Confirmed By Local pHash.${NC}"
+					structural_match_found=1
+					break
+				fi
+
+				echo -e "${YEB} = = >${NC}${YE} Secondary Temporal Candidate #${secondary_rank} Was Not Confirmed.${NC}"
+			done
+		fi
+
+		# --------------------------------------------------------
+		# SECONDARY TEMPORAL ISLAND RESCUE
+		# --------------------------------------------------------
+		# Only runs if Temporal produced real candidates but its
+		# top-three local verification did not confirm a match.
+		# Distant candidates remain separate islands.
+		# --------------------------------------------------------
+		if (( structural_match_found == 0 &&
+		      ${#secondary_temporal_candidates[@]} > 0 )); then
+
+			echo
+			echo -e "${CYAN} = = > Cascade Pass 6:${NC} ${YELLOW}Bounded Secondary Temporal Island Rescue${NC}"
+
+			mapfile -t secondary_rescue_islands < <(
+				printf '%s\n' "${secondary_temporal_candidates[@]}" |
+					awk \
+						-F'|' \
+						-v floor="$SCAN_START" \
+						-v ceiling="$duration_raw" '
+						{
+							center = $2 + 0
+							start = center - 15
+							end = center + 15
+
+							if (start < floor)
+								start = floor
+
+							if (end > ceiling)
+								end = ceiling
+
+							printf "%.3f|%.3f\n", start, end
+						}
+					' |
+					sort -t'|' -k1,1n |
+					awk -F'|' '
+						NR == 1 {
+							start = $1
+							end = $2
+							next
+						}
+
+						{
+							if ($1 <= end + 1) {
+								if ($2 > end)
+									end = $2
+							} else {
+								printf "%.3f|%.3f\n", start, end
+								start = $1
+								end = $2
+							}
+						}
+
+						END {
+							if (NR > 0)
+								printf "%.3f|%.3f\n", start, end
+						}
+					'
+			)
+
+			secondary_island_number=0
+
+			for secondary_island in "${secondary_rescue_islands[@]}"; do
+				IFS='|' read -r secondary_island_start secondary_island_end <<< "$secondary_island"
+				((secondary_island_number+=1)) || :
+
+				secondary_island_limit="$(
+					awk \
+						-v candidate_end="$secondary_island_end" \
+						-v template_duration="$secondary_template_duration" \
+						-v file_duration="$duration_raw" \
+						'BEGIN {
+							v = candidate_end + template_duration
+
+							if (v > file_duration)
+								v = file_duration
+
+							printf "%.3f", v
+						}'
+				)"
+
+				echo
+				echo -e "${CYAN} = = > Secondary Temporal Rescue Island #${secondary_island_number}:${NC}"
+				echo -e "${CYAN}       Window:${NC} ${YELLOW}${secondary_island_start}s -> ${secondary_island_end}s${NC}"
+				echo -e "${CYAN}       Rescue Step:${NC} ${YELLOW}0.5s${NC}"
+				echo -e "${CYAN}       Anchors:${NC} ${YELLOW}${resolved_intro_anchors}${NC}"
+
+				phash_output="$(
+					run_intro_hash_engine \
+						"$secondary_island_start" \
+						"$secondary_island_limit" \
+						"$secondary_temporal_hash_diff" \
+						"$file" \
+						"0.5" \
+						"$resolved_intro_anchors" \
+						"intro_template/intro_template*.mkv" \
+						"${INTRO_HASH_MODE:-phash}" \
+						"$secondary_island_end"
+				)"
+				phash_status=$?
+
+				secondary_island_result="$(
+					printf '%s\n' "$phash_output" |
+						awk '
+							/^(MATCH\|.*|NO_MATCH)$/ {
+								line=$0
+							}
+
+							END {
+								print line
+							}
+						'
+				)"
+
+				if [[ $phash_status -eq 0 &&
+				      "$secondary_island_result" == MATCH* ]]; then
+					echo -e "${GR} = = > Secondary Temporal Rescue Island Confirmed By Fine pHash.${NC}"
+					structural_match_found=1
+					break
+				fi
+
+				echo -e "${YE} = = > Secondary Temporal Rescue Island #${secondary_island_number} Did Not Confirm A Match.${NC}"
+			done
+		fi
+
+		if (( structural_match_found == 0 )); then
+			echo
+			echo -e "${YE} = = > Secondary Temporal Cascade Did Not Confirm A Match.${NC}"
+			echo -e "${YE} = = > Full-Range pHash Remains Suppressed.${NC}"
+
+			phash_output="NO_MATCH"
+			phash_status=0
+		fi
+	fi
+
+	intro_find_t1="$(date +%s)"
+	intro_find_elapsed="$((intro_find_t1 - intro_find_t0))"
+	intro_find_elapsed_hms="$(format_seconds_hms "$intro_find_elapsed")"
 
     # ========================================================
     # EXTRACT ONLY THE REAL ENGINE CONTRACT LINE
@@ -23667,15 +27555,15 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
 			outro_find_t0="$(date +%s)"
 
 				resolved_outro_anchors="$(auto_outro_multikey_anchor_csv "${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}" "${OUTRO_ANCHOR_SECONDS:-8,12,16}")"
-			echo -e "${CYAN} = = > OutroFind Settings:${NC} ${YELLOW}Mode=${OUTRO_HASH_MODE:-dhash} Diff=${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}} Step=${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}} Anchors=$resolved_outro_anchors${NC}"
+			echo -e "${CYAN} = = > OutroFind Settings:${NC} ${YELLOW}Mode=${OUTRO_HASH_MODE:-dhash} Diff=${OUTRO_HASH_DIFF:-16} Step=${OUTRO_STEP_SIZE:-1} Anchors=$resolved_outro_anchors${NC}"
 
 			outro_output="$(
 				python3 "$PHASH_ENGINE" \
 					"$outro_scan_start" \
 					"$outro_limit" \
-					"${OUTRO_HASH_DIFF:-${DEFAULT_HASH_DIFF:-12}}" \
+					"${OUTRO_HASH_DIFF:-16}" \
 					"$file" \
-					"${OUTRO_STEP_SIZE:-${STEP_SIZE:-1}}" \
+					"${OUTRO_STEP_SIZE:-1}" \
 					"$resolved_outro_anchors" \
 					"${OUTRO_TEMPLATE_GLOB:-intro_template/outro*.mkv}" \
 					"${OUTRO_HASH_MODE:-dhash}" \
@@ -23718,7 +27606,7 @@ resolved_intro_anchors="$(auto_anchor_csv_from_duration "intro_template/intro_te
 			fi
 
 		else
-			echo -e "${YE} = = > Optional OutroFind Skipped:${NC} ${YELLOW}$OUTRO_TEMPLATE not found.${NC}"
+			echo -e "${YE} = = > Optional OutroFind Skipped:${NC} ${YELLOW}$(factory_display_path "$OUTRO_TEMPLATE")${NC} ${YE}Not Found.${NC}"
 		fi
 
 # outro stuff new pass end 
@@ -23771,7 +27659,7 @@ echo
 # #MARKER: RETURN TO MAIN MENU AFTER ENGINE RUN
 # =========================
 pause
-	rm -f .phash_engine.py
-	rm -f .phash_engine.stderr.log
+rm -f -- "$PHASH_ENGINE"
+rm -f -- "$PHASH_STDERR_LOG"
 run_main_menu
 exit 0
