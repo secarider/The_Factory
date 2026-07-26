@@ -1412,6 +1412,8 @@ strip_workflow_prefixes() {
 		name="${name#PILOT_RESCUE_}"
 		name="${name#REMUX_}"
 		name="${name#AUDIOFIX_}"
+		name="${name#TIMEPRESS_}"
+		name="${name#AUDIOLEVEL_}"
 
 		name="${name#TIPSNIP_}"
 		name="${name#TAILTUCK_}"
@@ -3042,32 +3044,1063 @@ run_media_audio_remove() {
 	pause
 }
 
+
+# ================================================================
+# #MARKER: AUDIO LEVEL / LOUDNESS NORMALIZATION
+# ================================================================
+# PURPOSE:
+# - Normalize perceived loudness inside a video without re-encoding video.
+# - Normalize standalone extracted audio directly.
+# - Apply a known manual gain change in dB.
+# - Analyze loudness / peak facts without changing the source.
+#
+# NORMALIZATION POLICY:
+# - Two-pass EBU R128 loudnorm for accurate integrated loudness targeting.
+# - General / speech preset: -16 LUFS, -1.5 dBTP, LRA 11.
+# - Music preset:            -14 LUFS, -1.5 dBTP, LRA 11.
+# - Video: selected audio track rebuilt to AAC 256k; video and other streams copy.
+# - Standalone audio: practical same-family output codec when supported.
+# ================================================================
+
+audiolevel_safe_tag() {
+	local value="$1"
+	value="${value#-}"
+	value="${value//./p}"
+	printf '%s\n' "$value"
+}
+
+audiolevel_extract_json_value() {
+	local key="$1"
+	local file="$2"
+	sed -nE 's/^[[:space:]]*"'"$key"'"[[:space:]]*:[[:space:]]*"?([^",]+)"?,?[[:space:]]*$/\1/p' "$file" | tail -n1
+}
+
+audiolevel_two_pass_filter() {
+	local file="$1"
+	local track="$2"
+	local target_i="$3"
+	local target_tp="${4:--1.5}"
+	local target_lra="${5:-11}"
+	local log_file
+	local input_i input_tp input_lra input_thresh target_offset
+
+	log_file="$(mktemp /tmp/factory_loudnorm.XXXXXX.log)" || return 1
+
+	if ! ffmpeg -hide_banner -nostats -loglevel info -i "$file" \
+		-map "0:a:$track" -vn -sn -dn \
+		-af "loudnorm=I=${target_i}:TP=${target_tp}:LRA=${target_lra}:print_format=json" \
+		-f null - > /dev/null 2>"$log_file"; then
+		rm -f -- "$log_file"
+		return 1
+	fi
+
+	input_i="$(audiolevel_extract_json_value input_i "$log_file")"
+	input_tp="$(audiolevel_extract_json_value input_tp "$log_file")"
+	input_lra="$(audiolevel_extract_json_value input_lra "$log_file")"
+	input_thresh="$(audiolevel_extract_json_value input_thresh "$log_file")"
+	target_offset="$(audiolevel_extract_json_value target_offset "$log_file")"
+	rm -f -- "$log_file"
+
+	if [[ -z "$input_i" || -z "$input_tp" || -z "$input_lra" || -z "$input_thresh" || -z "$target_offset" ]]; then
+		return 1
+	fi
+
+	printf 'loudnorm=I=%s:TP=%s:LRA=%s:measured_I=%s:measured_TP=%s:measured_LRA=%s:measured_thresh=%s:offset=%s:linear=true:print_format=summary\n' \
+		"$target_i" "$target_tp" "$target_lra" \
+		"$input_i" "$input_tp" "$input_lra" "$input_thresh" "$target_offset"
+}
+
+audiolevel_standalone_codec_args() {
+	local file="$1"
+	local -n _ext_ref=$2
+	local -n _codec_ref=$3
+	local ext="${file##*.}"
+	ext="${ext,,}"
+
+	case "$ext" in
+		flac)
+			_ext_ref="flac"
+			_codec_ref=(-c:a flac)
+			;;
+		wav|wave)
+			_ext_ref="wav"
+			_codec_ref=(-c:a pcm_s24le)
+			;;
+		mp3)
+			_ext_ref="mp3"
+			_codec_ref=(-c:a libmp3lame -b:a 256k)
+			;;
+		opus)
+			_ext_ref="opus"
+			_codec_ref=(-c:a libopus -b:a 192k)
+			;;
+		ogg|oga)
+			_ext_ref="ogg"
+			_codec_ref=(-c:a libvorbis -q:a 7)
+			;;
+		m4a|aac|alac)
+			_ext_ref="m4a"
+			_codec_ref=(-c:a aac -b:a 256k)
+			;;
+		ac3)
+			_ext_ref="ac3"
+			_codec_ref=(-c:a ac3 -b:a 448k)
+			;;
+		*)
+			_ext_ref="flac"
+			_codec_ref=(-c:a flac)
+			;;
+	esac
+}
+
+# Analysis results retained for the optional recommended-repair path.
+AUDIOLEVEL_ANALYZED_I=""
+AUDIOLEVEL_REPAIR_ADVISED=0
+
+audiolevel_print_verdict() {
+	local loud_log="$1"
+	local peak_log="$2"
+	local integrated true_peak lra max_volume
+	local overall overall_color loudness loudness_color
+	local headroom headroom_color dynamics dynamics_color
+	local clipping clipping_color recommendation correction direction
+
+	integrated="$(awk '/Input Integrated:/ {print $(NF-1); exit}' "$loud_log" 2>/dev/null)"
+	true_peak="$(awk '/Input True Peak:/ {print $(NF-1); exit}' "$loud_log" 2>/dev/null)"
+	lra="$(awk '/Input LRA:/ {print $(NF-1); exit}' "$loud_log" 2>/dev/null)"
+	max_volume="$(awk '/mean_volume:|max_volume:/ {if ($0 ~ /max_volume:/) {print $(NF-1); exit}}' "$peak_log" 2>/dev/null)"
+
+	[[ "$integrated" =~ ^[+-]?[0-9]+([.][0-9]+)?$ ]] || integrated=""
+	[[ "$true_peak" =~ ^[+-]?[0-9]+([.][0-9]+)?$ ]] || true_peak=""
+	[[ "$lra" =~ ^[+-]?[0-9]+([.][0-9]+)?$ ]] || lra=""
+	[[ "$max_volume" =~ ^[+-]?[0-9]+([.][0-9]+)?$ ]] || max_volume=""
+
+	# ----- LOUDNESS GRADE ----------------------------------------------------
+	if [[ -z "$integrated" ]]; then
+		loudness="UNKNOWN"
+		loudness_color="$YE"
+	elif awk -v v="$integrated" 'BEGIN {exit !(v > -10)}'; then
+		loudness="VERY LOUD"
+		loudness_color="$RE"
+	elif awk -v v="$integrated" 'BEGIN {exit !(v > -14)}'; then
+		loudness="LOUD"
+		loudness_color="$YE"
+	elif awk -v v="$integrated" 'BEGIN {exit !(v >= -18)}'; then
+		loudness="GOOD"
+		loudness_color="$GR"
+	elif awk -v v="$integrated" 'BEGIN {exit !(v >= -22)}'; then
+		loudness="QUIET"
+		loudness_color="$YE"
+	else
+		loudness="VERY QUIET"
+		loudness_color="$RE"
+	fi
+
+	# ----- HEADROOM / CLIPPING GRADE ----------------------------------------
+	if [[ -n "$true_peak" ]] && awk -v v="$true_peak" 'BEGIN {exit !(v >= 0)}'; then
+		headroom="NONE"
+		headroom_color="$RE"
+		clipping="HIGH"
+		clipping_color="$RE"
+	elif [[ -n "$max_volume" ]] && awk -v v="$max_volume" 'BEGIN {exit !(v >= 0)}'; then
+		headroom="NONE"
+		headroom_color="$RE"
+		clipping="HIGH"
+		clipping_color="$RE"
+	elif [[ -n "$true_peak" ]] && awk -v v="$true_peak" 'BEGIN {exit !(v > -1.5)}'; then
+		headroom="LOW"
+		headroom_color="$YE"
+		clipping="MODERATE"
+		clipping_color="$YE"
+	else
+		headroom="GOOD"
+		headroom_color="$GR"
+		clipping="LOW"
+		clipping_color="$GR"
+	fi
+
+	# ----- DYNAMICS GRADE ----------------------------------------------------
+	if [[ -z "$lra" ]]; then
+		dynamics="UNKNOWN"
+		dynamics_color="$YE"
+	elif awk -v v="$lra" 'BEGIN {exit !(v < 3)}'; then
+		dynamics="COMPRESSED"
+		dynamics_color="$YE"
+	elif awk -v v="$lra" 'BEGIN {exit !(v <= 18)}'; then
+		dynamics="GOOD"
+		dynamics_color="$GR"
+	else
+		dynamics="VERY WIDE"
+		dynamics_color="$YE"
+	fi
+
+	# ----- OVERALL VERDICT / RECOMMENDATION ---------------------------------
+	if [[ "$clipping" == "HIGH" ]]; then
+		overall="TOO HOT / CLIPPING RISK"
+		overall_color="$RE"
+	elif [[ "$loudness" == "VERY LOUD" || "$loudness" == "VERY QUIET" ]]; then
+		overall="LEVEL NEEDS CORRECTION"
+		overall_color="$RE"
+	elif [[ "$clipping" == "MODERATE" || "$loudness" == "LOUD" || "$loudness" == "QUIET" ]]; then
+		overall="USABLE — ADJUSTMENT ADVISED"
+		overall_color="$YE"
+	else
+		overall="GOOD"
+		overall_color="$GR"
+	fi
+
+	if [[ -n "$integrated" ]]; then
+		correction="$(awk -v v="$integrated" 'BEGIN {printf "%.1f", -16-v}')"
+		if awk -v v="$correction" 'BEGIN {exit !(v < -0.05)}'; then
+			direction="Reduce By $(awk -v v="$correction" 'BEGIN {printf "%.1f", -v}') dB"
+		elif awk -v v="$correction" 'BEGIN {exit !(v > 0.05)}'; then
+			direction="Increase By ${correction} dB"
+		else
+			direction="No Meaningful Change Needed"
+		fi
+	else
+		direction="Measurement Unavailable"
+	fi
+
+	if [[ "$overall_color" == "$GR" ]]; then
+		recommendation="No correction needed."
+		AUDIOLEVEL_REPAIR_ADVISED=0
+	else
+		recommendation="Target Depends On Content Type."
+		AUDIOLEVEL_REPAIR_ADVISED=1
+	fi
+	AUDIOLEVEL_ANALYZED_I="$integrated"
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}              AUDIO HEALTH VERDICT              ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${BW} Overall:${NC}       ${overall_color}${overall}${NC}"
+	echo -e "${BW} Loudness:${NC}      ${loudness_color}${loudness}${NC}"
+	echo -e "${BW} Headroom:${NC}      ${headroom_color}${headroom}${NC}"
+	echo -e "${BW} Dynamics:${NC}      ${dynamics_color}${dynamics}${NC}"
+	echo -e "${BW} Clipping Risk:${NC} ${clipping_color}${clipping}${NC}"
+	echo
+	echo -e "${BW} Recommendation:${NC} ${overall_color}${recommendation}${NC}"
+}
+
+audiolevel_choose_recommended_target() {
+	local -n _target_ref=$1
+	local -n _label_ref=$2
+	local choice custom correction direction
+
+	_target_ref=""
+	_label_ref=""
+
+	if (( AUDIOLEVEL_REPAIR_ADVISED == 0 )); then
+		echo
+		echo -e "${GR} = = > No Repair Recommended.${NC}"
+		return 1
+	fi
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}             FACTORY RECOMMENDATION             ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${YE} = = > A Loudness Correction Is Recommended.${NC}"
+	echo
+	echo -e "${YELLOW}     1) Perform Recommended Repair${NC}"
+	echo -e "${YELLOW}     2) Return Without Repair${NC}"
+	echo
+	echo -e "${YELLOW}     0.) Cancel${NC}"
+	echo
+	prompt_menu_choice " = = > Choose [1-2 | 0.=cancel]: " choice
+	[[ "$choice" == "1" ]] || return 1
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}                  CONTENT TYPE                  ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW}     1) TV / Movies / Dialogue (-16 LUFS)${NC}"
+	echo -e "${YELLOW}     2) Music (-14 LUFS)${NC}"
+	echo -e "${YELLOW}     3) Manual Target${NC}"
+	echo
+	echo -e "${YELLOW}     0.) Cancel${NC}"
+	echo
+	prompt_menu_choice " = = > Choose [1-3 | 0.=cancel]: " choice
+	case "$choice" in
+		1) _target_ref="-16"; _label_ref="TV / Movies / Dialogue" ;;
+		2) _target_ref="-14"; _label_ref="Music" ;;
+		3)
+			prompt_read " = = > Target LUFS (example: -15 | 0.=cancel): " custom
+			custom="${custom//[[:space:]]/}"
+			is_exit_token "$custom" && return 1
+			[[ "$custom" =~ ^-[0-9]+([.][0-9]+)?$ ]] || {
+				echo -e "${REB} = = > Invalid LUFS Target.${NC}"
+				return 1
+			}
+			_target_ref="$custom"
+			_label_ref="Custom Target"
+			;;
+		*) return 1 ;;
+	esac
+
+	if [[ -n "$AUDIOLEVEL_ANALYZED_I" ]]; then
+		correction="$(awk -v target="$_target_ref" -v current="$AUDIOLEVEL_ANALYZED_I" 'BEGIN {printf "%.1f", target-current}')"
+		if awk -v v="$correction" 'BEGIN {exit !(v < -0.05)}'; then
+			direction="Reduce Approximately $(awk -v v="$correction" 'BEGIN {printf "%.1f", -v}') dB"
+		elif awk -v v="$correction" 'BEGIN {exit !(v > 0.05)}'; then
+			direction="Increase Approximately ${correction} dB"
+		else
+			direction="No Meaningful Level Change"
+		fi
+	else
+		direction="Measurement Unavailable"
+	fi
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}                 READY TO REPAIR                ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${BW} Current Loudness:${NC} ${YELLOW}${AUDIOLEVEL_ANALYZED_I:-Unknown} LUFS${NC}"
+	echo -e "${BW} Selected Target:${NC}  ${YELLOW}${_label_ref} (${_target_ref} LUFS)${NC}"
+	echo -e "${BW} Estimated Change:${NC} ${YELLOW}${direction}${NC}"
+	echo
+	echo -e "${YELLOW}     1) Proceed${NC}"
+	echo -e "${YELLOW}     2) Return Without Repair${NC}"
+	echo
+	echo -e "${YELLOW}     0.) Cancel${NC}"
+	echo
+	prompt_menu_choice " = = > Choose [1-2 | 0.=cancel]: " choice
+	[[ "$choice" == "1" ]]
+}
+
+audiolevel_analyze_file() {
+	local file="$1"
+	local track="${2:-0}"
+	local loud_log peak_log
+
+	AUDIOLEVEL_ANALYZED_I=""
+	AUDIOLEVEL_REPAIR_ADVISED=0
+
+	loud_log="$(mktemp /tmp/factory_loudness.XXXXXX.log)" || return 1
+	peak_log="$(mktemp /tmp/factory_peak.XXXXXX.log)" || { rm -f -- "$loud_log"; return 1; }
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}              AUDIO LEVEL ANALYSIS              ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > File:${NC} ${GREEN}$file${NC}"
+	echo -e "${CYAN} = = > Audio Track:${NC} ${YELLOW}$((track+1))${NC}"
+	echo
+
+	ffmpeg -hide_banner -nostats -loglevel info -i "$file" \
+		-map "0:a:$track" -vn -sn -dn \
+		-af "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=summary" \
+		-f null - > /dev/null 2>"$loud_log" || true
+
+	ffmpeg -hide_banner -nostats -loglevel info -i "$file" \
+		-map "0:a:$track" -vn -sn -dn \
+		-af volumedetect -f null - > /dev/null 2>"$peak_log" || true
+
+	grep -E 'Input Integrated:|Input True Peak:|Input LRA:|Input Threshold:' "$loud_log" || \
+		echo -e "${YE} = = > Loudness Measurement Was Not Available.${NC}"
+	grep -E 'mean_volume:|max_volume:' "$peak_log" || \
+		echo -e "${YE} = = > Peak Measurement Was Not Available.${NC}"
+
+	audiolevel_print_verdict "$loud_log" "$peak_log"
+	rm -f -- "$loud_log" "$peak_log"
+}
+
+audiolevel_build_video() {
+	local video="$1"
+	local track="$2"
+	local filter="$3"
+	local out="$4"
+	local count i lang title default_disposition
+	local -a cmd=()
+
+	count="$(media_audio_stream_count "$video")"
+	(( count > 0 && track >= 0 && track < count )) || return 1
+
+	lang="$(ffprobe -v error -select_streams "a:$track" -show_entries stream_tags=language -of default=nw=1:nk=1 "$video" 2>/dev/null | head -n1)"
+	title="$(ffprobe -v error -select_streams "a:$track" -show_entries stream_tags=title -of default=nw=1:nk=1 "$video" 2>/dev/null | head -n1)"
+	default_disposition="$(ffprobe -v error -select_streams "a:$track" -show_entries stream_disposition=default -of default=nw=1:nk=1 "$video" 2>/dev/null | head -n1)"
+
+	cmd=(ffmpeg -hide_banner -nostats -loglevel error -y -i "$video" \
+		-filter_complex "[0:a:${track}]${filter}[leveled]" \
+		-map "0:v?" )
+
+	for ((i=0; i<count; i++)); do
+		if (( i == track )); then
+			cmd+=(-map "[leveled]")
+		else
+			cmd+=(-map "0:a:$i")
+		fi
+	done
+
+	cmd+=(-map "0:s?" -map "0:t?" -map "0:d?" \
+		-map_metadata 0 -map_chapters 0 \
+		-c copy -c:a:"$track" aac -b:a:"$track" 256k)
+
+	[[ -n "$lang" ]] && cmd+=(-metadata:s:a:"$track" language="$lang")
+	[[ -n "$title" ]] && cmd+=(-metadata:s:a:"$track" title="$title")
+	[[ "$default_disposition" == "1" ]] && cmd+=(-disposition:a:"$track" default)
+
+	cmd+=("$out")
+	"${cmd[@]}"
+}
+
+audiolevel_build_standalone() {
+	local audio="$1"
+	local filter="$2"
+	local out="$3"
+	shift 3
+	local -a codec_args=("$@")
+
+	ffmpeg -hide_banner -nostats -loglevel error -y \
+		-i "$audio" -map 0:a:0 -map_metadata 0 \
+		-af "$filter" "${codec_args[@]}" "$out"
+}
+
+run_audiolevel_video() {
+	local video track mode target_i target_label filter gain tag clean out choice recommended_flow=0
+
+	media_pick_video_file video "VIDEO WHOSE AUDIO LEVEL WILL CHANGE" || return 0
+	case "$video" in
+		AUDIOLEVEL_*|TIMEPRESS_*|AUDIOFIX_*|MEDIAEDIT_*)
+			echo -e "${REB} = = > Refusing Generated Output As Source.${NC}"
+			pause
+			return 0
+			;;
+	esac
+	media_choose_audio_track "$video" track || return 0
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}          VIDEO AUDIO LEVEL OPERATION           ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW}     1) Loudness Normalize — General / Speech (-16 LUFS)${NC}"
+	echo -e "${YELLOW}     2) Loudness Normalize — Music (-14 LUFS)${NC}"
+	echo -e "${YELLOW}     3) Manual Gain (+/- dB)${NC}"
+	echo -e "${YELLOW}     4) Analyze / Recommended Repair${NC}"
+	echo
+	echo -e "${YELLOW}     0.) Return${NC}"
+	echo
+	prompt_menu_choice " = = > Choose [1-4 | 0.=return]: " mode
+	is_exit_token "$mode" && return 0
+
+	case "$mode" in
+		1|2)
+			[[ "$mode" == "1" ]] && target_i="-16" || target_i="-14"
+			echo -e "${CYAN} = = > Measuring Full Track For Two-Pass Loudness Normalization...${NC}"
+			filter="$(audiolevel_two_pass_filter "$video" "$track" "$target_i")" || {
+				echo -e "${REB} = = > Loudness Measurement Failed.${NC}"
+				pause
+				return 0
+			}
+			tag="LUFS$(audiolevel_safe_tag "$target_i")"
+			;;
+		3)
+			prompt_read " = = > Gain In dB (examples: -4, 2.5 | 0.=cancel): " gain
+			gain="${gain//[[:space:]]/}"
+			is_exit_token "$gain" && return 0
+			[[ "$gain" =~ ^[+-]?[0-9]+([.][0-9]+)?$ ]] || {
+				echo -e "${REB} = = > Invalid Gain Value.${NC}"
+				pause
+				return 0
+			}
+			filter="volume=${gain}dB"
+			if [[ "$gain" == -* ]]; then
+				tag="DOWN$(audiolevel_safe_tag "$gain")dB"
+			else
+				tag="UP$(audiolevel_safe_tag "$gain")dB"
+			fi
+			;;
+		4)
+			audiolevel_analyze_file "$video" "$track"
+			if ! audiolevel_choose_recommended_target target_i target_label; then
+				pause
+				return 0
+			fi
+			echo -e "${CYAN} = = > Measuring Full Track For Two-Pass Loudness Normalization...${NC}"
+			filter="$(audiolevel_two_pass_filter "$video" "$track" "$target_i")" || {
+				echo -e "${REB} = = > Loudness Measurement Failed.${NC}"
+				pause
+				return 0
+			}
+			tag="LUFS$(audiolevel_safe_tag "$target_i")"
+			recommended_flow=1
+			;;
+		*) echo -e "${REB} = = > Invalid Selection.${NC}"; pause; return 0 ;;
+	esac
+
+	clean="$(strip_workflow_prefixes "$(basename "$video")")"
+	clean="${clean%.*}"
+	out="AUDIOLEVEL_${tag}_${clean}.mkv"
+
+	echo
+	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$video${NC}"
+	echo -e "${CYAN} = = > Audio Track:${NC} ${YELLOW}$((track+1))${NC}"
+	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+	echo -e "${YE} = = > Video, Other Audio Tracks, Subtitles, And Attachments Are Stream-Copied.${NC}"
+	echo -e "${YE} = = > Only The Selected Audio Track Is Rebuilt To AAC 256k.${NC}"
+	(( recommended_flow == 1 )) || ask_yes_no " = = > Proceed? (y/n or 1/2): " || return 0
+
+	rm -f -- "$out"
+	if audiolevel_build_video "$video" "$track" "$filter" "$out" && [[ -s "$out" ]]; then
+		echo -e "${GR} = = > AUDIO LEVEL OUTPUT CREATED:${NC} ${GREEN}$out${NC}"
+		echo
+		echo -e "${YELLOW}     1) Accept And Archive Original Video${NC}"
+		echo -e "${YELLOW}     2) Delete AUDIOLEVEL Output And Keep Original${NC}"
+		echo -e "${YELLOW}     3) Keep Both${NC}"
+		echo
+		echo -e "${YELLOW}     0.) Return / Do Nothing${NC}"
+		prompt_menu_choice " = = > Choose Result [1-3 | 0.=return]: " choice
+		case "$choice" in
+			1) archive_rescued_source_file "$video" "OEM/AUDIO_LEVEL/$(date '+%Y-%m')" ;;
+			2) rm -f -- "$out"; echo -e "${GR} = = > Output Deleted; Original Kept.${NC}" ;;
+			3) echo -e "${YE} = = > Keeping Both Files.${NC}" ;;
+			*) echo -e "${YE} = = > Nothing Changed.${NC}" ;;
+		esac
+	else
+		rm -f -- "$out"
+		echo -e "${REB} = = > Audio Level Operation Failed.${NC}"
+	fi
+	pause
+}
+
+run_audiolevel_standalone() {
+	local audio mode target_i target_label filter gain tag stem ext out choice recommended_flow=0
+	local -a codec_args=()
+
+	media_pick_audio_file audio "STANDALONE AUDIO WHOSE LEVEL WILL CHANGE" || return 0
+	case "$audio" in
+		AUDIOLEVEL_*) echo -e "${REB} = = > Refusing Existing AUDIOLEVEL Output As Source.${NC}"; pause; return 0 ;;
+	esac
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}        STANDALONE AUDIO LEVEL OPERATION        ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW}     1) Loudness Normalize — General / Speech (-16 LUFS)${NC}"
+	echo -e "${YELLOW}     2) Loudness Normalize — Music (-14 LUFS)${NC}"
+	echo -e "${YELLOW}     3) Manual Gain (+/- dB)${NC}"
+	echo -e "${YELLOW}     4) Analyze / Recommended Repair${NC}"
+	echo
+	echo -e "${YELLOW}     0.) Return${NC}"
+	echo
+	prompt_menu_choice " = = > Choose [1-4 | 0.=return]: " mode
+	is_exit_token "$mode" && return 0
+
+	case "$mode" in
+		1|2)
+			[[ "$mode" == "1" ]] && target_i="-16" || target_i="-14"
+			echo -e "${CYAN} = = > Measuring Full Track For Two-Pass Loudness Normalization...${NC}"
+			filter="$(audiolevel_two_pass_filter "$audio" 0 "$target_i")" || {
+				echo -e "${REB} = = > Loudness Measurement Failed.${NC}"
+				pause
+				return 0
+			}
+			tag="LUFS$(audiolevel_safe_tag "$target_i")"
+			;;
+		3)
+			prompt_read " = = > Gain In dB (examples: -4, 2.5 | 0.=cancel): " gain
+			gain="${gain//[[:space:]]/}"
+			is_exit_token "$gain" && return 0
+			[[ "$gain" =~ ^[+-]?[0-9]+([.][0-9]+)?$ ]] || {
+				echo -e "${REB} = = > Invalid Gain Value.${NC}"
+				pause
+				return 0
+			}
+			filter="volume=${gain}dB"
+			if [[ "$gain" == -* ]]; then
+				tag="DOWN$(audiolevel_safe_tag "$gain")dB"
+			else
+				tag="UP$(audiolevel_safe_tag "$gain")dB"
+			fi
+			;;
+		4)
+			audiolevel_analyze_file "$audio" 0
+			if ! audiolevel_choose_recommended_target target_i target_label; then
+				pause
+				return 0
+			fi
+			echo -e "${CYAN} = = > Measuring Full Track For Two-Pass Loudness Normalization...${NC}"
+			filter="$(audiolevel_two_pass_filter "$audio" 0 "$target_i")" || {
+				echo -e "${REB} = = > Loudness Measurement Failed.${NC}"
+				pause
+				return 0
+			}
+			tag="LUFS$(audiolevel_safe_tag "$target_i")"
+			recommended_flow=1
+			;;
+		*) echo -e "${REB} = = > Invalid Selection.${NC}"; pause; return 0 ;;
+	esac
+
+	audiolevel_standalone_codec_args "$audio" ext codec_args
+	stem="$(basename "${audio%.*}")"
+	stem="${stem#AUDIOLEVEL_}"
+	out="AUDIOLEVEL_${tag}_${stem}.${ext}"
+
+	echo
+	echo -e "${CYAN} = = > Source:${NC} ${GREEN}$audio${NC}"
+	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out${NC}"
+	(( recommended_flow == 1 )) || ask_yes_no " = = > Proceed? (y/n or 1/2): " || return 0
+
+	rm -f -- "$out"
+	if audiolevel_build_standalone "$audio" "$filter" "$out" "${codec_args[@]}" && [[ -s "$out" ]]; then
+		echo -e "${GR} = = > AUDIO LEVEL OUTPUT CREATED:${NC} ${GREEN}$out${NC}"
+		echo -e "${YE} = = > Original Standalone Audio Remains In Place.${NC}"
+	else
+		rm -f -- "$out"
+		echo -e "${REB} = = > Standalone Audio Level Operation Failed.${NC}"
+	fi
+	pause
+}
+
+
+# ================================================================
+# PLAYLIST LOUDNESS GROUP ANALYSIS / APPROVED NORMALIZATION
+# ================================================================
+
+playlist_select_file() {
+	local -n _playlist_ref=$1
+	local title="${2:-PLAYLIST}"
+	local -a files=()
+	local file choice i
+
+	while IFS= read -r -d '' file; do
+		files+=("$file")
+	done < <(find . -maxdepth 3 -type f \( -iname '*.m3u' -o -iname '*.m3u8' \) -print0 2>/dev/null | sort -z)
+
+	(( ${#files[@]} > 0 )) || {
+		echo -e "${YE} = = > No .m3u Or .m3u8 Playlist Found Within Three Levels.${NC}"
+		pause
+		return 1
+	}
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}                  ${title}${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	for i in "${!files[@]}"; do
+		printf ' %3d) %s\n' "$((i+1))" "${files[$i]}"
+	done
+	echo
+	echo -e "${YELLOW}     0.) Cancel${NC}"
+	echo
+	prompt_menu_choice " = = > Choose Playlist [1-${#files[@]} | 0.=cancel]: " choice
+	is_exit_token "$choice" && return 1
+	[[ "$choice" =~ ^[0-9]+$ ]] || return 1
+	(( choice >= 1 && choice <= ${#files[@]} )) || return 1
+	_playlist_ref="${files[$((choice-1))]}"
+}
+
+playlist_media_kind() {
+	local file="$1"
+	local video_count audio_count
+	video_count="$(ffprobe -v error -select_streams v -show_entries stream=index -of csv=p=0 "$file" 2>/dev/null | wc -l)"
+	audio_count="$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$file" 2>/dev/null | wc -l)"
+	if (( audio_count < 1 )); then
+		printf '%s\n' 'UNSUPPORTED'
+	elif (( video_count > 0 )); then
+		printf '%s\n' 'VIDEO'
+	else
+		printf '%s\n' 'AUDIO'
+	fi
+}
+
+playlist_loudness_measure() {
+	local file="$1"
+	local track="${2:-0}"
+	local log_file integrated true_peak lra threshold
+	log_file="$(mktemp /tmp/factory_playlist_loudness.XXXXXX.log)" || return 1
+
+	ffmpeg -hide_banner -nostats -loglevel info -i "$file" \
+		-map "0:a:$track" -vn -sn -dn \
+		-af 'loudnorm=I=-16:TP=-1.5:LRA=11:print_format=summary' \
+		-f null - > /dev/null 2>"$log_file" || true
+
+	integrated="$(awk '/Input Integrated:/ {print $(NF-1); exit}' "$log_file")"
+	true_peak="$(awk '/Input True Peak:/ {print $(NF-1); exit}' "$log_file")"
+	lra="$(awk '/Input LRA:/ {print $(NF-1); exit}' "$log_file")"
+	threshold="$(awk '/Input Threshold:/ {print $(NF-1); exit}' "$log_file")"
+	rm -f -- "$log_file"
+
+	[[ "$integrated" =~ ^[+-]?[0-9]+([.][0-9]+)?$ ]] || return 1
+	[[ "$true_peak" =~ ^[+-]?[0-9]+([.][0-9]+)?$ ]] || true_peak=""
+	[[ "$lra" =~ ^[+-]?[0-9]+([.][0-9]+)?$ ]] || lra=""
+	[[ "$threshold" =~ ^[+-]?[0-9]+([.][0-9]+)?$ ]] || threshold=""
+	printf '%s|%s|%s|%s\n' "$integrated" "$true_peak" "$lra" "$threshold"
+}
+
+playlist_loudness_recommendation() {
+	local integrated="$1"
+	local true_peak="$2"
+	local target="$3"
+	local correction abs_correction verdict action
+	correction="$(awk -v t="$target" -v i="$integrated" 'BEGIN {printf "%.1f", t-i}')"
+	abs_correction="$(awk -v v="$correction" 'BEGIN {if (v<0) v=-v; printf "%.1f", v}')"
+
+	if [[ -n "$true_peak" ]] && awk -v v="$true_peak" 'BEGIN {exit !(v >= 0)}'; then
+		verdict='CLIPPING_RISK'
+		action='NORMALIZE_RECOMMENDED'
+	elif awk -v v="$abs_correction" 'BEGIN {exit !(v < 1.0)}'; then
+		verdict='GOOD'
+		action='NO_REPAIR'
+	elif awk -v v="$abs_correction" 'BEGIN {exit !(v < 2.0)}'; then
+		verdict='BORDERLINE'
+		action='OPTIONAL'
+	else
+		verdict='LEVEL_MISMATCH'
+		action='NORMALIZE_RECOMMENDED'
+	fi
+	printf '%s|%s|%s\n' "$correction" "$verdict" "$action"
+}
+
+playlist_loudness_write_summary() {
+	local report_file="$1"
+	local summary_file="$2"
+	local total=0 resolved=0 missing=0 unsupported=0 measured=0 good=0 optional=0 recommended=0 clipping=0 failed=0
+	local index entry path kind status integrated true_peak lra threshold target label correction verdict action approved result output notes
+
+	while IFS='|' read -r index entry path kind status integrated true_peak lra threshold target label correction verdict action approved result output notes; do
+		[[ "$index" == 'INDEX' ]] && continue
+		[[ -z "$index" ]] && continue
+		((total+=1)) || :
+		case "$status" in
+			READY) ((resolved+=1, measured+=1)) || : ;;
+			MISSING) ((missing+=1)) || : ;;
+			UNSUPPORTED|REMOTE) ((unsupported+=1)) || : ;;
+			*) ((failed+=1)) || : ;;
+		esac
+		case "$action" in
+			NO_REPAIR) ((good+=1)) || : ;;
+			OPTIONAL) ((optional+=1)) || : ;;
+			NORMALIZE_RECOMMENDED) ((recommended+=1)) || : ;;
+		esac
+		[[ "$verdict" == 'CLIPPING_RISK' ]] && ((clipping+=1)) || :
+	done < "$report_file"
+
+	{
+		echo '================================================'
+		echo '      PLAYLIST LOUDNESS GROUP SUMMARY'
+		echo '================================================'
+		echo "Generated: $(date)"
+		echo
+		echo "Playlist Entries:       $total"
+		echo "Resolved / Measured:    $measured"
+		echo "Missing:                $missing"
+		echo "Remote / Unsupported:   $unsupported"
+		echo "Measurement Failed:     $failed"
+		echo
+		echo "No Repair Needed:       $good"
+		echo "Optional Adjustment:    $optional"
+		echo "Repair Recommended:     $recommended"
+		echo "Clipping Risk:          $clipping"
+		echo
+		echo "Detailed Report:"
+		echo " $report_file"
+	} > "$summary_file"
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}      PLAYLIST LOUDNESS GROUP SUMMARY           ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN} = = > Playlist Entries:${NC}       ${YELLOW}$total${NC}"
+	echo -e "${CYAN} = = > Resolved / Measured:${NC}    ${YELLOW}$measured${NC}"
+	echo -e "${CYAN} = = > Missing:${NC}                ${YELLOW}$missing${NC}"
+	echo -e "${CYAN} = = > Remote / Unsupported:${NC}   ${YELLOW}$unsupported${NC}"
+	echo -e "${CYAN} = = > Measurement Failed:${NC}     ${YELLOW}$failed${NC}"
+	echo
+	echo -e "${GR} = = > No Repair Needed:${NC}       ${YELLOW}$good${NC}"
+	echo -e "${YE} = = > Optional Adjustment:${NC}    ${YELLOW}$optional${NC}"
+	echo -e "${RE} = = > Repair Recommended:${NC}     ${YELLOW}$recommended${NC}"
+	echo -e "${RE} = = > Clipping Risk:${NC}          ${YELLOW}$clipping${NC}"
+	echo
+	echo -e "${CYAN} = = > Report:${NC} ${GREEN}$report_file${NC}"
+	echo -e "${CYAN} = = > Summary:${NC} ${GREEN}$summary_file${NC}"
+}
+
+playlist_loudness_scan() {
+	local playlist="$1"
+	local target="$2"
+	local target_label="$3"
+	local run_dir="$4"
+	local -n _report_ref=$5
+	local report_file="$run_dir/playlist_loudness_report.csv"
+	local summary_file="$run_dir/playlist_loudness_summary.txt"
+	local line entry path kind metrics rec integrated true_peak lra threshold correction verdict action
+	local index=0
+
+	mkdir -p "$run_dir"
+	printf '%s\n' 'INDEX|PLAYLIST_ENTRY|RESOLVED_PATH|MEDIA_KIND|STATUS|INTEGRATED_LUFS|TRUE_PEAK_DBTP|LRA_LU|THRESHOLD_LUFS|TARGET_LUFS|TARGET_LABEL|ESTIMATED_CHANGE_DB|VERDICT|RECOMMENDED_ACTION|APPROVED|RESULT|OUTPUT_PATH|NOTES' > "$report_file"
+
+	PROGRESS_TOTAL_FILES="$(awk 'BEGIN{n=0} /^[[:space:]]*($|#)/{next} {n++} END{print n}' "$playlist")"
+	PROGRESS_CURRENT_INDEX=0
+	PROGRESS_DONE_COUNT=0
+	PROGRESS_TOTAL_SECONDS=0
+
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		line="${line%$'\r'}"
+		[[ -z "$line" || "$line" == \#* ]] && continue
+		((index+=1)) || :
+		PROGRESS_CURRENT_INDEX="$index"
+		entry="$line"
+
+		if playlist_reference_is_remote "$entry"; then
+			printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+				"$index" "$entry" '' '' 'REMOTE' '' '' '' '' "$target" "$target_label" '' '' 'SKIP' 'NO' 'NOT_RUN' '' 'remote reference' >> "$report_file"
+			continue
+		fi
+
+		path="$(playlist_resolve_reference "$playlist" "$entry")"
+		if [[ ! -f "$path" ]]; then
+			printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+				"$index" "$entry" "$path" '' 'MISSING' '' '' '' '' "$target" "$target_label" '' '' 'SKIP' 'NO' 'NOT_RUN' '' 'file not found' >> "$report_file"
+			continue
+		fi
+
+		kind="$(playlist_media_kind "$path")"
+		if [[ "$kind" == 'UNSUPPORTED' ]]; then
+			printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+				"$index" "$entry" "$path" "$kind" 'UNSUPPORTED' '' '' '' '' "$target" "$target_label" '' '' 'SKIP' 'NO' 'NOT_RUN' '' 'no audio stream' >> "$report_file"
+			continue
+		fi
+
+		metrics="$(run_with_progress "Playlist Audio Scan [$index/$PROGRESS_TOTAL_FILES]: $(basename "$path")" playlist_loudness_measure "$path" 0)" || metrics=""
+		if [[ -z "$metrics" ]]; then
+			printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+				"$index" "$entry" "$path" "$kind" 'MEASURE_FAILED' '' '' '' '' "$target" "$target_label" '' '' 'SKIP' 'NO' 'NOT_RUN' '' 'measurement failed' >> "$report_file"
+			continue
+		fi
+		IFS='|' read -r integrated true_peak lra threshold <<< "$metrics"
+		rec="$(playlist_loudness_recommendation "$integrated" "$true_peak" "$target")"
+		IFS='|' read -r correction verdict action <<< "$rec"
+		printf '%s|%s|%s|%s|READY|%s|%s|%s|%s|%s|%s|%s|%s|%s|NO|NOT_RUN||\n' \
+			"$index" "$entry" "$path" "$kind" "$integrated" "$true_peak" "$lra" "$threshold" "$target" "$target_label" "$correction" "$verdict" "$action" >> "$report_file"
+	done < "$playlist"
+
+	playlist_loudness_write_summary "$report_file" "$summary_file"
+	_report_ref="$report_file"
+}
+
+playlist_loudness_output_path() {
+	local source="$1"
+	local kind="$2"
+	local target="$3"
+	local dir base stem ext tag
+	dir="$(dirname "$source")"
+	base="$(basename "$source")"
+	tag="LUFS$(audiolevel_safe_tag "$target")"
+	if [[ "$kind" == 'VIDEO' ]]; then
+		stem="${base%.*}"
+		stem="$(strip_workflow_prefixes "$stem")"
+		printf '%s/AUDIOLEVEL_%s_%s.mkv\n' "$dir" "$tag" "$stem"
+	else
+		stem="${base%.*}"
+		stem="${stem#AUDIOLEVEL_}"
+		ext="${base##*.}"
+		printf '%s/AUDIOLEVEL_%s_%s.%s\n' "$dir" "$tag" "$stem" "$ext"
+	fi
+}
+
+playlist_loudness_execute() {
+	local report_file="$1"
+	local scope="$2"
+	local exec_log="${report_file%.csv}_execute_log.csv"
+	local index entry path kind status integrated true_peak lra threshold target label correction verdict action approved result output notes
+	local filter out ext done_count=0 skipped=0 failed=0
+	local -a codec_args=()
+
+	printf '%s\n' 'INDEX|SOURCE|ACTION|TARGET_LUFS|STATUS|OUTPUT_PATH|NOTES' > "$exec_log"
+	PROGRESS_TOTAL_FILES="$(awk -F'|' -v scope="$scope" 'NR>1 && $5=="READY" && ((scope=="ALL" && $14=="NORMALIZE_RECOMMENDED") || (scope=="CLIPPING" && $13=="CLIPPING_RISK")) {n++} END{print n+0}' "$report_file")"
+	PROGRESS_CURRENT_INDEX=0
+	PROGRESS_DONE_COUNT=0
+	PROGRESS_TOTAL_SECONDS=0
+
+	while IFS='|' read -r index entry path kind status integrated true_peak lra threshold target label correction verdict action approved result output notes; do
+		[[ "$index" == 'INDEX' ]] && continue
+		[[ "$status" == 'READY' ]] || continue
+		if [[ "$scope" == 'ALL' ]]; then
+			[[ "$action" == 'NORMALIZE_RECOMMENDED' ]] || continue
+		else
+			[[ "$verdict" == 'CLIPPING_RISK' ]] || continue
+		fi
+		((PROGRESS_CURRENT_INDEX+=1)) || :
+
+		if [[ ! -f "$path" ]]; then
+			printf '%s|%s|NORMALIZE|%s|SKIPPED_MISSING||source missing\n' "$index" "$path" "$target" >> "$exec_log"
+			((skipped+=1)) || :
+			continue
+		fi
+
+		filter="$(audiolevel_two_pass_filter "$path" 0 "$target")" || {
+			printf '%s|%s|NORMALIZE|%s|FAILED_MEASURE||two-pass measurement failed\n' "$index" "$path" "$target" >> "$exec_log"
+			((failed+=1)) || :
+			continue
+		}
+		out="$(playlist_loudness_output_path "$path" "$kind" "$target")"
+		if [[ -e "$out" ]]; then
+			printf '%s|%s|NORMALIZE|%s|SKIPPED_OUTPUT_EXISTS|%s|output already exists\n' "$index" "$path" "$target" "$out" >> "$exec_log"
+			((skipped+=1)) || :
+			continue
+		fi
+
+		if [[ "$kind" == 'VIDEO' ]]; then
+			if run_with_progress "Playlist Normalize [$PROGRESS_CURRENT_INDEX/$PROGRESS_TOTAL_FILES]: $(basename "$path")" audiolevel_build_video "$path" 0 "$filter" "$out" && [[ -s "$out" ]]; then
+				printf '%s|%s|NORMALIZE|%s|CREATED|%s|video copied; audio track 1 rebuilt\n' "$index" "$path" "$target" "$out" >> "$exec_log"
+				((done_count+=1)) || :
+			else
+				rm -f -- "$out"
+				printf '%s|%s|NORMALIZE|%s|FAILED_BUILD|%s|build failed\n' "$index" "$path" "$target" "$out" >> "$exec_log"
+				((failed+=1)) || :
+			fi
+		else
+			codec_args=()
+			audiolevel_standalone_codec_args "$path" ext codec_args
+			# Rebuild the output suffix from the codec decision, not merely the source suffix.
+			out="${out%.*}.${ext}"
+			if run_with_progress "Playlist Normalize [$PROGRESS_CURRENT_INDEX/$PROGRESS_TOTAL_FILES]: $(basename "$path")" audiolevel_build_standalone "$path" "$filter" "$out" "${codec_args[@]}" && [[ -s "$out" ]]; then
+				printf '%s|%s|NORMALIZE|%s|CREATED|%s|standalone audio rebuilt\n' "$index" "$path" "$target" "$out" >> "$exec_log"
+				((done_count+=1)) || :
+			else
+				rm -f -- "$out"
+				printf '%s|%s|NORMALIZE|%s|FAILED_BUILD|%s|build failed\n' "$index" "$path" "$target" "$out" >> "$exec_log"
+				((failed+=1)) || :
+			fi
+		fi
+	done < "$report_file"
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}       PLAYLIST NORMALIZATION SUMMARY           ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${GR} = = > Outputs Created:${NC} ${YELLOW}$done_count${NC}"
+	echo -e "${YE} = = > Skipped:${NC}         ${YELLOW}$skipped${NC}"
+	echo -e "${RE} = = > Failed:${NC}          ${YELLOW}$failed${NC}"
+	echo -e "${CYAN} = = > Execution Log:${NC} ${GREEN}$exec_log${NC}"
+}
+
+run_playlist_loudness_group() {
+	local playlist content_choice target target_label run_dir report_file choice scope
+	playlist_select_file playlist 'PLAYLIST AUDIO GROUP' || return 0
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}             GROUP CONTENT TARGET               ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${YELLOW}     1) TV / Movies / Dialogue (-16 LUFS)${NC}"
+	echo -e "${YELLOW}     2) Music (-14 LUFS)${NC}"
+	echo -e "${YELLOW}     3) Podcast / Voice (-16 LUFS)${NC}"
+	echo -e "${YELLOW}     4) Custom Target${NC}"
+	echo
+	echo -e "${YELLOW}     0.) Cancel${NC}"
+	echo
+	prompt_menu_choice " = = > Choose [1-4 | 0.=cancel]: " content_choice
+	case "$content_choice" in
+		1) target='-16'; target_label='TV / Movies / Dialogue' ;;
+		2) target='-14'; target_label='Music' ;;
+		3) target='-16'; target_label='Podcast / Voice' ;;
+		4)
+			prompt_read " = = > Target LUFS (example: -15 | 0.=cancel): " target
+			target="${target//[[:space:]]/}"
+			is_exit_token "$target" && return 0
+			[[ "$target" =~ ^-[0-9]+([.][0-9]+)?$ ]] || { echo -e "${REB} = = > Invalid Target.${NC}"; pause; return 0; }
+			target_label='Custom Target'
+			;;
+		*) return 0 ;;
+	esac
+
+	run_dir="./AUDIOLEVEL_PLAYLIST_REPORTS/$(date '+%Y-%m-%d_%H-%M-%S')_$(basename "${playlist%.*}")"
+	playlist_loudness_scan "$playlist" "$target" "$target_label" "$run_dir" report_file
+	[[ -f "$report_file" ]] || { echo -e "${REB} = = > Playlist Report Was Not Created.${NC}"; pause; return 0; }
+
+	while true; do
+		echo
+		echo -e "${YELLOW}     1) Normalize All Recommended Files${NC}"
+		echo -e "${YELLOW}     2) Normalize Clipping-Risk Files Only${NC}"
+		echo -e "${YELLOW}     3) View Detailed CSV Report${NC}"
+		echo -e "${YELLOW}     4) Save Report And Return${NC}"
+		echo
+		echo -e "${YELLOW}     0.) Cancel / Return${NC}"
+		echo
+		prompt_menu_choice " = = > Choose [1-4 | 0.=return]: " choice
+		case "$choice" in
+			1) scope='ALL' ;;
+			2) scope='CLIPPING' ;;
+			3) less "$report_file"; continue ;;
+			4|0|q|Q) return 0 ;;
+			*) echo -e "${REB} = = > Invalid Selection.${NC}"; continue ;;
+		esac
+
+		echo
+		echo -e "${YE} = = > Sources Will Remain Untouched.${NC}"
+		echo -e "${YE} = = > New AUDIOLEVEL_ Outputs Will Be Written Beside Their Sources.${NC}"
+		if ask_yes_no ' = = > Execute Approved Playlist Normalization? (y/n or 1/2): '; then
+			playlist_loudness_execute "$report_file" "$scope"
+			pause
+			return 0
+		fi
+	done
+}
+
+run_audiolevel_menu() {
+	local choice
+	while true; do
+		clear
+		echo -e "${CYAN}================================================${NC}"
+		echo -e "${CYAN}          NORMALIZE / ADJUST AUDIO VOLUME       ${NC}"
+		echo -e "${CYAN}================================================${NC}"
+		echo
+		echo -e "${YELLOW}     1) Normalize / Adjust Audio Inside Video${NC}"
+		echo -e "${YELLOW}     2) Normalize / Adjust Standalone Audio File${NC}"
+		echo -e "${YELLOW}     3) Playlist Group Analysis / Normalization${NC}"
+		echo
+		echo -e "${YELLOW}     0.) Return${NC}"
+		echo
+		prompt_menu_choice " = = > Select Option [1-3 | 0.=return]: " choice
+		is_exit_token "$choice" && return 0
+		case "$choice" in
+			1) run_audiolevel_video ;;
+			2) run_audiolevel_standalone ;;
+			3) run_playlist_loudness_group ;;
+			*) echo -e "${REB} = = > Invalid Selection.${NC}"; pause ;;
+		esac
+	done
+}
+
 run_audio_triage_menu() {
 	local choice
 	while true; do
 		clear
 		echo -e "${CYAN}================================================${NC}"
-		echo -e "${CYAN}                 AUDIO TRIAGE CENTER            ${NC}"
+		echo -e "${CYAN}              AUDIO / TIME TRIAGE CENTER        ${NC}"
 		echo -e "${CYAN}================================================${NC}"
 		echo
-		echo -e "${YELLOW}     1) Audio Sync / Timing Repair${NC}"
-		echo -e "${YELLOW}     2) Extract Audio Track(s)${NC}"
-		echo -e "${YELLOW}     3) Replace Audio Track${NC}"
-		echo -e "${YELLOW}     4) Add Audio Track${NC}"
-		echo -e "${YELLOW}     5) Remove Audio Track(s)${NC}"
-		echo -e "${YELLOW}     6) Inspect Audio Tracks${NC}"
+		echo -e "${YELLOW}     1) Audio Sync / Constant Offset Repair${NC}"
+		echo -e "${YELLOW}     2) Time-Compress Video + Audio${NC}"
+		echo -e "${YELLOW}     3) Match Video To Modified External Audio${NC}"
+		echo -e "${YELLOW}     4) Normalize / Adjust Audio Volume${NC}"
+		echo -e "${YELLOW}     5) Extract Audio Track(s)${NC}"
+		echo -e "${YELLOW}     6) Replace Audio Track${NC}"
+		echo -e "${YELLOW}     7) Add Audio Track${NC}"
+		echo -e "${YELLOW}     8) Remove Audio Track(s)${NC}"
+		echo -e "${YELLOW}     9) Inspect Audio Tracks${NC}"
 		echo
 		echo -e "${YELLOW}     0.) Return${NC}"
 		echo
-		prompt_menu_choice " = = > Select Option [1-6 | 0.=return]: " choice
+		prompt_menu_choice " = = > Select Option [1-9 | 0.=return]: " choice
 		is_exit_token "$choice" && return 0
 		case "$choice" in
 			1) run_audio_sync_rescue ;;
-			2) run_media_audio_extract ;;
-			3) run_media_audio_replace ;;
-			4) run_media_audio_add ;;
-			5) run_media_audio_remove ;;
-			6) run_media_audio_inspect ;;
+			2) run_timepress_video_audio ;;
+			3) run_timepress_match_external_audio ;;
+			4) run_audiolevel_menu ;;
+			5) run_media_audio_extract ;;
+			6) run_media_audio_replace ;;
+			7) run_media_audio_add ;;
+			8) run_media_audio_remove ;;
+			9) run_media_audio_inspect ;;
 			*) echo -e "${REB} = = > Invalid Selection.${NC}"; pause ;;
 		esac
 	done
@@ -3114,7 +4147,7 @@ run_audio_sync_rescue() {
 	targets=()
 	for file in "${full_targets[@]}"; do
 		case "$file" in
-			REKEY_*|SMC_*|PILOT_SMC_*|BARFIX_*|SUBPACKED_*|SUBTOX_*|ARCHIVE_*|RESCUE_*|PILOT_RESCUE_*|AUDIOFIX_*|intro_template*|custom_cut*)
+			REKEY_*|SMC_*|PILOT_SMC_*|BARFIX_*|SUBPACKED_*|SUBTOX_*|ARCHIVE_*|RESCUE_*|PILOT_RESCUE_*|AUDIOFIX_*|TIMEPRESS_*|AUDIOLEVEL_*|intro_template*|custom_cut*)
 				continue
 				;;
 		esac
@@ -3358,6 +4391,478 @@ run_audio_sync_rescue() {
 	echo
 	return 0
 }
+
+# ================================================================
+# #MARKER: TIMEPRESS / VIDEO + AUDIO TIME COMPRESSION
+# ================================================================
+# PURPOSE:
+# - Speed video and audio together for time-compressed viewing.
+# - Natural Voice mode preserves pitch with atempo.
+# - Tape Speed mode raises pitch with speed using asetrate + aresample.
+# - Match video duration exactly to a previously modified external audio file.
+# - Keep pilot originals until review; archive accepted/full-batch originals monthly.
+# ================================================================
+
+media_duration_seconds() {
+	local file="$1"
+	ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$file" 2>/dev/null | head -n1
+}
+
+media_audio_sample_rate() {
+	local file="$1"
+	ffprobe -v error -select_streams a:0 -show_entries stream=sample_rate -of default=nw=1:nk=1 "$file" 2>/dev/null | head -n1
+}
+
+timepress_percent_tag() {
+	local percent="$1"
+	awk -v p="$percent" 'BEGIN {
+		printf "%.3f", p
+	}' | sed -E 's/0+$//; s/\.$//; s/\./p/g'
+}
+
+timepress_collect_targets() {
+	local -n _targets_ref=$1
+	local f
+	local -a all_files=()
+
+	_targets_ref=()
+	shopt -s nullglob nocaseglob
+	all_files=(*.{mkv,mp4,avi,mov,mpg,mpeg,ts,m4v,ogv,flv,3gp,divx,webm,xvid,wmv,lrv})
+	shopt -u nullglob nocaseglob
+
+	for f in "${all_files[@]}"; do
+		case "$f" in
+			REKEY_*|SMC_*|PILOT_SMC_*|BARFIX_*|SUBPACKED_*|SUBTOX_*|ARCHIVE_*|RESCUE_*|PILOT_RESCUE_*|AUDIOFIX_*|TIMEPRESS_*|AUDIOLEVEL_*|MEDIAEDIT_*|intro_template*|custom_cut*)
+				continue
+				;;
+		esac
+		_targets_ref+=("$f")
+	done
+
+	if (( ${#_targets_ref[@]} > 0 )); then
+		mapfile -t _targets_ref < <(printf '%s\n' "${_targets_ref[@]}" | LC_ALL=C sort -fV)
+	fi
+}
+
+timepress_choose_percent() {
+	local -n _percent_ref=$1
+	local choice raw
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}              TIME COMPRESSION SPEED            ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW}     1) 105%${NC}"
+	echo -e "${YELLOW}     2) 110%${NC}"
+	echo -e "${YELLOW}     3) 111%${NC}"
+	echo -e "${YELLOW}     4) 115%${NC}"
+	echo -e "${YELLOW}     5) 125%${NC}"
+	echo -e "${YELLOW}     6) 150%${NC}"
+	echo -e "${YELLOW}     7) Custom Percent${NC}"
+	echo
+	echo -e "${YELLOW}     0.) Return${NC}"
+	echo
+	prompt_menu_choice " = = > Choose Speed [1-7 | 0.=return]: " choice
+	is_exit_token "$choice" && return 1
+
+	case "$choice" in
+		1) _percent_ref="105" ;;
+		2) _percent_ref="110" ;;
+		3) _percent_ref="111" ;;
+		4) _percent_ref="115" ;;
+		5) _percent_ref="125" ;;
+		6) _percent_ref="150" ;;
+		7)
+			prompt_read " = = > Custom Percent (example 108.5): " raw
+			raw="${raw//[[:space:]]/}"
+			[[ "$raw" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
+				echo -e "${REB} = = > Invalid Speed Percent.${NC}"
+				return 1
+			}
+			if ! awk -v p="$raw" 'BEGIN { exit !(p >= 50 && p <= 400) }'; then
+				echo -e "${REB} = = > Allowed Range Is 50% Through 400%.${NC}"
+				return 1
+			fi
+			_percent_ref="$raw"
+			;;
+		*)
+			echo -e "${REB} = = > Invalid Speed Selection.${NC}"
+			return 1
+			;;
+	esac
+}
+
+timepress_choose_sound_mode() {
+	local -n _mode_ref=$1
+	local choice
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}               TIMEPRESS SOUND MODE             ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW}     1) Natural Voice / Preserve Pitch${NC}"
+	echo -e "${YELLOW}     2) Tape Speed / Raise Pitch With Speed${NC}"
+	echo
+	echo -e "${YELLOW}     0.) Return${NC}"
+	echo
+	prompt_menu_choice " = = > Choose Sound Mode [1-2 | 0.=return]: " choice
+	is_exit_token "$choice" && return 1
+
+	case "$choice" in
+		1) _mode_ref="natural" ;;
+		2) _mode_ref="tape" ;;
+		*) echo -e "${REB} = = > Invalid Sound Mode.${NC}"; return 1 ;;
+	esac
+}
+
+timepress_build_file() {
+	local src="$1"
+	local percent="$2"
+	local sound_mode="$3"
+	local out="$4"
+	local factor sample_rate audio_filter
+
+	factor="$(awk -v p="$percent" 'BEGIN { printf "%.10f", p / 100.0 }')"
+
+	if (( $(media_audio_stream_count "$src") == 0 )); then
+		ffmpeg -hide_banner -nostats -loglevel error -y \
+			-i "$src" \
+			-filter:v "setpts=PTS/${factor}" \
+			-map 0:v:0 -map "0:s?" \
+			-map_metadata 0 -map_chapters 0 \
+			-c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p \
+			-c:s copy \
+			"$out"
+		return $?
+	fi
+
+	case "$sound_mode" in
+		natural)
+			audio_filter="atempo=${factor}"
+			;;
+		tape)
+			sample_rate="$(media_audio_sample_rate "$src")"
+			[[ "$sample_rate" =~ ^[0-9]+$ ]] || sample_rate="48000"
+			audio_filter="asetrate=${sample_rate}*${factor},aresample=${sample_rate}"
+			;;
+		*) return 1 ;;
+	esac
+
+	ffmpeg -hide_banner -nostats -loglevel error -y \
+		-i "$src" \
+		-filter_complex "[0:v:0]setpts=PTS/${factor}[v];[0:a:0]${audio_filter}[a]" \
+		-map "[v]" -map "[a]" -map "0:s?" \
+		-map_metadata 0 -map_chapters 0 \
+		-c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p \
+		-c:a aac -b:a 192k \
+		-c:s copy \
+		-disposition:a:0 default \
+		-shortest \
+		"$out"
+}
+
+timepress_review_pilot() {
+	local archive_dir="$1"
+	local label="$2"
+	local -n _sources_ref=$3
+	local -n _outputs_ref=$4
+	local choice file out_file
+
+	while true; do
+		echo
+		echo -e "${CYAN}============================================================${NC}"
+		echo -e "${ORANGE}                 TIMEPRESS PILOT REVIEW ${NC}"
+		echo -e "${YEB}          GO CHECK THE OUTPUT FILE(S) RIGHT NOW! ${NC}"
+		echo -e "${CYAN}============================================================${NC}"
+		echo
+		echo -e "${CYAN} = = > Mode:${NC} ${YELLOW}$label${NC}"
+		echo -e "${CYAN} = = > Pilot Output(s):${NC}"
+		for out_file in "${_outputs_ref[@]}"; do
+			echo -e "${GREEN}     $out_file${NC}"
+		done
+		echo
+		echo -e "${YELLOW}     1) Accept Pilot And Archive Original(s)${NC}"
+		echo -e "${YELLOW}     2) Delete TIMEPRESS Output(s), Keep Original(s), Return For Redo${NC}"
+		echo -e "${YELLOW}     3) Keep Both For Manual Review${NC}"
+		echo
+		echo -e "${YELLOW}     0.) Return / Do Nothing${NC}"
+		echo
+		prompt_menu_choice " = = > Choose Pilot Result [1-3 | 0.=return]: " choice
+
+		if is_exit_token "$choice"; then
+			echo -e "${YE} = = > TIMEPRESS Pilot Review Skipped. Nothing Changed.${NC}"
+			return 0
+		fi
+
+		case "$choice" in
+			1)
+				mkdir -p "$archive_dir"
+				for file in "${_sources_ref[@]}"; do
+					[[ -f "$file" ]] || continue
+					archive_rescued_source_file "$file" "$archive_dir"
+				done
+				echo -e "${GR} = = > TIMEPRESS Pilot Accepted.${NC}"
+				return 0
+				;;
+			2)
+				for out_file in "${_outputs_ref[@]}"; do
+					[[ -f "$out_file" ]] && rm -f -- "$out_file"
+				done
+				echo -e "${GR} = = > Originals Remain In Working Folder For Redo.${NC}"
+				return 0
+				;;
+			3)
+				echo -e "${YE} = = > Keeping Both Original(s) And TIMEPRESS Output(s).${NC}"
+				return 0
+				;;
+			*) echo -e "${REB} = = > Invalid Selection.${NC}" ;;
+		esac
+	done
+}
+
+run_timepress_video_audio() {
+	local percent sound_mode factor percent_tag mode choice file clean out_file
+	local archive_dir total current
+	local -a targets=()
+	local -a selected=()
+	local -a outputs=()
+
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}          TIME-COMPRESS VIDEO + AUDIO           ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW} = = > Speeds The Complete Program Up Or Down Together.${NC}"
+	echo -e "${YELLOW} = = > Video Is Re-Encoded; First Audio Track Is Rebuilt.${NC}"
+	echo -e "${YELLOW} = = > Subtitle Streams Are Copied When Compatible.${NC}"
+
+	timepress_collect_targets targets
+	(( ${#targets[@]} > 0 )) || { echo -e "${REB} = = > No Eligible Video Sources Found.${NC}"; pause; return 0; }
+	timepress_choose_percent percent || return 0
+	timepress_choose_sound_mode sound_mode || return 0
+	factor="$(awk -v p="$percent" 'BEGIN { printf "%.6f", p / 100.0 }')"
+	percent_tag="$(timepress_percent_tag "$percent")"
+
+	echo
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}             TIMEPRESS TARGET MODE              ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW}     1) Pick One File${NC}"
+	echo -e "${YELLOW}     2) Pilot First File${NC}"
+	echo -e "${YELLOW}     3) Pilot First 3 Files${NC}"
+	echo -e "${YELLOW}     4) Full Batch${NC}"
+	echo
+	echo -e "${YELLOW}     0.) Return${NC}"
+	echo
+	prompt_menu_choice " = = > Choose Mode [1-4 | 0.=return]: " mode
+	is_exit_token "$mode" && return 0
+
+	case "$mode" in
+		1)
+			media_pick_video_file file "TIMEPRESS ONE FILE" || return 0
+			case "$file" in TIMEPRESS_*|AUDIOLEVEL_*|AUDIOFIX_*|MEDIAEDIT_*) echo -e "${REB} = = > Refusing Generated Output As Source.${NC}"; pause; return 0 ;; esac
+			selected=("$file")
+			;;
+		2) selected=("${targets[0]}") ;;
+		3) selected=("${targets[@]:0:3}") ;;
+		4) selected=("${targets[@]}") ;;
+		*) echo -e "${REB} = = > Invalid Mode.${NC}"; pause; return 0 ;;
+	esac
+
+	echo
+	echo -e "${CYAN} = = > Speed:${NC} ${YELLOW}${percent}% (${factor}x)${NC}"
+	echo -e "${CYAN} = = > Sound:${NC} ${YELLOW}$sound_mode${NC}"
+	echo -e "${CYAN} = = > Targets:${NC} ${YELLOW}${#selected[@]}${NC}"
+	echo
+	for file in "${selected[@]}"; do
+		clean="$(strip_workflow_prefixes "$(basename "$file")")"
+		clean="${clean%.*}"
+		out_file="TIMEPRESS_${percent_tag}_${clean}.mkv"
+		echo -e "${YELLOW}$file${NC}"
+		echo -e "${CYAN}  -->${NC} ${GREEN}$out_file${NC}"
+	done
+	echo
+	ask_yes_no " = = > Proceed With TIMEPRESS? (y/n or 1/2): " || return 0
+
+	archive_dir="OEM/TIME_COMPRESSION/$(date '+%Y-%m')"
+	total="${#selected[@]}"
+	current=0
+
+	for file in "${selected[@]}"; do
+		((current+=1)) || :
+		clean="$(strip_workflow_prefixes "$(basename "$file")")"
+		clean="${clean%.*}"
+		out_file="TIMEPRESS_${percent_tag}_${clean}.mkv"
+		rm -f -- "$out_file"
+		echo
+		echo -e "${CYAN}[${current} / ${total}] TARGET:${NC} ${GREEN}$file${NC}"
+		if timepress_build_file "$file" "$percent" "$sound_mode" "$out_file" && [[ -s "$out_file" ]]; then
+			outputs+=("$out_file")
+			echo -e "${GR} = = > TIMEPRESS COMPLETE:${NC} ${GREEN}$out_file${NC}"
+			if [[ "$mode" == "4" ]]; then
+				archive_rescued_source_file "$file" "$archive_dir"
+			fi
+		else
+			rm -f -- "$out_file"
+			echo -e "${REB} = = > TIMEPRESS FAILED:${NC} ${YELLOW}$file${NC}"
+		fi
+	done
+
+	if [[ "$mode" != "4" && ${#outputs[@]} -gt 0 ]]; then
+		timepress_review_pilot "$archive_dir" "${percent}% / ${sound_mode}" selected outputs
+	fi
+
+	echo
+	echo -e "${GR} = = > TIMEPRESS Pass Complete.${NC}"
+	pause
+}
+
+run_timepress_match_external_audio() {
+	local video audio keep_choice sound_choice
+	local video_duration audio_duration factor percent percent_tag clean out_file
+	local original_audio_count audio_filter sample_rate
+	local archive_dir choice
+
+	clear
+	echo -e "${CYAN}================================================${NC}"
+	echo -e "${CYAN}      MATCH VIDEO TO MODIFIED EXTERNAL AUDIO    ${NC}"
+	echo -e "${CYAN}================================================${NC}"
+	echo
+	echo -e "${YELLOW} = = > Reads Exact Durations And Calculates The Video Speed.${NC}"
+	echo -e "${YELLOW} = = > External Audio Is Muxed Without Altering Its Timing.${NC}"
+	echo
+
+	media_pick_video_file video "ORIGINAL VIDEO" || return 0
+	media_pick_audio_file audio "MODIFIED / TIME-COMPRESSED AUDIO" || return 0
+
+	video_duration="$(media_duration_seconds "$video")"
+	audio_duration="$(media_duration_seconds "$audio")"
+
+	if [[ ! "$video_duration" =~ ^[0-9]+([.][0-9]+)?$ || ! "$audio_duration" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+		echo -e "${REB} = = > Could Not Read Both Durations.${NC}"
+		pause
+		return 0
+	fi
+	if ! awk -v d="$audio_duration" 'BEGIN { exit !(d > 0) }'; then
+		echo -e "${REB} = = > External Audio Duration Is Invalid.${NC}"
+		pause
+		return 0
+	fi
+
+	factor="$(awk -v v="$video_duration" -v a="$audio_duration" 'BEGIN { printf "%.10f", v / a }')"
+	percent="$(awk -v f="$factor" 'BEGIN { printf "%.3f", f * 100.0 }')"
+	percent_tag="$(timepress_percent_tag "$percent")"
+	clean="$(strip_workflow_prefixes "$(basename "$video")")"
+	clean="${clean%.*}"
+	out_file="TIMEPRESS_${percent_tag}_${clean}.mkv"
+	original_audio_count="$(media_audio_stream_count "$video")"
+
+	echo
+	echo -e "${CYAN} = = > Video Duration:${NC} ${YELLOW}${video_duration}s${NC}"
+	echo -e "${CYAN} = = > External Audio:${NC} ${YELLOW}${audio_duration}s${NC}"
+	echo -e "${CYAN} = = > Required Video Speed:${NC} ${GR}${percent}% (${factor}x)${NC}"
+	echo -e "${CYAN} = = > Output:${NC} ${GREEN}$out_file${NC}"
+	echo
+	echo -e "${YELLOW}     1) Replace Original Audio With External Audio${NC}"
+	if (( original_audio_count > 0 )); then
+		echo -e "${YELLOW}     2) Add External Audio + Keep A Time-Matched Original Track${NC}"
+	fi
+	echo
+	echo -e "${YELLOW}     0.) Return${NC}"
+	echo
+	prompt_menu_choice " = = > Choose Audio Layout [1-2 | 0.=return]: " keep_choice
+	is_exit_token "$keep_choice" && return 0
+	[[ "$keep_choice" == "1" || ( "$keep_choice" == "2" && "$original_audio_count" -gt 0 ) ]] || {
+		echo -e "${REB} = = > Invalid Audio Layout.${NC}"
+		pause
+		return 0
+	}
+
+	if [[ "$keep_choice" == "2" ]]; then
+		timepress_choose_sound_mode sound_choice || return 0
+		case "$sound_choice" in
+			natural) audio_filter="atempo=${factor}" ;;
+			tape)
+				sample_rate="$(media_audio_sample_rate "$video")"
+				[[ "$sample_rate" =~ ^[0-9]+$ ]] || sample_rate="48000"
+				audio_filter="asetrate=${sample_rate}*${factor},aresample=${sample_rate}"
+				;;
+		esac
+	fi
+
+	ask_yes_no " = = > Build This Matched Video? (y/n or 1/2): " || return 0
+	rm -f -- "$out_file"
+
+	if [[ "$keep_choice" == "1" ]]; then
+		if ffmpeg -hide_banner -nostats -loglevel error -y \
+			-i "$video" -i "$audio" \
+			-filter_complex "[0:v:0]setpts=PTS/${factor}[v]" \
+			-map "[v]" -map 1:a:0 -map "0:s?" \
+			-map_metadata 0 -map_chapters 0 \
+			-c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p \
+			-c:a copy -c:s copy \
+			-disposition:a:0 default \
+			-shortest \
+			"$out_file" && [[ -s "$out_file" ]]; then
+			:
+		else
+			rm -f -- "$out_file"
+			echo -e "${REB} = = > External Audio Match Failed.${NC}"
+			pause
+			return 0
+		fi
+	else
+		if ffmpeg -hide_banner -nostats -loglevel error -y \
+			-i "$video" -i "$audio" \
+			-filter_complex "[0:v:0]setpts=PTS/${factor}[v];[0:a:0]${audio_filter}[orig]" \
+			-map "[v]" -map 1:a:0 -map "[orig]" -map "0:s?" \
+			-map_metadata 0 -map_chapters 0 \
+			-c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p \
+			-c:a:0 copy -c:a:1 aac -b:a:1 192k -c:s copy \
+			-metadata:s:a:0 title="Modified External Audio" \
+			-metadata:s:a:1 title="Time-Matched Original Audio" \
+			-disposition:a:0 default -disposition:a:1 0 \
+			-shortest \
+			"$out_file" && [[ -s "$out_file" ]]; then
+			:
+		else
+			rm -f -- "$out_file"
+			echo -e "${REB} = = > External Audio Match Failed.${NC}"
+			pause
+			return 0
+		fi
+	fi
+
+	echo
+	echo -e "${GR} = = > MATCHED TIMEPRESS CREATED:${NC} ${GREEN}$out_file${NC}"
+	echo -e "${YE} = = > Original Video Remains In Working Folder Until Review.${NC}"
+	echo
+	echo -e "${YELLOW}     1) Accept And Archive Original Video${NC}"
+	echo -e "${YELLOW}     2) Delete TIMEPRESS Output And Keep Original${NC}"
+	echo -e "${YELLOW}     3) Keep Both${NC}"
+	echo
+	echo -e "${YELLOW}     0.) Return / Do Nothing${NC}"
+	echo
+	prompt_menu_choice " = = > Choose Result [1-3 | 0.=return]: " choice
+
+	case "$choice" in
+		1)
+			archive_dir="OEM/TIME_COMPRESSION/$(date '+%Y-%m')"
+			archive_rescued_source_file "$video" "$archive_dir"
+			;;
+		2)
+			rm -f -- "$out_file"
+			echo -e "${GR} = = > TIMEPRESS Output Deleted; Original Kept.${NC}"
+			;;
+		3) echo -e "${YE} = = > Keeping Both Files.${NC}" ;;
+		*) echo -e "${YE} = = > Nothing Changed.${NC}" ;;
+	esac
+	pause
+}
+
 
 # =========================
 # #MARKER: INFO CSV LEDGER / REKEY CACHE STATE
@@ -5047,7 +6552,7 @@ avi_rescue_collect_sources() {
 		[[ -f "$f" ]] || continue
 
 		case "$f" in
-			REKEY_*|SMC_*|PILOT_SMC_*|BARFIX_*|SUBPACKED_*|SUBTOX_*|ARCHIVE_*|RESCUE_*|PILOT_RESCUE_*|AUDIOFIX_*|intro_template*|custom_cut*)
+			REKEY_*|SMC_*|PILOT_SMC_*|BARFIX_*|SUBPACKED_*|SUBTOX_*|ARCHIVE_*|RESCUE_*|PILOT_RESCUE_*|AUDIOFIX_*|TIMEPRESS_*|AUDIOLEVEL_*|intro_template*|custom_cut*)
 				continue
 				;;
 		esac
@@ -5580,10 +7085,65 @@ run_avi_rescue_menu() {
 	}
 
 # ========================================================
-# #MARKER: COLLECTION DETOX PLAYLIST REPAIR EXECUTION
+# #MARKER: GENERIC PLAYLIST RESOLUTION / REPAIR FOUNDATION
+# ========================================================
+# PURPOSE:
+# - Shared local .m3u / .m3u8 reader and repair planner
+# - Preserve playlist order, comments, blank lines, and path style
+# - Build a report before any playlist is changed
+# - Apply only exact SAFE rows approved by the user
+# - Remain neutral so rename, AudioLevel, and future tools can reuse it
 # ========================================================
 
-collection_detox_playlist_backup_path() {
+playlist_is_supported_file() {
+	local file="${1:-}"
+	local ext="${file##*.}"
+	ext="${ext,,}"
+	[[ "$ext" == "m3u" || "$ext" == "m3u8" ]]
+}
+
+playlist_reference_is_remote() {
+	local ref="${1:-}"
+	[[ "$ref" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]]
+}
+
+playlist_resolve_reference() {
+	local playlist="$1"
+	local ref="$2"
+	local playlist_dir
+
+	playlist_dir="$(dirname "$playlist")"
+
+	if [[ "$ref" == /* ]]; then
+		if have_cmd realpath; then
+			realpath -m -- "$ref" 2>/dev/null || printf '%s\n' "$ref"
+		else
+			printf '%s\n' "$ref"
+		fi
+	else
+		if have_cmd realpath; then
+			realpath -m -- "$playlist_dir/$ref" 2>/dev/null || printf '%s/%s\n' "$playlist_dir" "$ref"
+		else
+			printf '%s/%s\n' "$playlist_dir" "$ref"
+		fi
+	fi
+}
+
+playlist_relative_reference() {
+	local playlist="$1"
+	local target="$2"
+	local playlist_dir
+
+	playlist_dir="$(dirname "$playlist")"
+
+	if have_cmd realpath; then
+		realpath --relative-to="$playlist_dir" -- "$target" 2>/dev/null || printf '%s\n' "$(basename "$target")"
+	else
+		printf '%s\n' "$(basename "$target")"
+	fi
+}
+
+playlist_backup_path() {
 	local scan_root="$1"
 	local run_dir="$2"
 	local playlist="$3"
@@ -5594,165 +7154,215 @@ collection_detox_playlist_backup_path() {
 
 	backup="$run_dir/OLD_PLAYLISTS/$rel"
 	mkdir -p "$(dirname "$backup")"
-
 	printf '%s\n' "$backup"
 }
 
-collection_detox_write_playlist_repair_report() {
+playlist_build_repair_plan() {
+	local scan_root="$1"
+	local run_dir="$2"
+	local mapping_file="$3"
+	local plan_file="$run_dir/playlist_repair_plan.csv"
+	local playlist line clean_ref resolved_ref old_path new_path
+	local new_ref match_type status notes line_number
+	local safe_count=0 review_count=0 playlist_count=0
+
+	printf '%s\n' 'PLAYLIST|LINE|MATCH_TYPE|OLD_REF|NEW_REF|STATUS|NOTES' > "$plan_file"
+	[[ -f "$mapping_file" ]] || return 0
+
+	while IFS= read -r -d '' playlist; do
+		playlist_is_supported_file "$playlist" || continue
+		((playlist_count+=1)) || :
+		line_number=0
+
+		while IFS= read -r line || [[ -n "$line" ]]; do
+			((line_number+=1)) || :
+			line="${line%$'\r'}"
+			clean_ref="$line"
+
+			[[ -z "$clean_ref" || "$clean_ref" == \#* ]] && continue
+			playlist_reference_is_remote "$clean_ref" && continue
+			resolved_ref="$(playlist_resolve_reference "$playlist" "$clean_ref")"
+
+			while IFS='|' read -r old_path new_path; do
+				[[ -z "${old_path:-}" || -z "${new_path:-}" ]] && continue
+
+				match_type=""
+				status=""
+				notes=""
+
+				if [[ "$clean_ref" == "$old_path" || "$resolved_ref" == "$old_path" ]]; then
+					match_type="EXACT_PATH"
+					status="SAFE"
+					notes="exact old path mapping"
+				elif [[ "$clean_ref" == "$(basename "$old_path")" ]]; then
+					match_type="EXACT_BASENAME"
+					status="SAFE"
+					notes="playlist entry is exact old basename"
+				else
+					continue
+				fi
+
+				if [[ "$clean_ref" == /* ]]; then
+					new_ref="$new_path"
+				else
+					new_ref="$(playlist_relative_reference "$playlist" "$new_path")"
+				fi
+
+				if [[ "$new_ref" == "$clean_ref" ]]; then
+					continue
+				fi
+
+				printf '%s|%s|%s|%s|%s|%s|%s\n' \
+					"$playlist" "$line_number" "$match_type" "$clean_ref" "$new_ref" "$status" "$notes" >> "$plan_file"
+				((safe_count+=1)) || :
+			done < "$mapping_file"
+		done < "$playlist"
+	done < <(find "$scan_root" -type f \( -iname '*.m3u' -o -iname '*.m3u8' \) -print0 2>/dev/null)
+
+	echo -e "${CYAN} = = > Playlist Files Examined:${NC} ${YELLOW}$playlist_count${NC}"
+	echo -e "${CYAN} = = > Safe Playlist Repairs:${NC} ${YELLOW}$safe_count${NC}"
+	echo -e "${CYAN} = = > Playlist Repair Plan:${NC} ${GREEN}$(trim_working_path_display "$plan_file" 3)${NC}"
+}
+
+playlist_write_repair_report() {
 	local run_dir="$1"
-	local repair_plan="$run_dir/detox_playlist_repair_plan.csv"
-	local repair_report="$run_dir/detox_playlist_repair_report.txt"
-	local playlist match_type old_ref new_ref status confidence
-	local count=0
+	local plan_file="$run_dir/playlist_repair_plan.csv"
+	local report_file="$run_dir/playlist_repair_report.txt"
+	local playlist line_number match_type old_ref new_ref status notes
+	local safe_count=0 review_count=0
 
 	{
-		echo "================================================"
-		echo "        PLAYLIST REPAIR REVIEW REPORT"
-		echo "================================================"
+		echo '================================================'
+		echo '        PLAYLIST REPAIR REVIEW REPORT'
+		echo '================================================'
 		echo "Generated: $(date)"
 		echo
 		echo "Repair Plan:"
-		echo " $repair_plan"
+		echo " $plan_file"
 		echo
-	} > "$repair_report"
+	} > "$report_file"
 
-	[[ -f "$repair_plan" ]] || {
-		echo "No playlist repair plan found." >> "$repair_report"
+	if [[ ! -f "$plan_file" ]]; then
+		echo 'No playlist repair plan found.' >> "$report_file"
 		return 0
-	}
+	fi
 
-	while IFS='|' read -r playlist match_type old_ref new_ref status; do
-		[[ "$playlist" == "PLAYLIST" ]] && continue
+	while IFS='|' read -r playlist line_number match_type old_ref new_ref status notes; do
+		[[ "$playlist" == 'PLAYLIST' ]] && continue
 		[[ -z "${playlist:-}" ]] && continue
 
-		case "$match_type" in
-			FULL_PATH) confidence="HIGH" ;;
-			BASENAME) confidence="MEDIUM" ;;
-			*) confidence="LOW" ;;
-		esac
-
-		((count+=1)) || :
+		[[ "$status" == 'SAFE' ]] && ((safe_count+=1)) || ((review_count+=1))
 
 		{
-			echo "PLAYLIST:"
-			echo " $playlist"
-			echo
-			echo "MATCH TYPE:"
-			echo " $match_type"
-			echo
-			echo "CONFIDENCE:"
-			echo " $confidence"
-			echo
-			echo "OLD REF:"
-			echo " $old_ref"
-			echo
-			echo "NEW REF:"
-			echo " $new_ref"
-			echo
-			echo "STATUS:"
-			echo " $status"
-			echo
-			echo "------------------------------------------------"
-		} >> "$repair_report"
-	done < "$repair_plan"
+			echo "PLAYLIST: $playlist"
+			echo "LINE:     $line_number"
+			echo "MATCH:    $match_type"
+			echo "STATUS:   $status"
+			echo "OLD REF:  $old_ref"
+			echo "NEW REF:  $new_ref"
+			echo "NOTES:    $notes"
+			echo '------------------------------------------------'
+		} >> "$report_file"
+	done < "$plan_file"
 
 	{
 		echo
-		echo "================================================"
-		echo "SUMMARY"
-		echo "================================================"
-		echo "Repair Candidates: $count"
+		echo '================================================'
+		echo 'SUMMARY'
+		echo '================================================'
+		echo "Safe Repairs:   $safe_count"
+		echo "Needs Review:   $review_count"
 		echo
-		echo "NOTE:"
-		echo "Playlist repair execution will backup original"
-		echo "playlist files into OLD_PLAYLISTS/ before writing"
-		echo "repaired playlists back to their original names."
-	} >> "$repair_report"
+		echo 'Original playlists are not changed during planning.'
+		echo 'Execution backs up each touched playlist first.'
+	} >> "$report_file"
 
-	echo -e "${CYAN} = = > Playlist Repair Report:${NC} ${GREEN}$repair_report${NC}"
+	echo -e "${CYAN} = = > Playlist Repair Report:${NC} ${GREEN}$report_file${NC}"
 }
 
-collection_detox_execute_playlist_repairs() {
+playlist_apply_repair_plan() {
 	local scan_root="$1"
 	local run_dir="$2"
-	local repair_plan="$run_dir/detox_playlist_repair_plan.csv"
+	local plan_file="$run_dir/playlist_repair_plan.csv"
 	local exec_log="$run_dir/playlist_repair_execute_log.csv"
 	local undo_map="$run_dir/playlist_repair_undo_map.csv"
-	local tmp_file
-
-	local playlist match_type old_ref new_ref status
-	local backup repaired=0 skipped=0 failed=0
+	local playlist line_number match_type old_ref new_ref status notes
+	local backup tmp_file current_line replacement_done
+	local repaired=0 skipped=0 failed=0
 	local -A touched_playlists=()
 
-	[[ -f "$repair_plan" ]] || {
+	[[ -f "$plan_file" ]] || {
 		echo -e "${YE} = = > No Playlist Repair Plan Found.${NC}"
 		pause
 		return 0
 	}
 
 	echo
-	echo -e "${YE} = = > Playlist Repair Will Modify Playlist Files In Place.${NC}"
-	echo -e "${YE} = = > Originals Will Be Backed Up Under OLD_PLAYLISTS/.${NC}"
+	echo -e "${YE} = = > Only Rows Marked SAFE Will Be Applied.${NC}"
+	echo -e "${YE} = = > Original Playlists Will Be Backed Up First.${NC}"
 	echo
 
-	if ! ask_yes_no " = = > Execute Playlist Repairs? (y/n or 1/2): "; then
+	if ! ask_yes_no ' = = > Execute Safe Playlist Repairs? (y/n or 1/2): '; then
 		echo -e "${YE} = = > Playlist Repair Cancelled.${NC}"
 		pause
 		return 0
 	fi
 
-	printf '%s\n' "STATUS|PLAYLIST|BACKUP|MATCH_TYPE|OLD_REF|NEW_REF|NOTES" > "$exec_log"
+	printf '%s\n' 'STATUS|PLAYLIST|LINE|BACKUP|MATCH_TYPE|OLD_REF|NEW_REF|NOTES' > "$exec_log"
 	: > "$undo_map"
 
-	while IFS='|' read -r playlist match_type old_ref new_ref status; do
-		[[ "$playlist" == "PLAYLIST" ]] && continue
+	while IFS='|' read -r playlist line_number match_type old_ref new_ref status notes; do
+		[[ "$playlist" == 'PLAYLIST' ]] && continue
 		[[ -z "${playlist:-}" ]] && continue
+		[[ "$status" == 'SAFE' ]] || { ((skipped+=1)) || :; continue; }
 
 		if [[ ! -f "$playlist" ]]; then
-			printf '%s|%s|%s|%s|%s|%s|%s\n' \
-				"SKIPPED_MISSING_PLAYLIST" "$playlist" "" "$match_type" "$old_ref" "$new_ref" "playlist missing" >> "$exec_log"
+			printf '%s|%s|%s|%s|%s|%s|%s|%s\n' 'SKIPPED_MISSING_PLAYLIST' "$playlist" "$line_number" '' "$match_type" "$old_ref" "$new_ref" 'playlist missing' >> "$exec_log"
 			((skipped+=1)) || :
 			continue
 		fi
 
 		if [[ -z "${touched_playlists[$playlist]:-}" ]]; then
-			backup="$(collection_detox_playlist_backup_path "$scan_root" "$run_dir" "$playlist")"
-
-			if [[ ! -f "$backup" ]]; then
-				cp -- "$playlist" "$backup" || {
-					printf '%s|%s|%s|%s|%s|%s|%s\n' \
-						"FAILED_BACKUP" "$playlist" "$backup" "$match_type" "$old_ref" "$new_ref" "backup failed" >> "$exec_log"
-					((failed+=1)) || :
-					continue
-				}
+			backup="$(playlist_backup_path "$scan_root" "$run_dir" "$playlist")"
+			if ! cp -- "$playlist" "$backup"; then
+				printf '%s|%s|%s|%s|%s|%s|%s|%s\n' 'FAILED_BACKUP' "$playlist" "$line_number" "$backup" "$match_type" "$old_ref" "$new_ref" 'backup failed' >> "$exec_log"
+				((failed+=1)) || :
+				continue
 			fi
-
 			printf '%s|%s\n' "$playlist" "$backup" >> "$undo_map"
 			touched_playlists["$playlist"]="$backup"
 		fi
 
-		if ! grep -Fq -- "$old_ref" "$playlist" 2>/dev/null; then
-			printf '%s|%s|%s|%s|%s|%s|%s\n' \
-				"SKIPPED_REF_NOT_FOUND" "$playlist" "${touched_playlists[$playlist]}" "$match_type" "$old_ref" "$new_ref" "old ref not found" >> "$exec_log"
-			((skipped+=1)) || :
-			continue
-		fi
-
 		tmp_file="${playlist}.repair_tmp_$$"
+		replacement_done=0
+		current_line=0
+		: > "$tmp_file"
 
-		if sed "s|$(printf '%s\n' "$old_ref" | sed 's/[\/&]/\\&/g')|$(printf '%s\n' "$new_ref" | sed 's/[\/&]/\\&/g')|g" "$playlist" > "$tmp_file"; then
-			mv -- "$tmp_file" "$playlist"
-			printf '%s|%s|%s|%s|%s|%s|%s\n' \
-				"REPAIRED" "$playlist" "${touched_playlists[$playlist]}" "$match_type" "$old_ref" "$new_ref" "ok" >> "$exec_log"
-			((repaired+=1)) || :
+		while IFS= read -r line || [[ -n "$line" ]]; do
+			((current_line+=1)) || :
+			line="${line%$'\r'}"
+			if (( current_line == line_number )) && [[ "$line" == "$old_ref" ]]; then
+				printf '%s\n' "$new_ref" >> "$tmp_file"
+				replacement_done=1
+			else
+				printf '%s\n' "$line" >> "$tmp_file"
+			fi
+		done < "$playlist"
+
+		if (( replacement_done == 1 )); then
+			if mv -- "$tmp_file" "$playlist"; then
+				printf '%s|%s|%s|%s|%s|%s|%s|%s\n' 'REPAIRED' "$playlist" "$line_number" "${touched_playlists[$playlist]}" "$match_type" "$old_ref" "$new_ref" 'ok' >> "$exec_log"
+				((repaired+=1)) || :
+			else
+				rm -f -- "$tmp_file"
+				((failed+=1)) || :
+			fi
 		else
 			rm -f -- "$tmp_file"
-			printf '%s|%s|%s|%s|%s|%s|%s\n' \
-				"FAILED_REPAIR" "$playlist" "${touched_playlists[$playlist]}" "$match_type" "$old_ref" "$new_ref" "sed failed" >> "$exec_log"
-			((failed+=1)) || :
+			printf '%s|%s|%s|%s|%s|%s|%s|%s\n' 'SKIPPED_LINE_CHANGED' "$playlist" "$line_number" "${touched_playlists[$playlist]}" "$match_type" "$old_ref" "$new_ref" 'planned line no longer matches' >> "$exec_log"
+			((skipped+=1)) || :
 		fi
-
-	done < "$repair_plan"
+	done < "$plan_file"
 
 	echo
 	echo -e "${CYAN}================================================${NC}"
@@ -5761,15 +7371,13 @@ collection_detox_execute_playlist_repairs() {
 	echo -e "${CYAN} = = > Repaired References:${NC} ${YELLOW}$repaired${NC}"
 	echo -e "${CYAN} = = > Skipped:${NC} ${YELLOW}$skipped${NC}"
 	echo -e "${CYAN} = = > Failed:${NC} ${YELLOW}$failed${NC}"
-	echo -e "${CYAN} = = > OLD Playlist Backups:${NC} ${GREEN}$run_dir/OLD_PLAYLISTS${NC}"
+	echo -e "${CYAN} = = > Backups:${NC} ${GREEN}$run_dir/OLD_PLAYLISTS${NC}"
 	echo -e "${CYAN} = = > Execute Log:${NC} ${GREEN}$exec_log${NC}"
-	echo -e "${CYAN} = = > Undo Map:${NC} ${GREEN}$undo_map${NC}"
 	echo
-
 	pause
 }
 
-collection_detox_undo_playlist_repairs() {
+playlist_undo_repairs() {
 	local run_dir="$1"
 	local undo_map="$run_dir/playlist_repair_undo_map.csv"
 	local playlist backup
@@ -5781,37 +7389,43 @@ collection_detox_undo_playlist_repairs() {
 		return 0
 	}
 
-	echo
-	echo -e "${YE} = = > This Will Restore Playlists From OLD_PLAYLISTS Backups.${NC}"
-	echo
-
-	if ! ask_yes_no " = = > Undo Playlist Repairs? (y/n or 1/2): "; then
-		echo -e "${YE} = = > Playlist Undo Cancelled.${NC}"
-		pause
+	if ! ask_yes_no ' = = > Restore Playlists From Backups? (y/n or 1/2): '; then
 		return 0
 	fi
 
 	while IFS='|' read -r playlist backup; do
 		[[ -z "${playlist:-}" || -z "${backup:-}" ]] && continue
-
-		if [[ ! -f "$backup" ]]; then
-			echo -e "${YE} = = > [UNDO SKIP MISSING BACKUP]${NC} ${YELLOW}$backup${NC}"
+		if [[ -f "$backup" ]]; then
+			cp -- "$backup" "$playlist"
+			((restored+=1)) || :
+		else
 			((skipped+=1)) || :
-			continue
 		fi
-
-		cp -- "$backup" "$playlist"
-		echo -e "${GREEN} = = > [RESTORED PLAYLIST]${NC} ${YELLOW}$playlist${NC}"
-		((restored+=1)) || :
 	done < "$undo_map"
 
-	echo
 	echo -e "${GR} = = > Playlist Undo Complete.${NC}"
 	echo -e "${CYAN} = = > Restored:${NC} ${YELLOW}$restored${NC}"
 	echo -e "${CYAN} = = > Skipped:${NC} ${YELLOW}$skipped${NC}"
-	echo
-
 	pause
+}
+
+# ========================================================
+# #MARKER: COLLECTION DETOX PLAYLIST REPAIR EXECUTION
+# ========================================================
+collection_detox_playlist_backup_path() {
+	playlist_backup_path "$@"
+}
+
+collection_detox_write_playlist_repair_report() {
+	playlist_write_repair_report "$@"
+}
+
+collection_detox_execute_playlist_repairs() {
+	playlist_apply_repair_plan "$@"
+}
+
+collection_detox_undo_playlist_repairs() {
+	playlist_undo_repairs "$@"
 }
 
 
@@ -5970,7 +7584,7 @@ collection_detox_execute_plan() {
 	fi
 
 	echo
-	echo -e "${YE} = = > Existing Playlist Files Are NOT Modified.${NC}"
+	echo -e "${YE} = = > Playlist Files Are Not Modified During Rename Execution.${NC}"
 	echo -e "${YE} = = > Execute Log And Undo Map Will Be Written In Run Folder.${NC}"
 	echo
 
@@ -6780,8 +8394,8 @@ collection_detox_review_menu() {
 	plan_file="$run_dir/detox_plan.csv"
 	report_file="$run_dir/detox_report.txt"
 	playlist_report="$run_dir/detox_playlist_impact.txt"
-	playlist_repair_plan="$run_dir/detox_playlist_repair_plan.csv"
-	playlist_repair_report="$run_dir/detox_playlist_repair_report.txt"
+	playlist_repair_plan="$run_dir/playlist_repair_plan.csv"
+	playlist_repair_report="$run_dir/playlist_repair_report.txt"
 
 	while true; do
 		clear
@@ -6930,51 +8544,12 @@ collection_detox_review_menu() {
 # - Pilot first N renames before full execution
 # - Log every action
 # - Build playlist repair plan only from successful renames
-# - Does NOT modify playlists
+# - Playlist changes remain a separate report-first approval step
 # ========================================================
 
 collection_detox_build_playlist_repair_plan() {
-	local scan_root="$1"
-	local run_dir="$2"
-	local success_map="$3"
-	local repair_plan="$run_dir/detox_playlist_repair_plan.csv"
-
-	local playlist old_path new_path old_base new_base
-	local match_count=0
-
-	printf '%s\n' "PLAYLIST|MATCH_TYPE|OLD_REF|NEW_REF|STATUS" > "$repair_plan"
-
-	[[ -f "$success_map" ]] || return 0
-
-	while IFS= read -r -d '' playlist; do
-		collection_detox_is_playlist_file "$playlist" || continue
-
-		while IFS='|' read -r old_path new_path; do
-			[[ -z "${old_path:-}" || -z "${new_path:-}" ]] && continue
-
-			old_base="$(basename "$old_path")"
-			new_base="$(basename "$new_path")"
-
-			if grep -Fq -- "$old_path" "$playlist" 2>/dev/null; then
-				printf '%s|%s|%s|%s|%s\n' \
-					"$playlist" "FULL_PATH" "$old_path" "$new_path" "POSSIBLE_REPAIR" >> "$repair_plan"
-				((match_count+=1)) || :
-			fi
-
-			if grep -Fq -- "$old_base" "$playlist" 2>/dev/null; then
-				printf '%s|%s|%s|%s|%s\n' \
-					"$playlist" "BASENAME" "$old_base" "$new_base" "POSSIBLE_REPAIR" >> "$repair_plan"
-				((match_count+=1)) || :
-			fi
-
-		done < "$success_map"
-
-	done < <(collection_detox_find_files "$scan_root")
-
-	echo -e "${CYAN} = = > Playlist Repair Plan:${NC} ${GREEN}$(trim_working_path_display "$repair_plan" 3)${NC}"
-	echo -e "${CYAN} = = > Playlist Repair Candidates:${NC} ${YELLOW}$match_count${NC}"
+	playlist_build_repair_plan "$@"
 }
-
 
 
 run_collection_detox_scan_only() {
@@ -8891,6 +10466,389 @@ load_intro_template_fingerprint() {
 }
 
 # ================================================================
+# #MARKER: AUDIO WAVEFORM FINGERPRINT / SHADOW WITNESS
+# ================================================================
+# PURPOSE:
+# - Build a compact normalized audio-energy fingerprint beside an intro template.
+# - Compare that fingerprint near an already-confirmed visual IntroFind result.
+# - Report audio agreement and timing offset without changing the visual result.
+#
+# OUTPUT:
+# - intro_template.audiofp.csv
+# - intro_template_1.audiofp.csv
+# - etc.
+#
+# CURRENT POLICY:
+# - SHADOW / REPORT-ONLY.
+# - Audio cannot approve, reject, or move an IntroFind result yet.
+# ================================================================
+
+build_audio_waveform_fingerprint() {
+	local template="$1"
+	local fingerprint="${template%.*}.audiofp.csv"
+	local tmp_raw=""
+
+	if (( "$(media_audio_stream_count "$template" 2>/dev/null || printf '0')" == 0 )); then
+		echo -e "${YE} = = > Audio Fingerprint Skipped: Template Has No Audio.${NC}"
+		rm -f -- "$fingerprint"
+		return 0
+	fi
+
+	tmp_raw="$(mktemp "${TMPDIR:-/tmp}/factory_audio_template.XXXXXX.raw")" || return 1
+
+	echo -e "${CYAN} = = > Fingerprint Pass 6:${NC} ${YELLOW}Audio Waveform Signature...${NC}"
+
+	if ! ffmpeg \
+		-hide_banner \
+		-loglevel error \
+		-nostdin \
+		-y \
+		-i "$template" \
+		-map 0:a:0 \
+		-vn \
+		-sn \
+		-dn \
+		-ac 1 \
+		-ar 8000 \
+		-f s16le \
+		"$tmp_raw"
+	then
+		rm -f -- "$tmp_raw" "$fingerprint"
+		echo -e "${YE} = = > Audio Fingerprint Could Not Decode Template Audio.${NC}"
+		return 0
+	fi
+
+	if ! python3 - "$tmp_raw" "$fingerprint" <<'PY'
+import array
+import csv
+import math
+import statistics
+import sys
+from pathlib import Path
+
+raw_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+
+sample_rate = 8000
+bucket_seconds = 0.1
+bucket_samples = int(sample_rate * bucket_seconds)
+
+samples = array.array("h")
+with raw_path.open("rb") as handle:
+    samples.frombytes(handle.read())
+
+if sys.byteorder != "little":
+    samples.byteswap()
+
+energies = []
+
+for offset in range(0, len(samples), bucket_samples):
+    block = samples[offset:offset + bucket_samples]
+
+    if len(block) < bucket_samples // 2:
+        break
+
+    rms = math.sqrt(
+        sum(float(value) * float(value) for value in block) / len(block)
+    )
+
+    energies.append(math.log1p(rms))
+
+if len(energies) < 10:
+    raise SystemExit(1)
+
+median = statistics.median(energies)
+deviations = [abs(value - median) for value in energies]
+mad = statistics.median(deviations)
+
+if mad < 1e-9:
+    mad = 1.0
+
+normalized = [
+    max(-6.0, min(6.0, (value - median) / mad))
+    for value in energies
+]
+
+with output_path.open("w", newline="") as handle:
+    writer = csv.writer(handle)
+    writer.writerow([
+        "time",
+        "normalized_energy",
+        "delta_from_previous",
+    ])
+
+    previous = normalized[0]
+
+    for index, value in enumerate(normalized):
+        delta = 0.0 if index == 0 else value - previous
+
+        writer.writerow([
+            f"{index * bucket_seconds:.3f}",
+            f"{value:.6f}",
+            f"{delta:.6f}",
+        ])
+
+        previous = value
+PY
+	then
+		rm -f -- "$tmp_raw" "$fingerprint"
+		echo -e "${YE} = = > Audio Fingerprint Could Not Build A Usable Signature.${NC}"
+		return 0
+	fi
+
+	rm -f -- "$tmp_raw"
+
+	echo -e "${GR} = = > Audio Fingerprint Created:${NC} ${GREEN}$(factory_display_path "$fingerprint")${NC}"
+	return 0
+}
+
+
+run_audio_waveform_witness() {
+	local episode="$1"
+	local visual_start="$2"
+	local template="$3"
+
+	local fingerprint="${template%.*}.audiofp.csv"
+	local template_duration=""
+	local window_start=""
+	local window_duration=""
+	local tmp_raw=""
+	local witness_result=""
+
+	if [[ ! -f "$fingerprint" ]]; then
+		echo -e "${YE} = = > Audio Witness Skipped: No Audio Fingerprint For Winning Key.${NC}"
+		return 0
+	fi
+
+	if (( "$(media_audio_stream_count "$episode" 2>/dev/null || printf '0')" == 0 )); then
+		echo -e "${YE} = = > Audio Witness Skipped: Episode Has No Audio.${NC}"
+		return 0
+	fi
+
+	template_duration="$(get_file_duration_seconds "$template" 2>/dev/null || true)"
+
+	if [[ -z "$template_duration" ||
+	      ! "$template_duration" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+		echo -e "${YE} = = > Audio Witness Skipped: Template Duration Unavailable.${NC}"
+		return 0
+	fi
+
+	window_start="$(awk -v s="$visual_start" 'BEGIN {
+		v=s-1.5
+		if (v < 0) v=0
+		printf "%.3f", v
+	}')"
+
+	window_duration="$(awk -v d="$template_duration" 'BEGIN {
+		printf "%.3f", d+3.0
+	}')"
+
+	tmp_raw="$(mktemp "${TMPDIR:-/tmp}/factory_audio_witness.XXXXXX.raw")" || return 0
+
+	if ! ffmpeg \
+		-hide_banner \
+		-loglevel error \
+		-nostdin \
+		-y \
+		-ss "$window_start" \
+		-i "$episode" \
+		-t "$window_duration" \
+		-map 0:a:0 \
+		-vn \
+		-sn \
+		-dn \
+		-ac 1 \
+		-ar 8000 \
+		-f s16le \
+		"$tmp_raw"
+	then
+		rm -f -- "$tmp_raw"
+		echo -e "${YE} = = > Audio Witness Skipped: Episode Audio Could Not Be Decoded.${NC}"
+		return 0
+	fi
+
+	witness_result="$(
+		python3 - \
+			"$fingerprint" \
+			"$tmp_raw" \
+			"$window_start" \
+			"$visual_start" <<'PY'
+import array
+import csv
+import math
+import statistics
+import sys
+from pathlib import Path
+
+fingerprint_path = Path(sys.argv[1])
+raw_path = Path(sys.argv[2])
+window_start = float(sys.argv[3])
+visual_start = float(sys.argv[4])
+
+sample_rate = 8000
+bucket_seconds = 0.1
+bucket_samples = int(sample_rate * bucket_seconds)
+
+template = []
+
+with fingerprint_path.open(newline="", errors="replace") as handle:
+    reader = csv.DictReader(handle)
+
+    for row in reader:
+        try:
+            template.append(float(row["normalized_energy"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+
+samples = array.array("h")
+
+with raw_path.open("rb") as handle:
+    samples.frombytes(handle.read())
+
+if sys.byteorder != "little":
+    samples.byteswap()
+
+episode_energy = []
+
+for offset in range(0, len(samples), bucket_samples):
+    block = samples[offset:offset + bucket_samples]
+
+    if len(block) < bucket_samples // 2:
+        break
+
+    rms = math.sqrt(
+        sum(float(value) * float(value) for value in block) / len(block)
+    )
+
+    episode_energy.append(math.log1p(rms))
+
+if len(template) < 10 or len(episode_energy) < len(template):
+    print("AUDIO_WITNESS|status=UNAVAILABLE")
+    raise SystemExit(0)
+
+median = statistics.median(episode_energy)
+deviations = [abs(value - median) for value in episode_energy]
+mad = statistics.median(deviations)
+
+if mad < 1e-9:
+    mad = 1.0
+
+episode_normalized = [
+    max(-6.0, min(6.0, (value - median) / mad))
+    for value in episode_energy
+]
+
+
+def correlation(left, right):
+    count = min(len(left), len(right))
+
+    if count < 10:
+        return -1.0
+
+    left = left[:count]
+    right = right[:count]
+
+    left_mean = sum(left) / count
+    right_mean = sum(right) / count
+
+    numerator = sum(
+        (a - left_mean) * (b - right_mean)
+        for a, b in zip(left, right)
+    )
+
+    left_power = sum((a - left_mean) ** 2 for a in left)
+    right_power = sum((b - right_mean) ** 2 for b in right)
+
+    denominator = math.sqrt(left_power * right_power)
+
+    if denominator <= 1e-12:
+        return -1.0
+
+    return numerator / denominator
+
+
+best_score = -1.0
+best_index = 0
+
+maximum_start = len(episode_normalized) - len(template)
+
+for index in range(maximum_start + 1):
+    candidate = episode_normalized[index:index + len(template)]
+    score = correlation(template, candidate)
+
+    if score > best_score:
+        best_score = score
+        best_index = index
+
+audio_start = window_start + best_index * bucket_seconds
+offset = audio_start - visual_start
+score_percent = max(0.0, min(100.0, best_score * 100.0))
+
+if score_percent >= 90.0 and abs(offset) <= 0.35:
+    status = "STRONG"
+elif score_percent >= 75.0 and abs(offset) <= 0.75:
+    status = "SUPPORTS"
+elif score_percent >= 55.0:
+    status = "WEAK"
+else:
+    status = "DISAGREES"
+
+print(
+    "AUDIO_WITNESS"
+    f"|status={status}"
+    f"|score={score_percent:.1f}"
+    f"|offset={offset:+.3f}"
+    f"|audio_start={audio_start:.3f}"
+)
+PY
+	)"
+
+	rm -f -- "$tmp_raw"
+
+	local status=""
+	local score=""
+	local offset=""
+	local audio_start=""
+
+	status="$(printf '%s\n' "$witness_result" |
+		sed -nE 's/.*status=([^|]+).*/\1/p')"
+	score="$(printf '%s\n' "$witness_result" |
+		sed -nE 's/.*score=([^|]+).*/\1/p')"
+	offset="$(printf '%s\n' "$witness_result" |
+		sed -nE 's/.*offset=([^|]+).*/\1/p')"
+	audio_start="$(printf '%s\n' "$witness_result" |
+		sed -nE 's/.*audio_start=([^|]+).*/\1/p')"
+
+	echo
+	echo -e "${CYAN} = = > Audio Waveform Witness:${NC}"
+
+	case "$status" in
+		STRONG)
+			echo -e "${GR}       Verdict:${NC} ${GREEN}STRONG${NC}"
+			;;
+		SUPPORTS)
+			echo -e "${GR}       Verdict:${NC} ${GREEN}SUPPORTS${NC}"
+			;;
+		WEAK)
+			echo -e "${YE}       Verdict:${NC} ${YELLOW}WEAK${NC}"
+			;;
+		DISAGREES)
+			echo -e "${REB}       Verdict: DISAGREES${NC}"
+			;;
+		*)
+			echo -e "${YE}       Verdict:${NC} ${YELLOW}UNAVAILABLE${NC}"
+			echo -e "${CYAN}       Mode:${NC} ${YELLOW}Shadow / Report Only${NC}"
+			return 0
+			;;
+	esac
+
+	echo -e "${CYAN}       Score:${NC} ${YELLOW}${score}%${NC}"
+	echo -e "${CYAN}       Audio Start:${NC} ${YELLOW}${audio_start}s${NC}"
+	echo -e "${CYAN}       Visual Offset:${NC} ${YELLOW}${offset}s${NC}"
+	echo -e "${CYAN}       Mode:${NC} ${YELLOW}Shadow / Report Only${NC}"
+}
+
+# ================================================================
 # #MARKER: INTRO TEMPLATE STRUCTURAL FINGERPRINT REPORT
 # ================================================================
 # PURPOSE:
@@ -9223,6 +11181,11 @@ with open(output_path, "w") as handle:
 
         previous_hash = frame_hash
 PY
+
+	# ------------------------------------------------------------
+	# AUDIO WAVEFORM SIGNATURE
+	# ------------------------------------------------------------
+	build_audio_waveform_fingerprint "$template"
 
 	# ------------------------------------------------------------
 	# BUILD HUMAN REPORT + CASCADING STRUCTURAL SELF-GRADE
@@ -14538,7 +16501,7 @@ resolve_final_output() {
 #
 # GROUPS:
 # - NORMAL:  SMC_, SMC_, PILOT_SMC_, BARFIX_, SUBTOX_, SUBPACKED_
-# - RESCUE:  REKEY_, PILOT_RESCUE_, RESCUE_, REMUX_, AUDIOFIX_
+# - RESCUE:  REKEY_, PILOT_RESCUE_, RESCUE_, REMUX_, AUDIOFIX_, TIMEPRESS_, AUDIOLEVEL_
 # - CUT:     TIPSNIP_, TAILTUCK_
 # - ARCHIVE: ARCHIVE_, ARRAY_  (optional keeper/archival group)
 #
@@ -14568,6 +16531,8 @@ finalize_strip_prefix_from_name_by_group() {
 				name="${name#RESCUE_}"
 				name="${name#REMUX_}"
 				name="${name#AUDIOFIX_}"
+				name="${name#TIMEPRESS_}"
+				name="${name#AUDIOLEVEL_}"
 				name="${name#REKEY_}"
 				;;
 
@@ -14695,7 +16660,7 @@ finalize_strip_workflow_prefixes() {
 		echo -e "${CYAN}        SMC_ / PILOT_ / BARFIX_ / SUBTOX_ / SUBPACKED_${NC}"
 		echo
 		echo -e "${YELLOW}     2) Rescue / Test Prefixes${NC}"
-		echo -e "${CYAN}        REKEY_ / RESCUE_ / PILOT_RESCUE_ / REMUX_ / AUDIOFIX_${NC}"
+		echo -e "${CYAN}        REKEY_ / RESCUE_ / PILOT_RESCUE_ / REMUX_ / AUDIOFIX_ / TIMEPRESS_ / AUDIOLEVEL_${NC}"
 		echo
 		echo -e "${YELLOW}     3) Cut Helper Prefixes${NC}"
 		echo -e "${CYAN}        TIPSNIP_ / TAILTUCK_${NC}"
@@ -17123,7 +19088,7 @@ preen_collect_targets() {
 		[[ -f "$f" ]] || continue
 
 		case "$f" in
-			REKEY_*|SMC_*|PILOT_SMC_*|BARFIX_*|SUBPACKED_*|SUBTOX_*|ARCHIVE_*|RESCUE_*|PILOT_RESCUE_*|AUDIOFIX_*|intro_template*|custom_cut*)
+			REKEY_*|SMC_*|PILOT_SMC_*|BARFIX_*|SUBPACKED_*|SUBTOX_*|ARCHIVE_*|RESCUE_*|PILOT_RESCUE_*|AUDIOFIX_*|TIMEPRESS_*|AUDIOLEVEL_*|intro_template*|custom_cut*)
 				continue
 				;;
 		esac
@@ -27478,6 +29443,10 @@ resolved_intro_anchors="$(
 
     if [[ "$result" == MATCH* ]]; then
         IFS='|' read -r _ start end template_used diff_used <<< "$result"
+
+		# Keep the real winning-template path for the audio witness.
+		# The mapped path below is only for reports and intro_map.csv.
+		template_source="$template_used"
 		template_used="$(factory_template_map_path "$template_used")"
 
         start_hms="$(seconds_to_hms "$start")"
@@ -27495,6 +29464,11 @@ resolved_intro_anchors="$(
         echo -e "${CYAN} = = > Key:${NC}${YELLOW}   $template_used${NC}"
         echo -e "${CYAN} = = > Diff:${NC}${YELLOW}  ${diff_used:-}${NC}"
         echo -e "${CYAN} = = > IntroFind Time:${NC}${YELLOW} ${intro_find_elapsed}s ${NC}${GREEN}(${intro_find_elapsed_hms})${NC}"
+
+		run_audio_waveform_witness \
+			"$file" \
+			"$start" \
+			"$template_source"
 
         ensure_intro_map
 
