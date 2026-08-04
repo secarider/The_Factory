@@ -3086,7 +3086,7 @@ audiolevel_two_pass_filter() {
 
 	log_file="$(mktemp /tmp/factory_loudnorm.XXXXXX.log)" || return 1
 
-	if ! ffmpeg -hide_banner -nostats -loglevel info -i "$file" \
+	if ! ffmpeg -hide_banner -nostdin -nostats -loglevel info -i "$file" \
 		-map "0:a:$track" -vn -sn -dn \
 		-af "loudnorm=I=${target_i}:TP=${target_tp}:LRA=${target_lra}:print_format=json" \
 		-f null - > /dev/null 2>"$log_file"; then
@@ -3390,12 +3390,12 @@ audiolevel_analyze_file() {
 	echo -e "${CYAN} = = > Audio Track:${NC} ${YELLOW}$((track+1))${NC}"
 	echo
 
-	ffmpeg -hide_banner -nostats -loglevel info -i "$file" \
+	ffmpeg -hide_banner -nostdin -nostats -loglevel info -i "$file" \
 		-map "0:a:$track" -vn -sn -dn \
 		-af "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=summary" \
 		-f null - > /dev/null 2>"$loud_log" || true
 
-	ffmpeg -hide_banner -nostats -loglevel info -i "$file" \
+	ffmpeg -hide_banner -nostdin -nostats -loglevel info -i "$file" \
 		-map "0:a:$track" -vn -sn -dn \
 		-af volumedetect -f null - > /dev/null 2>"$peak_log" || true
 
@@ -3423,7 +3423,7 @@ audiolevel_build_video() {
 	title="$(ffprobe -v error -select_streams "a:$track" -show_entries stream_tags=title -of default=nw=1:nk=1 "$video" 2>/dev/null | head -n1)"
 	default_disposition="$(ffprobe -v error -select_streams "a:$track" -show_entries stream_disposition=default -of default=nw=1:nk=1 "$video" 2>/dev/null | head -n1)"
 
-	cmd=(ffmpeg -hide_banner -nostats -loglevel error -y -i "$video" \
+	cmd=(ffmpeg -hide_banner -nostdin -nostats -loglevel error -y -i "$video" \
 		-filter_complex "[0:a:${track}]${filter}[leveled]" \
 		-map "0:v?" )
 
@@ -3454,7 +3454,7 @@ audiolevel_build_standalone() {
 	shift 3
 	local -a codec_args=("$@")
 
-	ffmpeg -hide_banner -nostats -loglevel error -y \
+	ffmpeg -hide_banner -nostdin -nostats -loglevel error -y \
 		-i "$audio" -map 0:a:0 -map_metadata 0 \
 		-af "$filter" "${codec_args[@]}" "$out"
 }
@@ -3715,7 +3715,7 @@ playlist_loudness_measure() {
 	local log_file integrated true_peak lra threshold
 	log_file="$(mktemp /tmp/factory_playlist_loudness.XXXXXX.log)" || return 1
 
-	ffmpeg -hide_banner -nostats -loglevel info -i "$file" \
+	ffmpeg -hide_banner -nostdin -nostats -loglevel info -i "$file" \
 		-map "0:a:$track" -vn -sn -dn \
 		-af 'loudnorm=I=-16:TP=-1.5:LRA=11:print_format=summary' \
 		-f null - > /dev/null 2>"$log_file" || true
@@ -3827,20 +3827,20 @@ playlist_loudness_scan() {
 	local target_label="$3"
 	local run_dir="$4"
 	local -n _report_ref=$5
-	local report_file="$run_dir/playlist_loudness_report.csv"
-	local summary_file="$run_dir/playlist_loudness_summary.txt"
+	local scan_report_file="$run_dir/playlist_loudness_report.csv"
+	local scan_summary_file="$run_dir/playlist_loudness_summary.txt"
 	local line entry path kind metrics rec integrated true_peak lra threshold correction verdict action
 	local index=0
 
 	mkdir -p "$run_dir"
-	printf '%s\n' 'INDEX|PLAYLIST_ENTRY|RESOLVED_PATH|MEDIA_KIND|STATUS|INTEGRATED_LUFS|TRUE_PEAK_DBTP|LRA_LU|THRESHOLD_LUFS|TARGET_LUFS|TARGET_LABEL|ESTIMATED_CHANGE_DB|VERDICT|RECOMMENDED_ACTION|APPROVED|RESULT|OUTPUT_PATH|NOTES' > "$report_file"
+	printf '%s\n' 'INDEX|PLAYLIST_ENTRY|RESOLVED_PATH|MEDIA_KIND|STATUS|INTEGRATED_LUFS|TRUE_PEAK_DBTP|LRA_LU|THRESHOLD_LUFS|TARGET_LUFS|TARGET_LABEL|ESTIMATED_CHANGE_DB|VERDICT|RECOMMENDED_ACTION|APPROVED|RESULT|OUTPUT_PATH|NOTES' > "$scan_report_file"
 
 	PROGRESS_TOTAL_FILES="$(awk 'BEGIN{n=0} /^[[:space:]]*($|#)/{next} {n++} END{print n}' "$playlist")"
 	PROGRESS_CURRENT_INDEX=0
 	PROGRESS_DONE_COUNT=0
 	PROGRESS_TOTAL_SECONDS=0
 
-	while IFS= read -r line || [[ -n "$line" ]]; do
+	while IFS= read -r line <&9 || [[ -n "$line" ]]; do
 		line="${line%$'\r'}"
 		[[ -z "$line" || "$line" == \#* ]] && continue
 		((index+=1)) || :
@@ -3849,39 +3849,39 @@ playlist_loudness_scan() {
 
 		if playlist_reference_is_remote "$entry"; then
 			printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
-				"$index" "$entry" '' '' 'REMOTE' '' '' '' '' "$target" "$target_label" '' '' 'SKIP' 'NO' 'NOT_RUN' '' 'remote reference' >> "$report_file"
+				"$index" "$entry" '' '' 'REMOTE' '' '' '' '' "$target" "$target_label" '' '' 'SKIP' 'NO' 'NOT_RUN' '' 'remote reference' >> "$scan_report_file"
 			continue
 		fi
 
 		path="$(playlist_resolve_reference "$playlist" "$entry")"
 		if [[ ! -f "$path" ]]; then
 			printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
-				"$index" "$entry" "$path" '' 'MISSING' '' '' '' '' "$target" "$target_label" '' '' 'SKIP' 'NO' 'NOT_RUN' '' 'file not found' >> "$report_file"
+				"$index" "$entry" "$path" '' 'MISSING' '' '' '' '' "$target" "$target_label" '' '' 'SKIP' 'NO' 'NOT_RUN' '' 'file not found' >> "$scan_report_file"
 			continue
 		fi
 
 		kind="$(playlist_media_kind "$path")"
 		if [[ "$kind" == 'UNSUPPORTED' ]]; then
 			printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
-				"$index" "$entry" "$path" "$kind" 'UNSUPPORTED' '' '' '' '' "$target" "$target_label" '' '' 'SKIP' 'NO' 'NOT_RUN' '' 'no audio stream' >> "$report_file"
+				"$index" "$entry" "$path" "$kind" 'UNSUPPORTED' '' '' '' '' "$target" "$target_label" '' '' 'SKIP' 'NO' 'NOT_RUN' '' 'no audio stream' >> "$scan_report_file"
 			continue
 		fi
 
 		metrics="$(run_with_progress "Playlist Audio Scan [$index/$PROGRESS_TOTAL_FILES]: $(basename "$path")" playlist_loudness_measure "$path" 0)" || metrics=""
 		if [[ -z "$metrics" ]]; then
 			printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
-				"$index" "$entry" "$path" "$kind" 'MEASURE_FAILED' '' '' '' '' "$target" "$target_label" '' '' 'SKIP' 'NO' 'NOT_RUN' '' 'measurement failed' >> "$report_file"
+				"$index" "$entry" "$path" "$kind" 'MEASURE_FAILED' '' '' '' '' "$target" "$target_label" '' '' 'SKIP' 'NO' 'NOT_RUN' '' 'measurement failed' >> "$scan_report_file"
 			continue
 		fi
 		IFS='|' read -r integrated true_peak lra threshold <<< "$metrics"
 		rec="$(playlist_loudness_recommendation "$integrated" "$true_peak" "$target")"
 		IFS='|' read -r correction verdict action <<< "$rec"
 		printf '%s|%s|%s|%s|READY|%s|%s|%s|%s|%s|%s|%s|%s|%s|NO|NOT_RUN||\n' \
-			"$index" "$entry" "$path" "$kind" "$integrated" "$true_peak" "$lra" "$threshold" "$target" "$target_label" "$correction" "$verdict" "$action" >> "$report_file"
-	done < "$playlist"
+			"$index" "$entry" "$path" "$kind" "$integrated" "$true_peak" "$lra" "$threshold" "$target" "$target_label" "$correction" "$verdict" "$action" >> "$scan_report_file"
+	done 9< "$playlist"
 
-	playlist_loudness_write_summary "$report_file" "$summary_file"
-	_report_ref="$report_file"
+	playlist_loudness_write_summary "$scan_report_file" "$scan_summary_file"
+	_report_ref="$scan_report_file"
 }
 
 playlist_loudness_output_path() {
@@ -3918,7 +3918,7 @@ playlist_loudness_execute() {
 	PROGRESS_DONE_COUNT=0
 	PROGRESS_TOTAL_SECONDS=0
 
-	while IFS='|' read -r index entry path kind status integrated true_peak lra threshold target label correction verdict action approved result output notes; do
+	while IFS='|' read -r index entry path kind status integrated true_peak lra threshold target label correction verdict action approved result output notes <&9; do
 		[[ "$index" == 'INDEX' ]] && continue
 		[[ "$status" == 'READY' ]] || continue
 		if [[ "$scope" == 'ALL' ]]; then
@@ -3969,7 +3969,7 @@ playlist_loudness_execute() {
 				((failed+=1)) || :
 			fi
 		fi
-	done < "$report_file"
+	done 9< "$report_file"
 
 	echo
 	echo -e "${CYAN}================================================${NC}"
@@ -3982,7 +3982,7 @@ playlist_loudness_execute() {
 }
 
 run_playlist_loudness_group() {
-	local playlist content_choice target target_label run_dir report_file choice scope
+	local playlist content_choice target target_label run_dir report_file="" choice scope
 	playlist_select_file playlist 'PLAYLIST AUDIO GROUP' || return 0
 
 	echo
@@ -4081,7 +4081,7 @@ run_audio_triage_menu() {
 		echo -e "${YELLOW}     2) Time-Compress Video + Audio${NC}"
 		echo -e "${YELLOW}     3) Match Video To Modified External Audio${NC}"
 		echo -e "${YELLOW}     4) Normalize / Adjust Audio Volume${NC}"
-		echo -e "${YELLOW}     5) Extract Audio Track(s)${NC}"
+		echo -e "${YELLOW}     5) Extract a Copy Of Audio Track(s)${NC}"
 		echo -e "${YELLOW}     6) Replace Audio Track${NC}"
 		echo -e "${YELLOW}     7) Add Audio Track${NC}"
 		echo -e "${YELLOW}     8) Remove Audio Track(s)${NC}"
